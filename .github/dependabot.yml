@@ -7,8 +7,7 @@ updates:
     open-pull-requests-limit: 5
     reviewers:
       - "sssolid"
-ignore:
-  - dependency-name: "*"
-    update-types:
-      - "version-update:semver-major"
-
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
