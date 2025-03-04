@@ -9,5 +9,6 @@ updates:
       - "sssolid"
 ignore:
   - dependency-name: "*"
-    versions: ["major"]
+    update-types:
+      - "version-update:semver-major"
 
