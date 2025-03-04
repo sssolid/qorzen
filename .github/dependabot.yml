@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "sssolid"
+pull-request-merge-method: "squash"
+ignore:
+  - dependency-name: "*"
+    versions: ["major"]
+
