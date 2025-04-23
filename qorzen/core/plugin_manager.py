@@ -82,6 +82,7 @@ class PluginManager(QorzenManager):
         """
         super().__init__(name="PluginManager")
         self._config_manager = config_manager
+        self._logger_manager = logger_manager
         self._logger = logger_manager.get_logger("plugin_manager")
         self._event_bus = event_bus_manager
         self._file_manager = file_manager
@@ -155,10 +156,6 @@ class PluginManager(QorzenManager):
             # Register for config changes
             self._config_manager.register_listener("plugins", self._on_config_changed)
 
-            # Load enabled plugins
-            if self._auto_load:
-                self._load_enabled_plugins()
-
             self._logger.info(
                 f"Plugin Manager initialized with {len(self._plugins)} plugins discovered"
             )
@@ -171,6 +168,10 @@ class PluginManager(QorzenManager):
                 source="plugin_manager",
                 payload={"plugin_count": len(self._plugins)},
             )
+
+            # Load enabled plugins
+            if self._auto_load:
+                self._load_enabled_plugins()
 
         except Exception as e:
             self._logger.error(f"Failed to initialize Plugin Manager: {str(e)}")
@@ -186,8 +187,8 @@ class PluginManager(QorzenManager):
         """
         try:
             # Get entry points for plugins
-            entry_points = importlib.metadata.entry_points().get(
-                self._entry_point_group, []
+            entry_points = importlib.metadata.entry_points().select(
+                group=self._entry_point_group
             )
 
             for entry_point in entry_points:
@@ -487,7 +488,7 @@ class PluginManager(QorzenManager):
             if hasattr(plugin_info.instance, "initialize"):
                 plugin_info.instance.initialize(
                     self._event_bus,
-                    self._logger._logger_manager,
+                    self._logger_manager,
                     self._config_manager,
                 )
 

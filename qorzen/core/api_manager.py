@@ -19,7 +19,7 @@ try:
     from fastapi.routing import APIRouter
     from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
     from pydantic import BaseModel, Field
-except ImportError:
+except ImportError as e:
     # Handling for when FastAPI is not installed
     fastapi = None
     FastAPI = object

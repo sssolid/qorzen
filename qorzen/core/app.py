@@ -8,10 +8,19 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, cast
 
-from qorzen.core.base import BaseManager, QorzenManager
-from qorzen.core.config_manager import ConfigManager
-from qorzen.core.event_bus_manager import EventBusManager
-from qorzen.core.logging_manager import LoggingManager
+from qorzen.core import QorzenManager
+from qorzen.core import ResourceMonitoringManager
+from qorzen.core import APIManager
+from qorzen.core import ConfigManager
+from qorzen.core import EventBusManager
+from qorzen.core import LoggingManager
+from qorzen.core import ThreadManager
+from qorzen.core import FileManager
+from qorzen.core import DatabaseManager
+from qorzen.core import PluginManager
+from qorzen.core import RemoteServicesManager
+from qorzen.core import SecurityManager
+from qorzen.core import CloudManager
 from qorzen.utils.exceptions import ManagerInitializationError, NexusError
 
 
@@ -63,7 +72,42 @@ class ApplicationCore:
             event_bus_manager.initialize()
             self._managers["event_bus"] = event_bus_manager
 
-            # TODO: Initialize other managers in the correct order
+            thread_manager = ThreadManager(config_manager, logging_manager)
+            thread_manager.initialize()
+            self._managers["thread_manager"] = thread_manager
+
+            file_manager = FileManager(config_manager, logging_manager)
+            file_manager.initialize()
+            self._managers["file_manager"] = file_manager
+
+            resource_manager = ResourceMonitoringManager(config_manager, logging_manager, event_bus_manager, thread_manager)
+            resource_manager.initialize()
+            self._managers["resource_manager"] = resource_manager
+
+            database_manager = DatabaseManager(config_manager, logging_manager)
+            database_manager.initialize()
+            self._managers["database_manager"] = database_manager
+
+            plugin_manager = PluginManager(config_manager, logging_manager, event_bus_manager, file_manager)
+            plugin_manager.initialize()
+            self._managers["plugin_manager"] = plugin_manager
+
+            remote_services_manager = RemoteServicesManager(config_manager, logging_manager, event_bus_manager, thread_manager)
+            remote_services_manager.initialize()
+            self._managers["remote_services_manager"] = remote_services_manager
+
+            security_manager = SecurityManager(config_manager, logging_manager, event_bus_manager, database_manager)
+            security_manager.initialize()
+            self._managers["security_manager"] = security_manager
+
+            api_manager = APIManager(config_manager, logging_manager, security_manager, event_bus_manager, thread_manager)
+            api_manager.initialize()
+            self._managers["api_manager"] = api_manager
+
+            cloud_manager = CloudManager(config_manager, logging_manager, file_manager)
+            cloud_manager.initialize()
+            self._managers["cloud_manager"] = cloud_manager
+
             # For example:
             # - Thread Manager
             # - File Manager
