@@ -27,12 +27,9 @@ jobs:
         run: |
           rm -rf processed_project
           mkdir -p processed_project
-          python backend-stripper.py backend/ --output processed_project/backend_stripped/
-          python frontend-stripper.py frontend/ --output processed_project/frontend_stripped/
-          python code-structure-mapper2.py backend/ --output processed_project/backend_structure --format directory
-          python code-structure-mapper.py backend/ --output processed_project/backend_structure.md --include-docstrings
-          python frontend-structure-mapper.py frontend/ --output processed_project/frontend_structure.md
-          cat processed_project/backend_structure.md processed_project/frontend_structure.md > processed_project/full_structure.md
+          python backend-stripper.py qorzen/ --output processed_project/qorzen_stripped/
+          python code-structure-mapper2.py qorzen/ --output processed_project/qorzen_structure --format directory
+          python code-structure-mapper.py qorzen/ --output processed_project/qorzen_structure.md --include-docstrings
 
       - name: Upload Processed Structure as Artifact
         uses: actions/upload-artifact@v4
