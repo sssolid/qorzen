@@ -1,5 +1,8 @@
-/nexus_for_sharing/
-/nexus_for_sharing_tests/
+/processed_project/
+/resources/music/
+/resources/logos/
+
+config.yaml
 
 # Repository configurations
 .pypirc

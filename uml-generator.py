@@ -2,12 +2,12 @@
 """
 UML diagram generator using pyreverse and graphviz.
 """
-import argparse
 import os
-import subprocess
 import sys
-import tempfile
+import argparse
+import subprocess
 from pathlib import Path
+import tempfile
 
 
 def check_dependencies():
