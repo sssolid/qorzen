@@ -66,9 +66,23 @@ def start_ui(app_core: Any, args: argparse.Namespace) -> None:
         args: Command line arguments.
     """
     try:
-        from qorzen.ui.main_window import start_ui
+        from qorzen.ui.main_window import start_ui as ui_start
+        from qorzen.ui.main_window import QorzenMainWindow
+        from PySide6.QtWidgets import QApplication
 
-        start_ui(app_core, args.debug)
+        # Create the QApplication instance
+        app = QApplication.instance() or QApplication(sys.argv)
+
+        # Create the main window
+        main_window = QorzenMainWindow(app_core)
+
+        # Set the main window reference in the app core
+        # This will trigger the ui/ready event for plugins
+        app_core.set_main_window(main_window)
+
+        # Show the window and run the application
+        main_window.show()
+        sys.exit(app.exec())
     except ImportError as e:
         print(f"Error importing UI module: {e}")
         print("Running in headless mode.")

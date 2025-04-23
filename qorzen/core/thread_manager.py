@@ -71,7 +71,7 @@ class ThreadManager(QorzenManager):
         # Thread pool for background tasks
         self._thread_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._max_workers = 4
-        self._thread_name_prefix = "nexus-worker"
+        self._thread_name_prefix = "qorzen-worker"
 
         # Task tracking
         self._tasks: Dict[str, TaskInfo] = {}
@@ -100,7 +100,7 @@ class ThreadManager(QorzenManager):
             thread_config = self._config_manager.get("thread_pool", {})
             self._max_workers = thread_config.get("worker_threads", 4)
             self._thread_name_prefix = thread_config.get(
-                "thread_name_prefix", "nexus-worker"
+                "thread_name_prefix", "qorzen-worker"
             )
 
             # Create thread pool

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 """
 Main tab UI component for the AS400 Connector Plugin.
 
@@ -45,6 +47,8 @@ from qorzen.plugins.as400_connector_plugin.utils import (
     format_value_for_display,
     detect_query_parameters
 )
+from qorzen.plugins.as400_connector_plugin.ui.results_view import ResultsView
+from qorzen.plugins.as400_connector_plugin.ui.visualization import VisualizationView
 
 
 class AS400Tab(QWidget):
@@ -281,23 +285,21 @@ class AS400Tab(QWidget):
         results_layout = QVBoxLayout(results_widget)
         results_layout.setContentsMargins(5, 5, 5, 5)
 
-        results_label = QLabel("Results:")
-        self._results_table = QTableWidget()
-        self._results_table.setSelectionBehavior(QTableWidget.SelectRows)
-
-        # Results toolbar
-        results_toolbar = QToolBar()
-        results_toolbar.setIconSize(QSize(16, 16))
-
-        export_results_action = results_toolbar.addAction("Export Results")
-        export_results_action.triggered.connect(self._export_results)
-
-        copy_results_action = results_toolbar.addAction("Copy Selected")
-        copy_results_action.triggered.connect(self._copy_selected_results)
-
+        results_label = QLabel('Results:')
         results_layout.addWidget(results_label)
-        results_layout.addWidget(results_toolbar)
-        results_layout.addWidget(self._results_table)
+
+        # Create tabbed interface for results and visualization
+        results_tabs = QTabWidget()
+
+        # Results view tab
+        self._results_view = ResultsView()
+        results_tabs.addTab(self._results_view, "Data")
+
+        # Visualization tab
+        self._viz_view = VisualizationView()
+        results_tabs.addTab(self._viz_view, "Visualization")
+
+        results_layout.addWidget(results_tabs)
 
         # Add sections to main splitter
         self._main_splitter.addWidget(upper_widget)
@@ -961,34 +963,15 @@ class AS400Tab(QWidget):
         self._execute_button.setEnabled(False)
 
     def _on_query_finished(self, query: str, success: bool) -> None:
-        """
-        Handle query execution completion.
-
-        Args:
-            query: The executed query
-            success: Whether execution was successful
-        """
-        # Update UI
         self._progress_bar.setVisible(False)
         self._execute_button.setEnabled(True)
-
         if success and self._current_query_result:
-            # Display results
             self._display_query_results(self._current_query_result)
-
-            # Update status
             execution_time = self._current_query_result.execution_time_ms
             row_count = self._current_query_result.row_count
-            self._status_label.setText(
-                f"Query executed successfully in {execution_time} ms, {row_count} rows returned"
-            )
+            self._status_label.setText(f'Query executed successfully in {execution_time} ms, {row_count} rows returned')
         else:
-            # Clear results
-            self._results_table.setRowCount(0)
-            self._results_table.setColumnCount(0)
-
-            # Update status
-            self._status_label.setText("Query execution failed")
+            self._status_label.setText('Query execution failed')
 
     def _add_to_query_history(self, query: str, params: Dict[str, Any], result: QueryResult) -> None:
         """
@@ -1025,50 +1008,10 @@ class AS400Tab(QWidget):
         self._update_history_list()
 
     def _display_query_results(self, result: QueryResult) -> None:
-        """
-        Display query results in the results table.
-
-        Args:
-            result: Query execution result
-        """
-        # Get data
-        records = result.records
-        columns = result.columns
-
-        if not records or not columns:
-            # Clear results table
-            self._results_table.setRowCount(0)
-            self._results_table.setColumnCount(0)
+        if not result.records or not result.columns:
             return
-
-        # Configure table
-        self._results_table.setRowCount(len(records))
-        self._results_table.setColumnCount(len(columns))
-
-        # Set column headers
-        column_headers = [col.name for col in columns]
-        self._results_table.setHorizontalHeaderLabels(column_headers)
-
-        # Populate table with data
-        for row_idx, record in enumerate(records):
-            for col_idx, column in enumerate(columns):
-                # Get the value
-                value = record.get(column.name)
-
-                # Format for display
-                display_value = format_value_for_display(value)
-
-                # Create table item
-                item = QTableWidgetItem(display_value)
-
-                # Set item data for sorting
-                item.setData(Qt.UserRole, value)
-
-                # Add to table
-                self._results_table.setItem(row_idx, col_idx, item)
-
-        # Auto-resize columns to content
-        self._results_table.resizeColumnsToContents()
+        self._results_view.set_query_result(result)
+        self._viz_view.set_query_result(result)
 
     def _on_saved_query_double_clicked(self, item: QListWidgetItem) -> None:
         """

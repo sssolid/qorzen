@@ -43,6 +43,7 @@ types-pyyaml = ">=6.0.12.12,<6.1.0"
 types-requests = ">=2.31.0.2,<2.32.0"
 psycopg2 = "^2.9.10"
 aiosqlite = "^0.21.0"
+jpype1 = "^1.5.2"
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"

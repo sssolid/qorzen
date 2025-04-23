@@ -78,8 +78,8 @@ class ConfigSchema(BaseModel):
                 "port": 5672,
                 "username": "guest",
                 "password": "guest",
-                "exchange": "nexus_events",
-                "queue": "nexus_queue",
+                "exchange": "qorzen_events",
+                "queue": "qorzen_queue",
             },
         },
         description="Event bus settings",
@@ -90,7 +90,7 @@ class ConfigSchema(BaseModel):
         default_factory=lambda: {
             "worker_threads": 4,
             "max_queue_size": 100,
-            "thread_name_prefix": "nexus-worker",
+            "thread_name_prefix": "qorzen-worker",
         },
         description="Thread pool settings",
     )

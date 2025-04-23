@@ -9,7 +9,7 @@ from qorzen.utils.exceptions import (
     ManagerError,
     ManagerInitializationError,
     ManagerShutdownError,
-    NexusError,
+    QorzenError,
     PluginError,
     SecurityError,
     ThreadManagerError,

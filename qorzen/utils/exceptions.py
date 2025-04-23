@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 
-class NexusError(Exception):
+class QorzenError(Exception):
     """Base exception for all Qorzen errors.
 
     All custom exceptions in the Qorzen system should inherit from this class
@@ -18,7 +18,7 @@ class NexusError(Exception):
         details: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
-        """Initialize a NexusError.
+        """Initialize a QorzenError.
 
         Args:
             message: A descriptive error message.
@@ -32,7 +32,7 @@ class NexusError(Exception):
         super().__init__(message, *args, **kwargs)
 
 
-class ManagerError(NexusError):
+class ManagerError(QorzenError):
     """Base exception for all manager-related errors."""
 
     def __init__(
@@ -68,7 +68,7 @@ class ManagerShutdownError(ManagerError):
     pass
 
 
-class ConfigurationError(NexusError):
+class ConfigurationError(QorzenError):
     """Exception raised for configuration-related errors."""
 
     def __init__(
@@ -88,7 +88,7 @@ class ConfigurationError(NexusError):
         super().__init__(message, *args, details=details, **kwargs)
 
 
-class EventBusError(NexusError):
+class EventBusError(QorzenError):
     """Exception raised for event bus-related errors."""
 
     def __init__(
@@ -108,7 +108,7 @@ class EventBusError(NexusError):
         super().__init__(message, *args, details=details, **kwargs)
 
 
-class PluginError(NexusError):
+class PluginError(QorzenError):
     """Exception raised for plugin-related errors."""
 
     def __init__(
@@ -128,7 +128,7 @@ class PluginError(NexusError):
         super().__init__(message, *args, details=details, **kwargs)
 
 
-class DatabaseError(NexusError):
+class DatabaseError(QorzenError):
     """Exception raised for database-related errors."""
 
     def __init__(
@@ -148,7 +148,7 @@ class DatabaseError(NexusError):
         super().__init__(message, *args, details=details, **kwargs)
 
 
-class SecurityError(NexusError):
+class SecurityError(QorzenError):
     """Exception raised for security-related errors."""
 
     def __init__(
@@ -176,7 +176,7 @@ class SecurityError(NexusError):
         super().__init__(message, *args, details=details, **kwargs)
 
 
-class ThreadManagerError(NexusError):
+class ThreadManagerError(QorzenError):
     """Exception raised for thread management-related errors."""
 
     def __init__(
@@ -196,7 +196,7 @@ class ThreadManagerError(NexusError):
         super().__init__(message, *args, details=details, **kwargs)
 
 
-class FileError(NexusError):
+class FileError(QorzenError):
     """Exception raised for file-related errors."""
 
     def __init__(
@@ -216,7 +216,7 @@ class FileError(NexusError):
         super().__init__(message, *args, details=details, **kwargs)
 
 
-class APIError(NexusError):
+class APIError(QorzenError):
     """Exception raised for API-related errors."""
 
     def __init__(

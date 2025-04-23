@@ -21,7 +21,7 @@ from qorzen.core import PluginManager
 from qorzen.core import RemoteServicesManager
 from qorzen.core import SecurityManager
 from qorzen.core import CloudManager
-from qorzen.utils.exceptions import ManagerInitializationError, NexusError
+from qorzen.utils.exceptions import ManagerInitializationError, QorzenError
 
 
 class ApplicationCore:
@@ -43,6 +43,7 @@ class ApplicationCore:
         self._managers: Dict[str, QorzenManager] = {}
         self._initialized = False
         self._logger = None
+        self._main_window = None
 
     def initialize(self) -> None:
         """Initialize the Application Core and all managers.
@@ -88,10 +89,6 @@ class ApplicationCore:
             database_manager.initialize()
             self._managers["database_manager"] = database_manager
 
-            plugin_manager = PluginManager(config_manager, logging_manager, event_bus_manager, file_manager)
-            plugin_manager.initialize()
-            self._managers["plugin_manager"] = plugin_manager
-
             remote_services_manager = RemoteServicesManager(config_manager, logging_manager, event_bus_manager, thread_manager)
             remote_services_manager.initialize()
             self._managers["remote_services_manager"] = remote_services_manager
@@ -107,6 +104,10 @@ class ApplicationCore:
             cloud_manager = CloudManager(config_manager, logging_manager, file_manager)
             cloud_manager.initialize()
             self._managers["cloud_manager"] = cloud_manager
+
+            plugin_manager = PluginManager(config_manager, logging_manager, event_bus_manager, file_manager)
+            plugin_manager.initialize()
+            self._managers["plugin_manager"] = plugin_manager
 
             # For example:
             # - Thread Manager
@@ -141,7 +142,7 @@ class ApplicationCore:
             self.shutdown()
 
             # Re-raise the exception
-            if isinstance(e, NexusError):
+            if isinstance(e, QorzenError):
                 raise
             else:
                 raise ManagerInitializationError(
@@ -170,6 +171,25 @@ class ApplicationCore:
 
         self.shutdown()
         sys.exit(0)
+
+    def set_main_window(self, main_window: Any) -> None:
+        """Set the main window reference and notify plugins.
+
+        Args:
+            main_window: The main window instance.
+        """
+        self._main_window = main_window
+
+        # Publish UI ready event for plugins
+        event_bus = self.get_manager("event_bus")
+        if event_bus and self._initialized:
+            event_bus.publish(
+                event_type="ui/ready",
+                source="app_core",
+                payload={"main_window": main_window}
+            )
+            if self._logger:
+                self._logger.info("UI ready event published for plugins")
 
     def get_manager(self, name: str) -> Optional[QorzenManager]:
         """Get a manager by name.

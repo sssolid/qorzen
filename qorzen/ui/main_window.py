@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 
-class NexusMainWindow(QMainWindow):
+class QorzenMainWindow(QMainWindow):
     """Main window for the Qorzen application."""
 
     # Signal for updating UI from non-GUI threads
@@ -814,7 +814,7 @@ def start_ui(app_core: Any, debug: bool = False) -> None:
     app = QApplication.instance() or QApplication(sys.argv)
 
     # Create main window
-    main_window = NexusMainWindow(app_core)
+    main_window = QorzenMainWindow(app_core)
     main_window.show()
 
     # Start the application event loop
