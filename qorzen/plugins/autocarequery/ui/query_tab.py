@@ -813,10 +813,16 @@ class AutocareQueryTab(QWidget):
         self.result_limit = value
 
     def on_filter_changed(self, filter_name: str) -> None:
-        """Handle changes to filter dropdown selections."""
+        """
+        Handle filter dropdown selection change event.
+
+        Args:
+            filter_name: The name of the filter that changed
+        """
         if self.filters_updating:
             return
 
+        # Get the mapping of filter name to (combo box, filter attribute) pairs
         mapping = {
             'year': (self.year_combo, 'year_id'),
             'make': (self.make_combo, 'make_id'),
@@ -842,8 +848,11 @@ class AutocareQueryTab(QWidget):
             return
 
         combo_box, filter_attr = entry
+
+        # Store the current filter value
         setattr(self.current_filters, filter_attr, combo_box.currentData())
 
+        # Special handling for year range
         if filter_name == 'year' and (not self.current_filters.use_year_range):
             self.current_filters.year_range_start = None
             self.current_filters.year_range_end = None
@@ -853,7 +862,142 @@ class AutocareQueryTab(QWidget):
         self.status_bar.showMessage(f'Updating filters for {filter_name}...')
         self._logger.debug(f'Filter changed: {filter_name}={combo_box.currentData()}')
 
-        self._schedule_update_all_dropdowns()
+        # Schedule update for only the affected dropdowns, not all of them
+        self._schedule_update_filtered_dropdowns(filter_name)
+
+    def _schedule_update_filtered_dropdowns(self, changed_filter: str) -> None:
+        """
+        Schedule an update for only the dropdowns that should be affected by the filter change.
+
+        Args:
+            changed_filter: The name of the filter that changed
+        """
+        if self._thread_manager:
+            self._schedule_filtered_update_task(changed_filter)
+        else:
+            QTimer.singleShot(10, lambda: self._run_filtered_update_with_timer(changed_filter))
+
+    def _schedule_filtered_update_task(self, changed_filter: str) -> None:
+        """
+        Schedule a task to update filtered dropdowns.
+
+        Args:
+            changed_filter: The name of the filter that changed
+        """
+        if not self._thread_manager:
+            return
+
+        def _run_update_async(*args, **kwargs):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(self.update_filtered_dropdowns_async(changed_filter))
+            finally:
+                loop.close()
+
+        self._thread_manager.submit_task(
+            func=_run_update_async,
+            name='autocare_query_update_filtered_dropdowns',
+            submitter='autocarequery',
+            priority=10
+        )
+
+    def _run_filtered_update_with_timer(self, changed_filter: str) -> None:
+        """
+        Run the filtered update using a timer (fallback method).
+
+        Args:
+            changed_filter: The name of the filter that changed
+        """
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self.update_filtered_dropdowns_async(changed_filter))
+            loop.close()
+            self.dropdownsUpdated.emit()
+        except Exception as e:
+            self._logger.error(f'Error updating dropdowns: {str(e)}', exc_info=True)
+            ThreadSafeHelper.run_on_ui_thread(self, '_handle_update_error', str(e))
+
+    async def update_filtered_dropdowns_async(self, changed_filter: str) -> None:
+        """
+        Update only the dropdowns that depend on the changed filter.
+
+        Args:
+            changed_filter: The name of the filter that changed
+
+        Returns:
+            bool: True if update was successful, False otherwise
+        """
+        try:
+            ThreadSafeHelper.run_on_ui_thread(
+                self, 'show_progress_dialog', 'Updating Filters', 'Updating filter values...'
+            )
+
+            # Define dependencies between filters
+            filter_dependencies = {
+                'year': ['make', 'model', 'submodel', 'engine_liter', 'engine_cid', 'cylinder_head_type',
+                         'valves', 'mfr_body_code', 'body_num_doors', 'wheel_base', 'brake_abs',
+                         'steering_system', 'transmission_control_type', 'transmission_mfr_code', 'drive_type'],
+                'make': ['model', 'submodel', 'engine_liter', 'engine_cid', 'cylinder_head_type',
+                         'valves', 'mfr_body_code', 'body_num_doors', 'wheel_base', 'brake_abs',
+                         'steering_system', 'transmission_control_type', 'transmission_mfr_code', 'drive_type'],
+                'model': ['submodel', 'engine_liter', 'engine_cid', 'cylinder_head_type',
+                          'valves', 'mfr_body_code', 'body_num_doors', 'wheel_base', 'brake_abs',
+                          'steering_system', 'transmission_control_type', 'transmission_mfr_code', 'drive_type'],
+                'submodel': ['engine_liter', 'engine_cid', 'cylinder_head_type',
+                             'valves', 'mfr_body_code', 'body_num_doors', 'wheel_base', 'brake_abs',
+                             'steering_system', 'transmission_control_type', 'transmission_mfr_code', 'drive_type'],
+                'engine_liter': ['engine_cid', 'cylinder_head_type', 'valves'],
+                'engine_cid': ['engine_liter', 'cylinder_head_type', 'valves'],
+                # Add other dependencies as needed
+            }
+
+            # Get the list of dropdowns that need to be updated
+            dropdowns_to_update = filter_dependencies.get(changed_filter, [])
+
+            # Add the changed filter itself to ensure it's properly updated
+            if changed_filter not in dropdowns_to_update:
+                dropdowns_to_update.append(changed_filter)
+
+            # Update each dependent dropdown
+            total_dropdowns = len(dropdowns_to_update)
+            for i, dropdown_name in enumerate(dropdowns_to_update):
+                progress = int((i / total_dropdowns) * 100)
+                self.progressUpdated.emit(progress, f'Updating {dropdown_name} values...')
+
+                # Map dropdown names to their corresponding combo boxes
+                dropdown_map = {
+                    'year': self.year_combo,
+                    'make': self.make_combo,
+                    'model': self.model_combo,
+                    'submodel': self.submodel_combo,
+                    'engine_liter': self.engine_liter_combo,
+                    'engine_cid': self.engine_cid_combo,
+                    'cylinder_head_type': self.cylinder_head_type_combo,
+                    'valves': self.valves_combo,
+                    'mfr_body_code': self.mfr_body_code_combo,
+                    'body_num_doors': self.body_num_doors_combo,
+                    'wheel_base': self.wheel_base_combo,
+                    'brake_abs': self.brake_abs_combo,
+                    'steering_system': self.steering_system_combo,
+                    'transmission_control_type': self.transmission_control_type_combo,
+                    'transmission_mfr_code': self.transmission_mfr_code_combo,
+                    'drive_type': self.drive_type_combo
+                }
+
+                # Get the combo box for this dropdown
+                combo_box = dropdown_map.get(dropdown_name)
+                if combo_box:
+                    await self.load_dropdown_values(dropdown_name, combo_box)
+
+            self.progressUpdated.emit(100, 'Update complete!')
+            self.dropdownsUpdated.emit()
+            return True
+
+        except Exception as e:
+            self._logger.error('Error updating dropdowns', error=str(e))
+            return False
 
     def _schedule_update_all_dropdowns(self) -> None:
         """Schedule updating all dropdowns based on current filters."""
@@ -1809,7 +1953,6 @@ class AutocareQueryTab(QWidget):
                     # Execute query
                     results = await self.db_repo.execute_vehicle_query(
                         query_def['filters'],
-                        limit=1000
                     )
 
                     # Convert to dict for pandas
