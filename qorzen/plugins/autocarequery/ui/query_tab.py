@@ -33,6 +33,7 @@ from qorzen.plugins.autocarequery.config.settings import (
 from qorzen.plugins.autocarequery.models.data_models import FilterDTO, VehicleResultDTO
 from qorzen.plugins.autocarequery.models.table_model import VehicleResultsTableModel
 from qorzen.plugins.autocarequery.repository.database_repository import DatabaseRepository
+from qorzen.plugins.autocarequery.utils.thread_safety import ThreadSafeHelper
 
 logger = structlog.get_logger(__name__)
 
@@ -465,11 +466,10 @@ class AutocareQueryTab(QWidget):
                 return True
             except Exception as e:
                 self._logger.error(f"Error in initialization: {str(e)}", exc_info=True)
-                QMetaObject.invokeMethod(
+                ThreadSafeHelper.run_on_ui_thread(
                     self,
                     "_handle_initialization_error",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, str(e))
+                    str(e)
                 )
                 return False
             finally:
@@ -543,11 +543,10 @@ class AutocareQueryTab(QWidget):
         except Exception as e:
             self._logger.error(f'Error in initialization: {str(e)}', exc_info=True)
             # Update UI on main thread
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 "_handle_initialization_error",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, str(e))
+                str(e)
             )
 
     @Slot()
@@ -579,12 +578,11 @@ class AutocareQueryTab(QWidget):
         """Fetch dropdown values asynchronously."""
         try:
             # Signal to main thread to show progress dialog
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 "show_progress_dialog",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, 'Initializing Filters'),
-                Q_ARG(str, 'Loading filter values...')
+                'Initializing Filters',
+                'Loading filter values...'
             )
 
             # Load dropdown values
@@ -898,11 +896,10 @@ class AutocareQueryTab(QWidget):
         except Exception as e:
             self._logger.error(f'Error updating dropdowns: {str(e)}', exc_info=True)
             # Update UI on main thread
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 "_handle_update_error",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, str(e))
+                str(e)
             )
 
     @Slot(str)
@@ -919,12 +916,11 @@ class AutocareQueryTab(QWidget):
         """Update all dropdowns based on current filters."""
         try:
             # Signal to main thread to show progress dialog
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 "show_progress_dialog",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, 'Updating Filters'),
-                Q_ARG(str, 'Updating filter values...')
+                'Updating Filters',
+                'Updating filter values...'
             )
 
             # Update all dropdowns
@@ -1032,11 +1028,10 @@ class AutocareQueryTab(QWidget):
         except Exception as e:
             self._logger.error(f'Error executing query: {str(e)}', exc_info=True)
             # Handle error on main thread
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 "_handle_query_error",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, str(e))
+                str(e)
             )
 
     async def async_execute_query(self) -> List[Dict[str, Any]]:
@@ -1064,11 +1059,10 @@ class AutocareQueryTab(QWidget):
         except Exception as e:
             self._logger.error('Error executing query', error=str(e))
             # Signal error to main thread
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 "_handle_query_error",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, str(e))
+                str(e)
             )
             raise
 
@@ -1172,11 +1166,10 @@ class AutocareQueryTab(QWidget):
         except Exception as e:
             self._logger.error(f'Error resetting filters: {str(e)}', exc_info=True)
             # Update UI on main thread
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 "_handle_reset_error",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, str(e))
+                str(e)
             )
 
     @Slot(str)
@@ -1324,12 +1317,11 @@ class AutocareQueryTab(QWidget):
                 data = args[1]
 
                 # Update progress from worker thread
-                QMetaObject.invokeMethod(
+                ThreadSafeHelper.run_on_ui_thread(
                     self,
                     "_update_progress_dialog",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(int, 50),
-                    Q_ARG(str, f'Exporting to {file_path}...')
+                    50,
+                    f'Exporting to {file_path}...'
                 )
 
                 # Create dataframe and export
@@ -1729,11 +1721,10 @@ class AutocareQueryTab(QWidget):
         except Exception as e:
             self._logger.error(f'Error exporting default queries: {str(e)}', exc_info=True)
             # Signal error on main thread
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 "_handle_export_defaults_error",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, str(e))
+                str(e)
             )
 
     @Slot(str)
@@ -1768,10 +1759,9 @@ class AutocareQueryTab(QWidget):
                 )
                 future.set_result(save_dir)
 
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 get_directory,
-                Qt.ConnectionType.BlockingQueuedConnection
             )
 
             await future
@@ -1780,12 +1770,11 @@ class AutocareQueryTab(QWidget):
                 return
 
             # Show progress dialog
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 "show_progress_dialog",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, 'Exporting Queries'),
-                Q_ARG(str, 'Exporting default queries...')
+                'Exporting Queries',
+                'Exporting default queries...'
             )
 
             # Define default queries
@@ -1877,20 +1866,18 @@ class AutocareQueryTab(QWidget):
             self.progressUpdated.emit(100, 'Export complete')
 
             # Close progress dialog and show success message on main thread
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 "_show_export_complete",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, save_dir)
+                save_dir
             )
         except Exception as e:
             self._logger.error('Error exporting default queries', error=str(e))
             # Signal error to main thread
-            QMetaObject.invokeMethod(
+            ThreadSafeHelper.run_on_ui_thread(
                 self,
                 "_handle_export_defaults_error",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, str(e))
+                str(e)
             )
             raise
 
