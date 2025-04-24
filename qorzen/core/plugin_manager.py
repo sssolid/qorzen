@@ -71,6 +71,7 @@ class PluginManager(QorzenManager):
         logger_manager: Any,
         event_bus_manager: Any,
         file_manager: Any,
+        thread_manager: Any,
     ) -> None:
         """Initialize the Plugin Manager.
 
@@ -86,6 +87,7 @@ class PluginManager(QorzenManager):
         self._logger = logger_manager.get_logger("plugin_manager")
         self._event_bus = event_bus_manager
         self._file_manager = file_manager
+        self._thread_manager = thread_manager
 
         # Plugin registry
         self._plugins: Dict[str, PluginInfo] = {}
@@ -487,9 +489,11 @@ class PluginManager(QorzenManager):
             # Initialize the plugin
             if hasattr(plugin_info.instance, "initialize"):
                 plugin_info.instance.initialize(
-                    self._event_bus,
-                    self._logger_manager,
-                    self._config_manager,
+                    event_bus=self._event_bus,
+                    logger_provider=self._logger_manager,
+                    config_provider=self._config_manager,
+                    file_manager=self._file_manager,
+                    thread_manager=self._thread_manager
                 )
 
             # Update plugin state

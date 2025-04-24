@@ -105,7 +105,7 @@ class ApplicationCore:
             cloud_manager.initialize()
             self._managers["cloud_manager"] = cloud_manager
 
-            plugin_manager = PluginManager(config_manager, logging_manager, event_bus_manager, file_manager)
+            plugin_manager = PluginManager(config_manager, logging_manager, event_bus_manager, file_manager, thread_manager)
             plugin_manager.initialize()
             self._managers["plugin_manager"] = plugin_manager
 
