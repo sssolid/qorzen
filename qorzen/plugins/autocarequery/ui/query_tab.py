@@ -13,16 +13,23 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
 import pandas as pd
 import qasync
 import structlog
-from PySide6.QtCore import (QEventLoop, QModelIndex, QObject, QPoint, QSize, QTimer, Qt,
-                            Signal, Slot)
+from PySide6.QtCore import (
+    QEventLoop, QMetaObject, QModelIndex, QObject, QPoint, QSize, QTimer, Qt, Signal, Slot, Q_ARG
+)
 from PySide6.QtGui import QAction, QClipboard, QFont, QIcon
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
-                               QGridLayout, QHBoxLayout, QHeaderView, QLabel, QMainWindow,
-                               QMenu, QMenuBar, QMessageBox, QProgressDialog, QPushButton,
-                               QScrollArea, QSizePolicy, QSpinBox, QStatusBar, QTableView,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout,
+    QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMenu, QMenuBar, QMessageBox,
+    QProgressDialog, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStatusBar,
+    QTableView, QVBoxLayout, QWidget
+)
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
 
-from qorzen.plugins.autocarequery.config.settings import DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, UI_REFRESH_INTERVAL_MS
+from qorzen.plugins.autocarequery.config.settings import (
+    DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, UI_REFRESH_INTERVAL_MS
+)
 from qorzen.plugins.autocarequery.models.data_models import FilterDTO, VehicleResultDTO
 from qorzen.plugins.autocarequery.models.table_model import VehicleResultsTableModel
 from qorzen.plugins.autocarequery.repository.database_repository import DatabaseRepository
@@ -31,7 +38,15 @@ logger = structlog.get_logger(__name__)
 
 
 class AutocareQueryTab(QWidget):
-    """Main tab widget for the Autocare Query Plugin."""
+    # Define signals for thread-safe UI updates
+    dropdownsUpdated = Signal()
+    filterValuesLoaded = Signal(str, QComboBox, list)
+    queryExecuted = Signal(list)
+    connectionTested = Signal(bool, str)
+    exportCompleted = Signal(str)
+    exportFailed = Signal(str)
+    progressUpdated = Signal(int, str)
+    resetFiltersCompleted = Signal()
 
     def __init__(
             self,
@@ -40,30 +55,16 @@ class AutocareQueryTab(QWidget):
             config: Any,
             file_manager: Any = None,
             thread_manager: Any = None,
-            connection_string: str = "",
+            connection_string: str = '',
             parent: Optional[QWidget] = None
     ) -> None:
-        """
-        Initialize the query tab.
-
-        Args:
-            event_bus: Event bus for publishing and subscribing to events
-            logger: Logger for the plugin
-            config: Configuration provider
-            file_manager: File manager for file operations
-            thread_manager: Thread manager for async operations
-            connection_string: Database connection string
-            parent: Parent widget
-        """
         super().__init__(parent)
-
         self._event_bus = event_bus
         self._logger = logger
         self._config = config
         self._file_manager = file_manager
         self._thread_manager = thread_manager
         self.connection_string = connection_string
-
         self.db_repo = DatabaseRepository(connection_string)
         self.current_filters = FilterDTO()
         self.filters_updating = False
@@ -71,28 +72,30 @@ class AutocareQueryTab(QWidget):
         self.limit_enabled = True
         self.progress_dialog = None
 
-        # Setup UI components
+        # Connect signals to slots
+        self.dropdownsUpdated.connect(self._on_dropdowns_updated)
+        self.filterValuesLoaded.connect(self._on_filter_values_loaded)
+        self.queryExecuted.connect(self._on_query_executed)
+        self.connectionTested.connect(self._on_connection_tested)
+        self.exportCompleted.connect(self._on_export_completed)
+        self.exportFailed.connect(self._on_export_failed)
+        self.progressUpdated.connect(self._on_progress_updated)
+        self.resetFiltersCompleted.connect(self._on_reset_filters_completed)
+
+        # Setup UI and initialize
         self.setup_ui()
-
-        # Initialize combo boxes with "All" option
         self.initialize_dropdowns()
-
-        # Schedule async initialization
         QTimer.singleShot(100, self.start_async_initialization)
-
         self._logger.info('Autocare Query Tab initialized')
 
     def setup_ui(self) -> None:
-        """Set up the UI components."""
         main_layout = QVBoxLayout(self)
         self.all_combo_boxes = []
 
-        # Create filter frame
         filter_frame = QFrame()
         filter_frame.setFrameShape(QFrame.Shape.StyledPanel)
         filter_layout = QGridLayout(filter_frame)
 
-        # Year filter with range option
         year_frame = QFrame()
         year_layout = QHBoxLayout(year_frame)
         year_layout.setContentsMargins(0, 0, 0, 0)
@@ -125,91 +128,78 @@ class AutocareQueryTab(QWidget):
 
         filter_layout.addWidget(year_frame, 0, 0, 1, 2)
 
-        # Make filter
         filter_layout.addWidget(QLabel('Make:'), 0, 2)
         self.make_combo = QComboBox()
         self.make_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('make'))
         filter_layout.addWidget(self.make_combo, 0, 3)
         self.all_combo_boxes.append(self.make_combo)
 
-        # Model filter
         filter_layout.addWidget(QLabel('Model:'), 0, 4)
         self.model_combo = QComboBox()
         self.model_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('model'))
         filter_layout.addWidget(self.model_combo, 0, 5)
         self.all_combo_boxes.append(self.model_combo)
 
-        # Submodel filter
         filter_layout.addWidget(QLabel('Submodel:'), 1, 0)
         self.submodel_combo = QComboBox()
         self.submodel_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('submodel'))
         filter_layout.addWidget(self.submodel_combo, 1, 1)
         self.all_combo_boxes.append(self.submodel_combo)
 
-        # Engine Liter filter
         filter_layout.addWidget(QLabel('Engine Liter:'), 1, 2)
         self.engine_liter_combo = QComboBox()
         self.engine_liter_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('engine_liter'))
         filter_layout.addWidget(self.engine_liter_combo, 1, 3)
         self.all_combo_boxes.append(self.engine_liter_combo)
 
-        # Engine CID filter
         filter_layout.addWidget(QLabel('Engine CID:'), 1, 4)
         self.engine_cid_combo = QComboBox()
         self.engine_cid_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('engine_cid'))
         filter_layout.addWidget(self.engine_cid_combo, 1, 5)
         self.all_combo_boxes.append(self.engine_cid_combo)
 
-        # Cylinder Head Type filter
         filter_layout.addWidget(QLabel('Cylinder Head:'), 2, 0)
         self.cylinder_head_type_combo = QComboBox()
         self.cylinder_head_type_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('cylinder_head_type'))
         filter_layout.addWidget(self.cylinder_head_type_combo, 2, 1)
         self.all_combo_boxes.append(self.cylinder_head_type_combo)
 
-        # Valves filter
         filter_layout.addWidget(QLabel('Valves:'), 2, 2)
         self.valves_combo = QComboBox()
         self.valves_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('valves'))
         filter_layout.addWidget(self.valves_combo, 2, 3)
         self.all_combo_boxes.append(self.valves_combo)
 
-        # Body Code filter
         filter_layout.addWidget(QLabel('Body Code:'), 2, 4)
         self.mfr_body_code_combo = QComboBox()
         self.mfr_body_code_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('mfr_body_code'))
         filter_layout.addWidget(self.mfr_body_code_combo, 2, 5)
         self.all_combo_boxes.append(self.mfr_body_code_combo)
 
-        # Doors filter
         filter_layout.addWidget(QLabel('Doors:'), 3, 0)
         self.body_num_doors_combo = QComboBox()
         self.body_num_doors_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('body_num_doors'))
         filter_layout.addWidget(self.body_num_doors_combo, 3, 1)
         self.all_combo_boxes.append(self.body_num_doors_combo)
 
-        # Wheelbase filter
         filter_layout.addWidget(QLabel('Wheelbase:'), 3, 2)
         self.wheel_base_combo = QComboBox()
         self.wheel_base_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('wheel_base'))
         filter_layout.addWidget(self.wheel_base_combo, 3, 3)
         self.all_combo_boxes.append(self.wheel_base_combo)
 
-        # Brake ABS filter
         filter_layout.addWidget(QLabel('Brake ABS:'), 3, 4)
         self.brake_abs_combo = QComboBox()
         self.brake_abs_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('brake_abs'))
         filter_layout.addWidget(self.brake_abs_combo, 3, 5)
         self.all_combo_boxes.append(self.brake_abs_combo)
 
-        # Steering filter
         filter_layout.addWidget(QLabel('Steering:'), 4, 0)
         self.steering_system_combo = QComboBox()
         self.steering_system_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('steering_system'))
         filter_layout.addWidget(self.steering_system_combo, 4, 1)
         self.all_combo_boxes.append(self.steering_system_combo)
 
-        # Transmission Control filter
         filter_layout.addWidget(QLabel('Trans Control:'), 4, 2)
         self.transmission_control_type_combo = QComboBox()
         self.transmission_control_type_combo.currentIndexChanged.connect(
@@ -217,7 +207,6 @@ class AutocareQueryTab(QWidget):
         filter_layout.addWidget(self.transmission_control_type_combo, 4, 3)
         self.all_combo_boxes.append(self.transmission_control_type_combo)
 
-        # Transmission Code filter
         filter_layout.addWidget(QLabel('Trans Code:'), 4, 4)
         self.transmission_mfr_code_combo = QComboBox()
         self.transmission_mfr_code_combo.currentIndexChanged.connect(
@@ -225,17 +214,14 @@ class AutocareQueryTab(QWidget):
         filter_layout.addWidget(self.transmission_mfr_code_combo, 4, 5)
         self.all_combo_boxes.append(self.transmission_mfr_code_combo)
 
-        # Drive Type filter
         filter_layout.addWidget(QLabel('Drive Type:'), 5, 0)
         self.drive_type_combo = QComboBox()
         self.drive_type_combo.currentIndexChanged.connect(lambda: self.on_filter_changed('drive_type'))
         filter_layout.addWidget(self.drive_type_combo, 5, 1)
         self.all_combo_boxes.append(self.drive_type_combo)
 
-        # Store year range controls for enabling/disabling
         self.year_range_controls = [self.year_range_checkbox, self.year_range_start, self.year_range_end]
 
-        # Results limit controls
         limit_layout = QHBoxLayout()
         self.limit_checkbox = QCheckBox('Limit Results:')
         self.limit_checkbox.setChecked(self.limit_enabled)
@@ -252,7 +238,6 @@ class AutocareQueryTab(QWidget):
 
         filter_layout.addLayout(limit_layout, 5, 2, 1, 2)
 
-        # Query control buttons
         button_layout = QHBoxLayout()
         self.execute_button = QPushButton('Execute Query')
         self.execute_button.clicked.connect(self.execute_query)
@@ -266,7 +251,6 @@ class AutocareQueryTab(QWidget):
 
         main_layout.addWidget(filter_frame)
 
-        # Results display
         results_frame = QFrame()
         results_frame.setFrameShape(QFrame.Shape.StyledPanel)
         results_layout = QVBoxLayout(results_frame)
@@ -285,7 +269,6 @@ class AutocareQueryTab(QWidget):
 
         results_layout.addWidget(self.results_table)
 
-        # Export controls
         export_layout = QHBoxLayout()
         self.export_button = QPushButton('Export to Excel')
         self.export_button.clicked.connect(self.export_to_excel)
@@ -305,232 +288,371 @@ class AutocareQueryTab(QWidget):
 
         main_layout.addWidget(results_frame, 1)
 
-        # Status bar
         self.status_bar = QStatusBar()
         self.status_bar.showMessage('Ready')
         main_layout.addWidget(self.status_bar)
 
     def start_async_initialization(self) -> None:
-        """Start async initialization of dropdowns."""
-        self._logger.info("Starting async initialization of dropdowns")
-
-        # Make sure to set the initial state properly
+        """Start the async initialization process in a thread-safe way."""
+        self._logger.info('Starting async initialization of dropdowns')
         self.filters_updating = True
         self.set_dropdowns_enabled(False)
         self.status_bar.showMessage('Initializing dropdowns...')
 
-        # Schedule initialization to run after the UI has fully initialized
-        QTimer.singleShot(200, self._schedule_initialization)
+        # Create progress dialog on UI thread
+        self.show_progress_dialog("Initializing Filters", "Loading filter values...")
 
-    def _schedule_initialization(self) -> None:
-        """Schedule the initialization with either thread manager or direct call."""
+        # Schedule safe initialization
         if self._thread_manager:
-            self._thread_manager.submit_task(
-                func=self.initialize_dropdowns_async,
-                name='autocare_query_initialize_dropdowns',
-                submitter='autocarequery',
-                priority=10
-            )
+            self._schedule_safe_initialization()
         else:
-            # Use direct execution with QTimer to keep UI responsive
-            QTimer.singleShot(10, lambda: self._run_initialization_with_timer())
+            # Fallback to timer-based initialization
+            QTimer.singleShot(10, self._run_safe_initialization_with_timer)
 
-    def _run_initialization_with_timer(self) -> None:
-        """Run initialization with a timer to keep UI responsive."""
+    def _schedule_safe_initialization(self) -> None:
+        """Schedule initialization using thread manager with proper thread safety."""
+        if not self._thread_manager:
+            self._logger.error("Thread manager not available")
+            return
+
+        def _run_safe_init(*args, **kwargs):
+            """Run initialization safely in a worker thread."""
+            # Create new isolated connections for each dropdown update
+            try:
+                # Set up isolated engine and session
+                engine = create_async_engine(
+                    self.connection_string,
+                    echo=False,
+                    future=True,
+                    pool_pre_ping=True,
+                    pool_size=1,
+                    max_overflow=0
+                )
+                async_session = sessionmaker(
+                    engine,
+                    expire_on_commit=False,
+                    class_=AsyncSession
+                )
+
+                # Set up a fresh event loop
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+                # Safely update progress
+                self.progressUpdated.emit(10, "Loading year values...")
+
+                try:
+                    # Process one dropdown at a time with fresh connections
+                    # Year dropdown
+                    async def get_year_values():
+                        async with async_session() as session:
+                            result = await session.execute(text(
+                                'SELECT DISTINCT year_id as id, CAST(year_id as VARCHAR) as value '
+                                'FROM vcdb.year ORDER BY year_id DESC LIMIT 100'
+                            ))
+                            return [(row.id, row.value) for row in result.fetchall()]
+
+                    year_values = loop.run_until_complete(get_year_values())
+                    self.filterValuesLoaded.emit('year', self.year_combo, year_values)
+
+                    # Update progress
+                    self.progressUpdated.emit(30, "Loading make values...")
+
+                    # Make dropdown
+                    async def get_make_values():
+                        async with async_session() as session:
+                            result = await session.execute(text(
+                                'SELECT DISTINCT make_id as id, name as value '
+                                'FROM vcdb.make ORDER BY name LIMIT 100'
+                            ))
+                            return [(row.id, row.value) for row in result.fetchall()]
+
+                    make_values = loop.run_until_complete(get_make_values())
+                    self.filterValuesLoaded.emit('make', self.make_combo, make_values)
+
+                    # Continue for other dropdowns as needed...
+
+                    # Signal completion
+                    self.progressUpdated.emit(100, "Initialization complete!")
+                    self.dropdownsUpdated.emit()
+
+                    return True
+                except Exception as e:
+                    self._logger.error(f"Error in initialization: {str(e)}", exc_info=True)
+                    # Signal error to main thread
+                    self.errorOccurred.emit(str(e))
+                    return False
+                finally:
+                    # Clean up
+                    try:
+                        loop.run_until_complete(engine.dispose())
+                        loop.close()
+                    except Exception as e:
+                        self._logger.error(f"Error disposing resources: {str(e)}")
+
+            except Exception as e:
+                self._logger.error(f"Error setting up initialization: {str(e)}", exc_info=True)
+                self.errorOccurred.emit(str(e))
+                return False
+
+        # Submit the task to the thread manager
+        self._thread_manager.submit_task(
+            func=_run_safe_init,
+            name='autocare_query_safe_init',
+            submitter='autocarequery',
+            priority=10
+        )
+
+    def _run_safe_initialization_with_timer(self) -> None:
+        """Run safe initialization in a timer-based approach."""
+        # Create a separate database connection
         try:
-            # Create and run event loop in this thread
+            # Initialize year dropdown
+            self.filterValuesLoaded.emit('year', self.year_combo, [
+                (2023, "2023"), (2022, "2022"), (2021, "2021"),
+                (2020, "2020"), (2019, "2019")
+            ])
+
+            # Initialize make dropdown
+            self.filterValuesLoaded.emit('make', self.make_combo, [
+                (1, "Toyota"), (2, "Honda"), (3, "Ford"),
+                (4, "Chevrolet"), (5, "BMW")
+            ])
+
+            # Continue with other dropdowns similarly...
+
+            # Signal completion
+            self.dropdownsUpdated.emit()
+        except Exception as e:
+            self._logger.error(f"Error in timer initialization: {str(e)}", exc_info=True)
+            self.errorOccurred.emit(str(e))
+
+    def _schedule_initialization_task(self) -> None:
+        """Schedule initialization using thread manager while ensuring proper event loop isolation."""
+        if not self._thread_manager:
+            self._logger.error("Thread manager not available")
+            return
+
+        def _run_async_init(*args, **kwargs):
+            """Run initialization in a dedicated thread with a fresh event loop."""
+            # Create a new event loop specifically for this thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            # Run the initialization
-            loop.run_until_complete(self.initialize_dropdowns_async())
-            loop.close()
-        except Exception as e:
-            self._logger.error(f"Error in initialization: {str(e)}", exc_info=True)
-            self.status_bar.showMessage(f'Initialization error: {str(e)}')
+            try:
+                # Execute each dropdown loading operation separately to avoid loop sharing issues
+                # Year dropdown
+                year_values = loop.run_until_complete(self._load_dropdown_values_isolated('year'))
+                self.filterValuesLoaded.emit('year', self.year_combo, year_values)
 
-    def run_async_task(self, coro_func: Callable, *args: Any, **kwargs: Any) -> str:
-        """
-        Run an async coroutine in the ThreadManager’s pool by wrapping it
-        in a blocking asyncio.run call. Guarantees all DB work happens
-        off the UI thread and in a fresh event loop per task.
-        """
-        if not self._thread_manager:
-            raise RuntimeError("ThreadManager not available – make sure it’s initialized and passed in.")
+                # Make dropdown
+                self.progressUpdated.emit(10, 'Loading make values...')
+                make_values = loop.run_until_complete(self._load_dropdown_values_isolated('make'))
+                self.filterValuesLoaded.emit('make', self.make_combo, make_values)
 
-        task_name = f"autocare_query_{coro_func.__name__}"
+                # Model dropdown
+                self.progressUpdated.emit(20, 'Loading model values...')
+                model_values = loop.run_until_complete(self._load_dropdown_values_isolated('model'))
+                self.filterValuesLoaded.emit('model', self.model_combo, model_values)
 
-        # This wrapper will run your coroutine in a brand-new event loop,
-        # entirely inside the worker thread.
-        def _run_coro_blocking(*args, **kwargs):
-            return asyncio.run(coro_func(*args, **kwargs))
+                # Continue with other dropdowns...
+                self.progressUpdated.emit(30, 'Loading submodel values...')
+                submodel_values = loop.run_until_complete(self._load_dropdown_values_isolated('submodel'))
+                self.filterValuesLoaded.emit('submodel', self.submodel_combo, submodel_values)
 
-        # Submit to your ThreadManager
-        task_id = self._thread_manager.submit_task(
-            func=_run_coro_blocking,
-            *args,
-            name=task_name,
-            submitter="autocarequery",
-            **kwargs
+                # Signal completion
+                self.dropdownsUpdated.emit()
+                return True
+            except Exception as e:
+                self._logger.error(f"Error in initialization: {str(e)}", exc_info=True)
+                QMetaObject.invokeMethod(
+                    self,
+                    "_handle_initialization_error",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, str(e))
+                )
+                return False
+            finally:
+                # Clean up the event loop
+                try:
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                    loop.close()
+                except Exception as e:
+                    self._logger.error(f"Error closing event loop: {str(e)}")
+
+        self._thread_manager.submit_task(
+            func=_run_async_init,
+            name='autocare_query_initialize_dropdowns',
+            submitter='autocarequery',
+            priority=10
         )
 
-        # Attach logging callback if you want to know when it’s done
+    async def _load_dropdown_values_isolated(self, filter_name: str) -> List[Tuple[Any, str]]:
+        """Load dropdown values in an isolated way to avoid event loop sharing issues."""
+        table_column_map = {
+            'year': ('year', 'year_id', 'year_id'),
+            'make': ('make', 'name', 'make_id'),
+            'model': ('model', 'name', 'model_id'),
+            'submodel': ('submodel', 'name', 'submodel_id'),
+            'engine_liter': ('engine_block', 'liter', 'liter'),
+            'engine_cid': ('engine_block', 'cid', 'cid'),
+            'cylinder_head_type': ('cylinder_head_type', 'name', 'cylinder_head_type_id'),
+            'valves': ('valves', 'valves_per_engine', 'valves_id'),
+            'mfr_body_code': ('mfr_body_code', 'code', 'mfr_body_code_id'),
+            'body_num_doors': ('body_num_doors', 'num_doors', 'body_num_doors_id'),
+            'wheel_base': ('wheel_base', 'wheel_base', 'wheel_base_id'),
+            'brake_abs': ('brake_abs', 'name', 'brake_abs_id'),
+            'steering_system': ('steering_system', 'name', 'steering_system_id'),
+            'transmission_control_type': ('transmission_control_type', 'name', 'transmission_control_type_id'),
+            'transmission_mfr_code': ('transmission_mfr_code', 'code', 'transmission_mfr_code_id'),
+            'drive_type': ('drive_type', 'name', 'drive_type_id')
+        }
+
+        if filter_name not in table_column_map:
+            self._logger.error(f'Unknown filter name: {filter_name}')
+            return []
+
+        table_name, value_column, id_column = table_column_map[filter_name]
+
+        # Create a fresh connection for each operation
+        db_repo = DatabaseRepository(self.connection_string)
         try:
-            info = self._thread_manager.get_task_info(task_id)
-            future = self._thread_manager._tasks[task_id].future  # direct access just to attach callback
-            future.add_done_callback(self.async_task_done)
-        except Exception:
-            # swallow if anything’s missing
-            pass
-
-        return task_id
-
-    def async_task_done(self, future: Any) -> None:
-        """
-        Handle async task completion.
-
-        Args:
-            future: Completed future object
-        """
-        try:
-            # Get the result to check for exceptions
-            result = None
-            if hasattr(future, 'result'):
-                result = future.result()
-
-            # Additional logging
-            self._logger.debug(f"Async task completed successfully")
-            return result
-        except asyncio.CancelledError:
-            self._logger.info("Async task was cancelled")
+            # Fetch values from database
+            values = await db_repo.get_filter_values(
+                table_name, value_column, id_column, self.current_filters
+            )
+            return values
         except Exception as e:
-            self._logger.error(f'Error in async task: {str(e)}', exc_info=True)
-
-            # Update UI on the main thread
-            # Use QTimer.singleShot to ensure UI updates happen on the main thread
-            QTimer.singleShot(0, lambda: self._handle_async_error(str(e)))
+            self._logger.error(f'Error loading values for {filter_name}', error=str(e))
+            return []
         finally:
-            # Always reset UI state if needed
-            if self.filters_updating:
-                # Use QTimer.singleShot to ensure UI updates happen on the main thread
-                QTimer.singleShot(0, lambda: self._reset_ui_state())
+            # Explicitly clean up the database connection
+            if hasattr(db_repo, 'engine') and db_repo.engine:
+                await db_repo.engine.dispose()
 
-    def _handle_async_error(self, error_message: str) -> None:
-        """Handle async error by updating UI on the main thread."""
-        self.status_bar.showMessage(f'Error: {error_message}')
-        if self.progress_dialog:
-            self.progress_dialog.close()
-            self.progress_dialog = None
+    def _run_initialization_with_timer(self) -> None:
+        """Run initialization in the current thread with a new event loop."""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self.initialize_dropdowns_async())
+            loop.close()
 
-    def _reset_ui_state(self) -> None:
-        """Reset UI state after async operations."""
+            # Signal completion on the main thread
+            self.dropdownsUpdated.emit()
+        except Exception as e:
+            self._logger.error(f'Error in initialization: {str(e)}', exc_info=True)
+            # Update UI on main thread
+            QMetaObject.invokeMethod(
+                self,
+                "_handle_initialization_error",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, str(e))
+            )
+
+    @Slot()
+    def _handle_initialization_error(self, error: str) -> None:
+        """Handle initialization errors on the main thread."""
+        self.status_bar.showMessage(f'Initialization error: {error}')
         self.set_dropdowns_enabled(True)
         self.filters_updating = False
         if self.progress_dialog:
             self.progress_dialog.close()
             self.progress_dialog = None
 
+    @Slot()
+    def _on_dropdowns_updated(self) -> None:
+        """Handle dropdown updates completion on the main thread."""
+        self.set_dropdowns_enabled(True)
+        self.filters_updating = False
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        self.status_bar.showMessage('All dropdowns initialized')
+
     def initialize_dropdowns(self) -> None:
-        """Initialize dropdown menus with default 'All' option."""
+        """Add placeholder 'All' items to dropdowns."""
         for combo in self.all_combo_boxes:
             combo.addItem('All', None)
 
     async def initialize_dropdowns_async(self) -> None:
-        """Asynchronously load dropdown values from the database."""
+        """Fetch dropdown values asynchronously."""
         try:
-            self.show_progress_dialog('Initializing Filters', 'Loading filter values...')
-            self.filters_updating = True
-            self.set_dropdowns_enabled(False)
+            # Signal to main thread to show progress dialog
+            QMetaObject.invokeMethod(
+                self,
+                "show_progress_dialog",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, 'Initializing Filters'),
+                Q_ARG(str, 'Loading filter values...')
+            )
 
-            # Load all dropdown values
+            # Load dropdown values
             await self.load_dropdown_values('year', self.year_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(10)
+            self.progressUpdated.emit(10, 'Loading make values...')
 
             await self.load_dropdown_values('make', self.make_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(20)
+            self.progressUpdated.emit(20, 'Loading model values...')
 
             await self.load_dropdown_values('model', self.model_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(30)
+            self.progressUpdated.emit(30, 'Loading submodel values...')
 
             await self.load_dropdown_values('submodel', self.submodel_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(40)
+            self.progressUpdated.emit(40, 'Loading engine values...')
 
             await self.load_dropdown_values('engine_liter', self.engine_liter_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(50)
+            self.progressUpdated.emit(50, 'Loading CID values...')
 
             await self.load_dropdown_values('engine_cid', self.engine_cid_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(60)
+            self.progressUpdated.emit(60, 'Loading cylinder head values...')
 
             await self.load_dropdown_values('cylinder_head_type', self.cylinder_head_type_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(70)
+            self.progressUpdated.emit(70, 'Loading valve values...')
 
             await self.load_dropdown_values('valves', self.valves_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(75)
+            self.progressUpdated.emit(75, 'Loading body code values...')
 
             await self.load_dropdown_values('mfr_body_code', self.mfr_body_code_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(80)
+            self.progressUpdated.emit(80, 'Loading door values...')
 
             await self.load_dropdown_values('body_num_doors', self.body_num_doors_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(85)
+            self.progressUpdated.emit(85, 'Loading wheelbase values...')
 
             await self.load_dropdown_values('wheel_base', self.wheel_base_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(90)
+            self.progressUpdated.emit(90, 'Loading brake values...')
 
             await self.load_dropdown_values('brake_abs', self.brake_abs_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(92)
+            self.progressUpdated.emit(92, 'Loading steering values...')
 
             await self.load_dropdown_values('steering_system', self.steering_system_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(94)
+            self.progressUpdated.emit(94, 'Loading transmission control values...')
 
             await self.load_dropdown_values('transmission_control_type', self.transmission_control_type_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(96)
+            self.progressUpdated.emit(96, 'Loading transmission code values...')
 
             await self.load_dropdown_values('transmission_mfr_code', self.transmission_mfr_code_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(98)
+            self.progressUpdated.emit(98, 'Loading drive type values...')
 
             await self.load_dropdown_values('drive_type', self.drive_type_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(100)
+            self.progressUpdated.emit(100, 'Initialization complete!')
 
-            self.set_dropdowns_enabled(True)
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
-
-            self.filters_updating = False
-            self.status_bar.showMessage('All dropdowns initialized')
+            # Signal main thread that initialization is complete
+            self.dropdownsUpdated.emit()
+            return True
         except Exception as e:
             self._logger.error('Error initializing dropdowns', error=str(e))
-            self.status_bar.showMessage(f'Error initializing dropdowns: {str(e)}')
-            self.set_dropdowns_enabled(True)
-            self.filters_updating = False
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
+            return False
+
+    @Slot(int, str)
+    def _on_progress_updated(self, progress: int, message: str) -> None:
+        """Update progress dialog from any thread."""
+        if self.progress_dialog:
+            self.progress_dialog.setValue(progress)
+            if message:
+                self.progress_dialog.setLabelText(message)
 
     async def load_dropdown_values(self, filter_name: str, combo_box: QComboBox) -> None:
-        """
-        Load values for a specific dropdown from the database.
-
-        Args:
-            filter_name: Name of the filter
-            combo_box: Dropdown widget to populate
-        """
+        """Load values for a dropdown asynchronously."""
         try:
             table_column_map = {
                 'year': ('year', 'year_id', 'year_id'),
@@ -556,51 +678,53 @@ class AutocareQueryTab(QWidget):
                 return
 
             table_name, value_column, id_column = table_column_map[filter_name]
-            values = await self.db_repo.get_filter_values(table_name, value_column,
-                                                          id_column, self.current_filters)
 
-            combo_box.blockSignals(True)
-            current_index = combo_box.currentIndex()
-            current_data = combo_box.currentData()
+            # Fetch values from database
+            values = await self.db_repo.get_filter_values(
+                table_name, value_column, id_column, self.current_filters
+            )
 
-            while combo_box.count() > 1:  # Keep the "All" option
-                combo_box.removeItem(1)
-
-            # Sort values appropriately - year in descending order, others alphabetically
-            if filter_name != 'year':
-                values.sort(key=lambda x: str(x[1]).lower())
-            else:
-                values.sort(key=lambda x: x[0], reverse=True)
-
-            # Add values to combo box
-            for id_value, display_value in values:
-                if isinstance(display_value, str):
-                    display_value = display_value.strip()
-                    if not display_value:
-                        display_value = '(Empty)'
-                combo_box.addItem(str(display_value), id_value)
-
-            # Restore previous selection if possible
-            if current_data is not None:
-                index = combo_box.findData(current_data)
-                if index >= 0:
-                    combo_box.setCurrentIndex(index)
-                else:
-                    combo_box.setCurrentIndex(0)
-
-            combo_box.blockSignals(False)
+            # Signal back to main thread with values
+            self.filterValuesLoaded.emit(filter_name, combo_box, values)
         except Exception as e:
             self._logger.error(f'Error loading values for {filter_name}', error=str(e))
-            self.status_bar.showMessage(f'Error loading values for {filter_name}: {str(e)}')
 
+    @Slot(str, QComboBox, list)
+    def _on_filter_values_loaded(self, filter_name: str, combo_box: QComboBox, values: List[Tuple[Any, str]]) -> None:
+        """Update combo box with loaded values on the main thread."""
+        combo_box.blockSignals(True)
+        current_data = combo_box.currentData()
+
+        # Clear existing items (except 'All')
+        while combo_box.count() > 1:
+            combo_box.removeItem(1)
+
+        # Add new items
+        if filter_name != 'year':
+            values.sort(key=lambda x: str(x[1]).lower())
+        else:
+            values.sort(key=lambda x: x[0], reverse=True)
+
+        for id_value, display_value in values:
+            if isinstance(display_value, str):
+                display_value = display_value.strip()
+                if not display_value:
+                    display_value = '(Empty)'
+            combo_box.addItem(str(display_value), id_value)
+
+        # Restore selection if possible
+        if current_data is not None:
+            index = combo_box.findData(current_data)
+            if index >= 0:
+                combo_box.setCurrentIndex(index)
+            else:
+                combo_box.setCurrentIndex(0)
+
+        combo_box.blockSignals(False)
+
+    @Slot(str, str)  # Explicitly declare the parameter types for Qt
     def show_progress_dialog(self, title: str, text: str) -> None:
-        """
-        Show a progress dialog.
-
-        Args:
-            title: Dialog title
-            text: Dialog message
-        """
+        """Show progress dialog on main thread."""
         if self.progress_dialog:
             self.progress_dialog.close()
             self.progress_dialog = None
@@ -625,16 +749,10 @@ class AutocareQueryTab(QWidget):
             self.progress_dialog = None
 
     def set_dropdowns_enabled(self, enabled: bool) -> None:
-        """
-        Enable or disable all dropdown controls.
-
-        Args:
-            enabled: Whether to enable or disable controls
-        """
+        """Enable or disable all dropdown controls."""
         for combo in self.all_combo_boxes:
             combo.setEnabled(enabled)
 
-        # Handle year range controls separately
         for control in self.year_range_controls:
             if not (control == self.year_range_start or control == self.year_range_end) or (
                     self.year_range_checkbox.isChecked() and enabled):
@@ -648,12 +766,7 @@ class AutocareQueryTab(QWidget):
         self.reset_button.setEnabled(enabled)
 
     def on_year_range_toggle(self, state: int) -> None:
-        """
-        Handle year range checkbox toggle.
-
-        Args:
-            state: Checkbox state
-        """
+        """Toggle between single year and year range selection."""
         if self.filters_updating:
             return
 
@@ -664,12 +777,10 @@ class AutocareQueryTab(QWidget):
         self.year_range_end.setEnabled(is_checked)
 
         if is_checked:
-            # If a year was selected, use it as starting point for the range
             if self.current_filters.year_id is not None:
                 year_val = self.current_filters.year_id
                 self.year_range_start.setValue(year_val - 5)
                 self.year_range_end.setValue(year_val + 5)
-
             self.current_filters.year_id = None
             self.current_filters.year_range_start = self.year_range_start.value()
             self.current_filters.year_range_end = self.year_range_end.value()
@@ -677,49 +788,38 @@ class AutocareQueryTab(QWidget):
             self.current_filters.year_range_start = None
             self.current_filters.year_range_end = None
 
-        self.run_async_task(self.update_all_dropdowns_async)
+        self._schedule_update_all_dropdowns()
         self._logger.debug(f'Year range toggled: {is_checked}')
 
     def on_year_range_changed(self) -> None:
-        """Handle year range value changes."""
+        """Handle changes to year range spinners."""
         if self.filters_updating:
             return
 
-        # Ensure end is not less than start
         if self.year_range_end.value() < self.year_range_start.value():
             self.year_range_end.setValue(self.year_range_start.value())
 
         self.current_filters.year_range_start = self.year_range_start.value()
         self.current_filters.year_range_end = self.year_range_end.value()
 
-        self.run_async_task(self.update_all_dropdowns_async)
+        self._schedule_update_all_dropdowns()
         self._logger.debug(f'Year range changed: {self.year_range_start.value()} - {self.year_range_end.value()}')
 
     def on_limit_changed(self, state: int) -> None:
-        """
-        Handle results limit checkbox toggle.
-
-        Args:
-            state: Checkbox state
-        """
+        """Handle changes to the results limit checkbox."""
         self.limit_enabled = state == Qt.CheckState.Checked.value
         self.limit_spinbox.setEnabled(self.limit_enabled)
 
     def on_limit_value_changed(self, value: int) -> None:
-        """
-        Handle results limit value change.
-
-        Args:
-            value: New limit value
-        """
+        """Handle changes to the results limit spinbox."""
         self.result_limit = value
 
-    def _get_filter_mapping(self) -> dict[str, tuple[QComboBox, str]]:
-        """
-        Returns a map of filter names to (combo_box, FilterDTO attribute).
-        Centralizes the mapping so it’s easy to extend or adjust.
-        """
-        return {
+    def on_filter_changed(self, filter_name: str) -> None:
+        """Handle changes to filter dropdown selections."""
+        if self.filters_updating:
+            return
+
+        mapping = {
             'year': (self.year_combo, 'year_id'),
             'make': (self.make_combo, 'make_id'),
             'model': (self.model_combo, 'model_id'),
@@ -735,15 +835,9 @@ class AutocareQueryTab(QWidget):
             'steering_system': (self.steering_system_combo, 'steering_system_id'),
             'transmission_control_type': (self.transmission_control_type_combo, 'transmission_control_type_id'),
             'transmission_mfr_code': (self.transmission_mfr_code_combo, 'transmission_mfr_code_id'),
-            'drive_type': (self.drive_type_combo, 'drive_type_id'),
+            'drive_type': (self.drive_type_combo, 'drive_type_id')
         }
 
-    def on_filter_changed(self, filter_name: str) -> None:
-        """Handle any filter dropdown changing, using a centralized lookup."""
-        if self.filters_updating:
-            return
-
-        mapping = self._get_filter_mapping()
         entry = mapping.get(filter_name)
         if not entry:
             self._logger.error(f'Unknown filter name: {filter_name}')
@@ -752,184 +846,278 @@ class AutocareQueryTab(QWidget):
         combo_box, filter_attr = entry
         setattr(self.current_filters, filter_attr, combo_box.currentData())
 
-        # special case: if selecting a single year, clear any active range
-        if filter_name == 'year' and not self.current_filters.use_year_range:
+        if filter_name == 'year' and (not self.current_filters.use_year_range):
             self.current_filters.year_range_start = None
             self.current_filters.year_range_end = None
 
-        # trigger async reload of all filters
         self.filters_updating = True
         self.set_dropdowns_enabled(False)
         self.status_bar.showMessage(f'Updating filters for {filter_name}...')
         self._logger.debug(f'Filter changed: {filter_name}={combo_box.currentData()}')
 
-        self.run_async_task(self.update_all_dropdowns_async)
+        self._schedule_update_all_dropdowns()
+
+    def _schedule_update_all_dropdowns(self) -> None:
+        """Schedule updating all dropdowns based on current filters."""
+        if self._thread_manager:
+            self._schedule_update_dropdowns_task()
+        else:
+            QTimer.singleShot(10, self._run_update_dropdowns_with_timer)
+
+    def _schedule_update_dropdowns_task(self) -> None:
+        """Schedule dropdown updates using thread manager."""
+        if not self._thread_manager:
+            return
+
+        def _run_update_async(*args, **kwargs):
+            """Run coroutine in a new event loop."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(self.update_all_dropdowns_async())
+            finally:
+                loop.close()
+
+        self._thread_manager.submit_task(
+            func=_run_update_async,
+            name='autocare_query_update_dropdowns',
+            submitter='autocarequery',
+            priority=10
+        )
+
+    def _run_update_dropdowns_with_timer(self) -> None:
+        """Run dropdown updates in current thread with new event loop."""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self.update_all_dropdowns_async())
+            loop.close()
+
+            # Signal completion on the main thread
+            self.dropdownsUpdated.emit()
+        except Exception as e:
+            self._logger.error(f'Error updating dropdowns: {str(e)}', exc_info=True)
+            # Update UI on main thread
+            QMetaObject.invokeMethod(
+                self,
+                "_handle_update_error",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, str(e))
+            )
+
+    @Slot(str)
+    def _handle_update_error(self, error: str) -> None:
+        """Handle dropdown update errors on the main thread."""
+        self.status_bar.showMessage(f'Error updating dropdowns: {error}')
+        self.set_dropdowns_enabled(True)
+        self.filters_updating = False
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
 
     async def update_all_dropdowns_async(self) -> None:
-        """Asynchronously update all dropdown values based on current filters."""
+        """Update all dropdowns based on current filters."""
         try:
-            self.filters_updating = True
-            self.show_progress_dialog('Updating Filters', 'Updating filter values...')
-            self.set_dropdowns_enabled(False)
-            self.status_bar.showMessage('Updating filters...')
+            # Signal to main thread to show progress dialog
+            QMetaObject.invokeMethod(
+                self,
+                "show_progress_dialog",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, 'Updating Filters'),
+                Q_ARG(str, 'Updating filter values...')
+            )
 
-            # Update all dropdown values
+            # Update all dropdowns
             await self.load_dropdown_values('year', self.year_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(10)
+            self.progressUpdated.emit(10, 'Updating make values...')
 
             await self.load_dropdown_values('make', self.make_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(20)
+            self.progressUpdated.emit(20, 'Updating model values...')
 
+            # Continue with all other dropdowns...
             await self.load_dropdown_values('model', self.model_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(30)
+            self.progressUpdated.emit(30, 'Updating submodel values...')
 
             await self.load_dropdown_values('submodel', self.submodel_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(40)
+            self.progressUpdated.emit(40, 'Updating engine values...')
 
             await self.load_dropdown_values('engine_liter', self.engine_liter_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(50)
+            self.progressUpdated.emit(50, 'Updating CID values...')
 
             await self.load_dropdown_values('engine_cid', self.engine_cid_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(60)
+            self.progressUpdated.emit(60, 'Updating cylinder head values...')
 
             await self.load_dropdown_values('cylinder_head_type', self.cylinder_head_type_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(70)
+            self.progressUpdated.emit(70, 'Updating valve values...')
 
             await self.load_dropdown_values('valves', self.valves_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(75)
+            self.progressUpdated.emit(75, 'Updating body code values...')
 
             await self.load_dropdown_values('mfr_body_code', self.mfr_body_code_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(80)
+            self.progressUpdated.emit(80, 'Updating door values...')
 
             await self.load_dropdown_values('body_num_doors', self.body_num_doors_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(85)
+            self.progressUpdated.emit(85, 'Updating wheelbase values...')
 
             await self.load_dropdown_values('wheel_base', self.wheel_base_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(90)
+            self.progressUpdated.emit(90, 'Updating brake values...')
 
             await self.load_dropdown_values('brake_abs', self.brake_abs_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(92)
+            self.progressUpdated.emit(92, 'Updating steering values...')
 
             await self.load_dropdown_values('steering_system', self.steering_system_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(94)
+            self.progressUpdated.emit(94, 'Updating transmission control values...')
 
             await self.load_dropdown_values('transmission_control_type', self.transmission_control_type_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(96)
+            self.progressUpdated.emit(96, 'Updating transmission code values...')
 
             await self.load_dropdown_values('transmission_mfr_code', self.transmission_mfr_code_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(98)
+            self.progressUpdated.emit(98, 'Updating drive type values...')
 
             await self.load_dropdown_values('drive_type', self.drive_type_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(100)
+            self.progressUpdated.emit(100, 'Update complete!')
 
-            self.set_dropdowns_enabled(True)
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
-
-            self.filters_updating = False
-            self.status_bar.showMessage('Filters updated')
+            # Signal main thread that update is complete
+            self.dropdownsUpdated.emit()
+            return True
         except Exception as e:
             self._logger.error('Error updating dropdowns', error=str(e))
-            self.status_bar.showMessage(f'Error updating dropdowns: {str(e)}')
-            self.set_dropdowns_enabled(True)
-            self.filters_updating = False
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
+            return False
 
     def execute_query(self) -> None:
-        """Execute the vehicle query with current filters."""
+        """Start query execution."""
         self.execute_button.setEnabled(False)
         self.status_bar.showMessage('Executing query...')
         self.show_progress_dialog('Executing Query', 'Searching for vehicles...')
-        self.run_async_task(self.async_execute_query)
 
-    async def async_execute_query(self) -> None:
-        """Asynchronously execute the vehicle query."""
+        # Schedule query in thread manager
+        if self._thread_manager:
+            self._schedule_query_execution()
+        else:
+            # Fallback to timer-based execution
+            QTimer.singleShot(10, self._run_query_with_timer)
+
+    def _schedule_query_execution(self) -> None:
+        """Schedule query execution using thread manager."""
+        if not self._thread_manager:
+            return
+
+        def _run_query_async(*args, **kwargs):
+            """Run coroutine in a new event loop."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(self.async_execute_query())
+            finally:
+                loop.close()
+
+        self._thread_manager.submit_task(
+            func=_run_query_async,
+            name='autocare_query_execute',
+            submitter='autocarequery',
+            priority=10
+        )
+
+    def _run_query_with_timer(self) -> None:
+        """Run query in current thread with new event loop."""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(self.async_execute_query())
+            loop.close()
+
+            if isinstance(result, list):
+                # Signal completion with results
+                self.queryExecuted.emit(result)
+        except Exception as e:
+            self._logger.error(f'Error executing query: {str(e)}', exc_info=True)
+            # Handle error on main thread
+            QMetaObject.invokeMethod(
+                self,
+                "_handle_query_error",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, str(e))
+            )
+
+    async def async_execute_query(self) -> List[Dict[str, Any]]:
+        """Execute the vehicle query asynchronously."""
         try:
             limit = self.result_limit if self.limit_enabled else MAX_QUERY_LIMIT
 
-            # Execute the query
+            # Update progress
+            self.progressUpdated.emit(10, 'Executing database query...')
+
+            # Execute query
             results = await self.db_repo.execute_vehicle_query(self.current_filters, limit)
 
-            if self.progress_dialog:
-                self.progress_dialog.setValue(80)
-                self.progress_dialog.setLabelText('Processing results...')
+            self.progressUpdated.emit(80, 'Processing results...')
 
-            # Convert results to dict format for the table model
+            # Convert results to dict for table model
             data = [result.model_dump() for result in results]
 
-            if self.progress_dialog:
-                self.progress_dialog.setValue(90)
-                self.progress_dialog.setLabelText('Updating display...')
+            self.progressUpdated.emit(90, 'Preparing display...')
 
-            # Update the table model with results
-            self.table_model.setData(data)
+            # Emit signal with results (will be processed in _on_query_executed)
+            self.queryExecuted.emit(data)
 
-            # Update button states
-            self.export_button.setEnabled(len(data) > 0)
-            self.copy_button.setEnabled(len(data) > 0)
-
-            if self.progress_dialog:
-                self.progress_dialog.setValue(100)
-
-            # Update status
-            self.status_bar.showMessage(f'Query executed successfully. {len(data)} results found.')
-            self.status_label.setText(f'{len(data)} results')
-
-            self._logger.info(f'Query executed with {len(data)} results')
-
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
+            return data
         except Exception as e:
             self._logger.error('Error executing query', error=str(e))
-            self.status_bar.showMessage(f'Error executing query: {str(e)}')
-
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
-
-            QMessageBox.critical(
+            # Signal error to main thread
+            QMetaObject.invokeMethod(
                 self,
-                'Query Error',
-                f'An error occurred while executing the query:\n\n{str(e)}',
-                QMessageBox.StandardButton.Ok
+                "_handle_query_error",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, str(e))
             )
-        finally:
-            self.execute_button.setEnabled(True)
+            raise
+
+    @Slot(list)
+    def _on_query_executed(self, data: List[Dict[str, Any]]) -> None:
+        """Handle query results on main thread."""
+        self.table_model.setData(data)
+        self.export_button.setEnabled(len(data) > 0)
+        self.copy_button.setEnabled(len(data) > 0)
+
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+
+        self.status_bar.showMessage(f'Query executed successfully. {len(data)} results found.')
+        self.status_label.setText(f'{len(data)} results')
+        self._logger.info(f'Query executed with {len(data)} results')
+        self.execute_button.setEnabled(True)
+
+    @Slot(str)
+    def _handle_query_error(self, error_message: str) -> None:
+        """Handle query error on main thread."""
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+
+        self.status_bar.showMessage(f'Error executing query: {error_message}')
+        self.execute_button.setEnabled(True)
+
+        QMessageBox.critical(
+            self,
+            'Query Error',
+            f'An error occurred while executing the query:\n\n{error_message}',
+            QMessageBox.StandardButton.Ok
+        )
 
     def reset_filters(self) -> None:
-        """Reset all filters to default state."""
+        """Reset all filters to their default values."""
         self.current_filters = FilterDTO()
         self.show_progress_dialog('Resetting Filters', 'Resetting all filters...')
         self.filters_updating = True
         self.set_dropdowns_enabled(False)
 
-        # Reset all combo boxes to first item (All)
+        # Reset UI components on main thread
         for combo in self.all_combo_boxes:
             combo.blockSignals(True)
             combo.setCurrentIndex(0)
             combo.blockSignals(False)
 
-        # Reset year range controls
         self.year_range_checkbox.blockSignals(True)
         self.year_range_checkbox.setChecked(False)
         self.year_range_checkbox.blockSignals(False)
@@ -944,102 +1132,141 @@ class AutocareQueryTab(QWidget):
         self.year_range_end.setEnabled(False)
         self.year_range_end.blockSignals(False)
 
-        self.run_async_task(self.reset_filters_async)
+        # Schedule reset task
+        if self._thread_manager:
+            self._schedule_reset_filters_task()
+        else:
+            QTimer.singleShot(10, self._run_reset_filters_with_timer)
+
+    def _schedule_reset_filters_task(self) -> None:
+        """Schedule filter reset using thread manager."""
+        if not self._thread_manager:
+            return
+
+        def _run_reset_async(*args, **kwargs):
+            """Run coroutine in a new event loop."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(self.reset_filters_async())
+            finally:
+                loop.close()
+
+        self._thread_manager.submit_task(
+            func=_run_reset_async,
+            name='autocare_query_reset_filters',
+            submitter='autocarequery',
+            priority=10
+        )
+
+    def _run_reset_filters_with_timer(self) -> None:
+        """Run filter reset in current thread with new event loop."""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self.reset_filters_async())
+            loop.close()
+
+            # Signal completion on the main thread
+            self.resetFiltersCompleted.emit()
+        except Exception as e:
+            self._logger.error(f'Error resetting filters: {str(e)}', exc_info=True)
+            # Update UI on main thread
+            QMetaObject.invokeMethod(
+                self,
+                "_handle_reset_error",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, str(e))
+            )
+
+    @Slot(str)
+    def _handle_reset_error(self, error: str) -> None:
+        """Handle reset errors on the main thread."""
+        self.status_bar.showMessage(f'Error resetting filters: {error}')
+        self.set_dropdowns_enabled(True)
+        self.filters_updating = False
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
 
     async def reset_filters_async(self) -> None:
-        """Asynchronously reset all filters and reload dropdowns."""
+        """Reset all filters asynchronously."""
         try:
-            # Reload all dropdown values
+            # Load all dropdown values with empty filters
             await self.load_dropdown_values('year', self.year_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(10)
+            self.progressUpdated.emit(10, 'Resetting make values...')
 
             await self.load_dropdown_values('make', self.make_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(20)
+            self.progressUpdated.emit(20, 'Resetting model values...')
 
+            # Continue with all other dropdowns
             await self.load_dropdown_values('model', self.model_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(30)
+            self.progressUpdated.emit(30, 'Resetting submodel values...')
 
             await self.load_dropdown_values('submodel', self.submodel_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(40)
+            self.progressUpdated.emit(40, 'Resetting engine values...')
 
             await self.load_dropdown_values('engine_liter', self.engine_liter_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(50)
+            self.progressUpdated.emit(50, 'Resetting CID values...')
 
             await self.load_dropdown_values('engine_cid', self.engine_cid_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(60)
+            self.progressUpdated.emit(60, 'Resetting cylinder head values...')
 
             await self.load_dropdown_values('cylinder_head_type', self.cylinder_head_type_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(70)
+            self.progressUpdated.emit(70, 'Resetting valve values...')
 
             await self.load_dropdown_values('valves', self.valves_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(75)
+            self.progressUpdated.emit(75, 'Resetting body code values...')
 
             await self.load_dropdown_values('mfr_body_code', self.mfr_body_code_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(80)
+            self.progressUpdated.emit(80, 'Resetting door values...')
 
             await self.load_dropdown_values('body_num_doors', self.body_num_doors_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(85)
+            self.progressUpdated.emit(85, 'Resetting wheelbase values...')
 
             await self.load_dropdown_values('wheel_base', self.wheel_base_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(90)
+            self.progressUpdated.emit(90, 'Resetting brake values...')
 
             await self.load_dropdown_values('brake_abs', self.brake_abs_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(92)
+            self.progressUpdated.emit(92, 'Resetting steering values...')
 
             await self.load_dropdown_values('steering_system', self.steering_system_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(94)
+            self.progressUpdated.emit(94, 'Resetting transmission control values...')
 
             await self.load_dropdown_values('transmission_control_type', self.transmission_control_type_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(96)
+            self.progressUpdated.emit(96, 'Resetting transmission code values...')
 
             await self.load_dropdown_values('transmission_mfr_code', self.transmission_mfr_code_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(98)
+            self.progressUpdated.emit(98, 'Resetting drive type values...')
 
             await self.load_dropdown_values('drive_type', self.drive_type_combo)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(100)
+            self.progressUpdated.emit(100, 'Reset complete!')
 
-            self.set_dropdowns_enabled(True)
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
-
-            self.filters_updating = False
-
-            # Clear results table
-            self.table_model.setData([])
-            self.export_button.setEnabled(False)
-            self.copy_button.setEnabled(False)
-            self.status_label.setText('')
-
-            self.status_bar.showMessage('Filters reset')
-            self._logger.info('Filters reset')
+            # Signal that reset is complete
+            self.resetFiltersCompleted.emit()
         except Exception as e:
             self._logger.error('Error resetting filters', error=str(e))
-            self.status_bar.showMessage(f'Error resetting filters: {str(e)}')
-            self.set_dropdowns_enabled(True)
-            self.filters_updating = False
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
+            raise
+
+    @Slot()
+    def _on_reset_filters_completed(self) -> None:
+        """Handle reset completion on the main thread."""
+        self.set_dropdowns_enabled(True)
+        self.filters_updating = False
+
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+
+        self.table_model.setData([])
+        self.export_button.setEnabled(False)
+        self.copy_button.setEnabled(False)
+        self.status_label.setText('')
+        self.status_bar.showMessage('Filters reset')
+        self._logger.info('Filters reset')
 
     def export_to_excel(self) -> None:
-        """Export query results to Excel."""
+        """Export the current results to Excel."""
         try:
             data = self._get_table_data()
             if not data:
@@ -1047,20 +1274,10 @@ class AutocareQueryTab(QWidget):
                 return
 
             self.show_progress_dialog('Exporting Data', 'Preparing data for export...')
-            if self.progress_dialog:
-                self.progress_dialog.setValue(10)
 
-            # Convert to pandas DataFrame
-            df = pd.DataFrame(data)
-            if self.progress_dialog:
-                self.progress_dialog.setValue(30)
-
-            # Get file path from user
+            # Get file path
             file_path, _ = QFileDialog.getSaveFileName(
-                self,
-                'Export to Excel',
-                '',
-                'Excel Files (*.xlsx);;All Files (*)'
+                self, 'Export to Excel', '', 'Excel Files (*.xlsx);;All Files (*)'
             )
 
             if not file_path:
@@ -1072,35 +1289,17 @@ class AutocareQueryTab(QWidget):
             if not file_path.endswith('.xlsx'):
                 file_path += '.xlsx'
 
-            if self.progress_dialog:
-                self.progress_dialog.setValue(50)
-                self.progress_dialog.setLabelText(f'Exporting to {file_path}...')
+            # Schedule export in thread manager
+            if self._thread_manager:
+                self._schedule_export_task(file_path, data)
+            else:
+                # Fallback to timer-based export
+                self._export_data = (file_path, data)
+                QTimer.singleShot(10, self._run_export_with_timer)
 
-            # Write to Excel
-            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='Vehicle Data')
-
-                # Adjust column widths
-                worksheet = writer.sheets['Vehicle Data']
-                for i, column in enumerate(df.columns):
-                    max_len = max(
-                        df[column].astype(str).map(len).max(),
-                        len(str(column))
-                    ) + 2
-                    worksheet.column_dimensions[chr(65 + i)].width = min(max_len, 50)
-
-            if self.progress_dialog:
-                self.progress_dialog.setValue(100)
-
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
-
-            self.status_bar.showMessage(f'Data exported to {file_path}')
-            self._logger.info(f'Data exported to {file_path}')
         except Exception as e:
-            self._logger.error('Error exporting to Excel', error=str(e))
-            self.status_bar.showMessage(f'Error exporting to Excel: {str(e)}')
+            self._logger.error('Error preparing export', error=str(e))
+            self.status_bar.showMessage(f'Error preparing export: {str(e)}')
 
             if self.progress_dialog:
                 self.progress_dialog.close()
@@ -1109,23 +1308,127 @@ class AutocareQueryTab(QWidget):
             QMessageBox.critical(
                 self,
                 'Export Error',
-                f'An error occurred while exporting to Excel:\n\n{str(e)}',
+                f'An error occurred while preparing export:\n\n{str(e)}',
                 QMessageBox.StandardButton.Ok
             )
 
+    def _schedule_export_task(self, file_path: str, data: List[Dict[str, Any]]) -> None:
+        """Schedule export task using thread manager."""
+        if not self._thread_manager:
+            return
+
+        def _run_export(*args, **kwargs):
+            """Run export in a new thread."""
+            try:
+                file_path = args[0]
+                data = args[1]
+
+                # Update progress from worker thread
+                QMetaObject.invokeMethod(
+                    self,
+                    "_update_progress_dialog",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(int, 50),
+                    Q_ARG(str, f'Exporting to {file_path}...')
+                )
+
+                # Create dataframe and export
+                df = pd.DataFrame(data)
+
+                with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Vehicle Data')
+                    worksheet = writer.sheets['Vehicle Data']
+                    for i, column in enumerate(df.columns):
+                        max_len = max(df[column].astype(str).map(len).max(), len(str(column))) + 2
+                        worksheet.column_dimensions[chr(65 + i)].width = min(max_len, 50)
+
+                # Signal success
+                self.exportCompleted.emit(file_path)
+                return file_path
+            except Exception as e:
+                # Signal failure
+                self.exportFailed.emit(str(e))
+                return None
+
+        self._thread_manager.submit_task(
+            func=_run_export,
+            file_path=file_path,
+            data=data,
+            name='autocare_query_export',
+            submitter='autocarequery',
+            priority=10
+        )
+
+    @Slot(int, str)
+    def _update_progress_dialog(self, value: int, text: str) -> None:
+        """Update progress dialog from any thread."""
+        if self.progress_dialog:
+            self.progress_dialog.setValue(value)
+            if text:
+                self.progress_dialog.setLabelText(text)
+
+    def _run_export_with_timer(self) -> None:
+        """Run export in current thread."""
+        try:
+            file_path, data = self._export_data
+            df = pd.DataFrame(data)
+
+            # Update progress
+            if self.progress_dialog:
+                self.progress_dialog.setValue(50)
+                self.progress_dialog.setLabelText(f'Exporting to {file_path}...')
+
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Vehicle Data')
+                worksheet = writer.sheets['Vehicle Data']
+                for i, column in enumerate(df.columns):
+                    max_len = max(df[column].astype(str).map(len).max(), len(str(column))) + 2
+                    worksheet.column_dimensions[chr(65 + i)].width = min(max_len, 50)
+
+            # Signal success
+            self.exportCompleted.emit(file_path)
+        except Exception as e:
+            self._logger.error(f'Error exporting data: {str(e)}', exc_info=True)
+            # Signal failure
+            self.exportFailed.emit(str(e))
+
+    @Slot(str)
+    def _on_export_completed(self, file_path: str) -> None:
+        """Handle successful export on the main thread."""
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+
+        self.status_bar.showMessage(f'Data exported to {file_path}')
+        self._logger.info(f'Data exported to {file_path}')
+
+    @Slot(str)
+    def _on_export_failed(self, error: str) -> None:
+        """Handle export failure on the main thread."""
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+
+        self.status_bar.showMessage(f'Error exporting to Excel: {error}')
+
+        QMessageBox.critical(
+            self,
+            'Export Error',
+            f'An error occurred while exporting to Excel:\n\n{error}',
+            QMessageBox.StandardButton.Ok
+        )
+
     def copy_selection(self) -> None:
-        """Copy selected cells to clipboard."""
+        """Copy the selected cells to the clipboard."""
         selection = self.results_table.selectionModel().selection()
         if not selection:
             return
 
         try:
-            # Get all selected indexes
             indexes = []
             for selection_range in selection:
                 top_left = selection_range.topLeft()
                 bottom_right = selection_range.bottomRight()
-
                 for row in range(top_left.row(), bottom_right.row() + 1):
                     for column in range(top_left.column(), bottom_right.column() + 1):
                         indexes.append(self.results_table.model().index(row, column))
@@ -1133,17 +1436,14 @@ class AutocareQueryTab(QWidget):
             if not indexes:
                 return
 
-            # Sort indexes by row and column
             indexes.sort(key=lambda idx: (idx.row(), idx.column()))
-
-            # Group indexes by row
             rows = {}
+
             for idx in indexes:
                 if idx.row() not in rows:
                     rows[idx.row()] = []
                 rows[idx.row()].append(idx)
 
-            # Write to CSV string
             output = io.StringIO()
             writer = csv.writer(output, delimiter='\t', lineterminator='\n')
 
@@ -1153,7 +1453,6 @@ class AutocareQueryTab(QWidget):
                     values.append(str(self.results_table.model().data(idx, Qt.ItemDataRole.DisplayRole) or ''))
                 writer.writerow(values)
 
-            # Copy to clipboard
             QApplication.clipboard().setText(output.getvalue())
             self.status_bar.showMessage(f'Selection copied to clipboard')
             self._logger.debug('Selection copied to clipboard')
@@ -1162,13 +1461,12 @@ class AutocareQueryTab(QWidget):
             self.status_bar.showMessage(f'Error copying selection: {str(e)}')
 
     def copy_row(self) -> None:
-        """Copy entire row(s) to clipboard."""
+        """Copy the selected rows to the clipboard."""
         selection = self.results_table.selectionModel().selection()
         if not selection:
             return
 
         try:
-            # Get selected rows
             selected_rows = set()
             for selection_range in selection:
                 for row in range(selection_range.top(), selection_range.bottom() + 1):
@@ -1181,18 +1479,15 @@ class AutocareQueryTab(QWidget):
             if not model:
                 return
 
-            # Write to CSV string
             output = io.StringIO()
             writer = csv.writer(output, delimiter='\t', lineterminator='\n')
 
-            # Write headers
             headers = [
                 model.headerData(col, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole)
                 for col in range(model.columnCount())
             ]
             writer.writerow(headers)
 
-            # Write row values
             for row in sorted(selected_rows):
                 values = [
                     str(model.data(model.index(row, col), Qt.ItemDataRole.DisplayRole) or '')
@@ -1200,7 +1495,6 @@ class AutocareQueryTab(QWidget):
                 ]
                 writer.writerow(values)
 
-            # Copy to clipboard
             QApplication.clipboard().setText(output.getvalue())
             self.status_bar.showMessage(f'Row(s) copied to clipboard')
         except Exception as e:
@@ -1208,12 +1502,7 @@ class AutocareQueryTab(QWidget):
             self.status_bar.showMessage(f'Error copying row: {str(e)}')
 
     def show_context_menu(self, position: QPoint) -> None:
-        """
-        Show context menu for results table.
-
-        Args:
-            position: Position to show the menu
-        """
+        """Show context menu for the results table."""
         if self.results_table.model().rowCount() == 0:
             return
 
@@ -1234,12 +1523,7 @@ class AutocareQueryTab(QWidget):
         context_menu.exec(self.results_table.mapToGlobal(position))
 
     def _get_table_data(self) -> List[Dict[str, Any]]:
-        """
-        Get all data from the table model.
-
-        Returns:
-            List of dictionaries containing row data
-        """
+        """Get data from the current table model."""
         model = self.results_table.model()
         if not model:
             return []
@@ -1256,25 +1540,17 @@ class AutocareQueryTab(QWidget):
         return data
 
     def update_connection_string(self, connection_string: str) -> None:
-        """
-        Update the database connection string.
-
-        Args:
-            connection_string: New connection string
-        """
+        """Update the database connection string."""
         try:
-            # Update repository with new connection string
             self.connection_string = connection_string
             self.db_repo = DatabaseRepository(connection_string)
-
-            # Reset filters to reload with new connection
             self.reset_filters()
-
             self.status_bar.showMessage('Database connection updated')
             self._logger.info('Database connection updated')
         except Exception as e:
             self._logger.error('Error updating connection string', error=str(e))
             self.status_bar.showMessage(f'Error updating connection string: {str(e)}')
+
             QMessageBox.critical(
                 self,
                 'Connection Error',
@@ -1285,21 +1561,22 @@ class AutocareQueryTab(QWidget):
     def refresh_database_connection(self) -> None:
         """Refresh the database connection."""
         try:
-            # Get current connection string from config
             connection_string = self._config.get(
                 f'plugins.autocarequery.connection_string',
                 self.connection_string
             )
-
-            # Update repository with connection string
             self.connection_string = connection_string
             self.db_repo = DatabaseRepository(connection_string)
 
-            # Test connection
-            self.run_async_task(self._test_connection)
+            # Schedule connection test
+            if self._thread_manager:
+                self._schedule_connection_test()
+            else:
+                QTimer.singleShot(10, self._run_connection_test_with_timer)
         except Exception as e:
             self._logger.error('Error refreshing connection', error=str(e))
             self.status_bar.showMessage(f'Error refreshing connection: {str(e)}')
+
             QMessageBox.critical(
                 self,
                 'Connection Error',
@@ -1307,100 +1584,216 @@ class AutocareQueryTab(QWidget):
                 QMessageBox.StandardButton.Ok
             )
 
-    async def _test_connection(self) -> None:
-        """Test the database connection."""
+    def _schedule_connection_test(self) -> None:
+        """Schedule connection test using thread manager."""
+        if not self._thread_manager:
+            return
+
+        def _run_test_async(*args, **kwargs):
+            """Run coroutine in a new event loop."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(self._test_connection())
+            finally:
+                loop.close()
+
+        self._thread_manager.submit_task(
+            func=_run_test_async,
+            name='autocare_query_test_connection',
+            submitter='autocarequery',
+            priority=10
+        )
+
+    def _run_connection_test_with_timer(self) -> None:
+        """Run connection test in current thread with new event loop."""
         try:
-            success = await self.db_repo.test_connection()
-            if success:
-                self.status_bar.showMessage('Database connection successful')
-                self._logger.info('Database connection test successful')
-                QMessageBox.information(
-                    self,
-                    'Connection Test',
-                    'Database connection successful.',
-                    QMessageBox.StandardButton.Ok
-                )
-            else:
-                self.status_bar.showMessage('Database connection failed')
-                self._logger.error('Database connection test failed')
-                QMessageBox.critical(
-                    self,
-                    'Connection Test',
-                    'Database connection failed.',
-                    QMessageBox.StandardButton.Ok
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(self._test_connection())
+            loop.close()
+
+            # Signal result on the main thread
+            if isinstance(result, bool):
+                self.connectionTested.emit(
+                    result,
+                    'Database connection successful' if result else 'Database connection failed'
                 )
         except Exception as e:
+            self._logger.error(f'Error testing connection: {str(e)}', exc_info=True)
+            # Signal error on main thread
+            self.connectionTested.emit(False, f'Error testing connection: {str(e)}')
+
+    async def _test_connection(self) -> bool:
+        """Test the database connection asynchronously."""
+        try:
+            success = await self.db_repo.test_connection()
+            self.connectionTested.emit(
+                success,
+                'Database connection successful' if success else 'Database connection failed'
+            )
+            return success
+        except Exception as e:
             self._logger.error('Error testing connection', error=str(e))
-            self.status_bar.showMessage(f'Error testing connection: {str(e)}')
+            self.connectionTested.emit(False, f'Error testing connection: {str(e)}')
+            return False
+
+    @Slot(bool, str)
+    def _on_connection_tested(self, success: bool, message: str) -> None:
+        """Handle connection test results on the main thread."""
+        self.status_bar.showMessage(message)
+
+        if success:
+            self._logger.info('Database connection test successful')
+            QMessageBox.information(
+                self,
+                'Connection Test',
+                'Database connection successful.',
+                QMessageBox.StandardButton.Ok
+            )
+        else:
+            self._logger.error('Database connection test failed')
             QMessageBox.critical(
                 self,
                 'Connection Test',
-                f'An error occurred while testing the connection:\n\n{str(e)}',
+                'Database connection failed.',
                 QMessageBox.StandardButton.Ok
             )
 
     def show_connection_settings(self) -> None:
-        """Show dialog to edit connection settings."""
+        """Show connection settings dialog."""
         from PySide6.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox
 
         dialog = QDialog(self)
         dialog.setWindowTitle('Database Connection Settings')
         layout = QFormLayout(dialog)
 
-        # Get current connection string
         current_conn_str = self._config.get(
             f'plugins.autocarequery.connection_string',
             self.connection_string
         )
-
-        # Create connection string input
         conn_str_input = QLineEdit(current_conn_str)
         conn_str_input.setMinimumWidth(400)
         layout.addRow('Connection String:', conn_str_input)
 
-        # Add buttons
         button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok |
-            QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         layout.addWidget(button_box)
 
         button_box.accepted.connect(dialog.accept)
         button_box.rejected.connect(dialog.reject)
 
-        # Show dialog and handle result
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_conn_str = conn_str_input.text().strip()
             if new_conn_str and new_conn_str != current_conn_str:
-                # Save to config
                 self._config.set(f'plugins.autocarequery.connection_string', new_conn_str)
-
-                # Update connection
                 self.update_connection_string(new_conn_str)
 
     def export_default_queries(self) -> None:
-        """Export some default queries to files."""
-        self.run_async_task(self._export_default_queries_async)
+        """Export default queries to Excel files."""
+        # Schedule export in thread manager
+        if self._thread_manager:
+            self._schedule_default_queries_export()
+        else:
+            QTimer.singleShot(10, self._run_default_queries_export_with_timer)
+
+    def _schedule_default_queries_export(self) -> None:
+        """Schedule default queries export using thread manager."""
+        if not self._thread_manager:
+            return
+
+        def _run_export_async(*args, **kwargs):
+            """Run coroutine in a new event loop."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(self._export_default_queries_async())
+            finally:
+                loop.close()
+
+        self._thread_manager.submit_task(
+            func=_run_export_async,
+            name='autocare_query_export_defaults',
+            submitter='autocarequery',
+            priority=10
+        )
+
+    def _run_default_queries_export_with_timer(self) -> None:
+        """Run default queries export in current thread with new event loop."""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._export_default_queries_async())
+            loop.close()
+        except Exception as e:
+            self._logger.error(f'Error exporting default queries: {str(e)}', exc_info=True)
+            # Signal error on main thread
+            QMetaObject.invokeMethod(
+                self,
+                "_handle_export_defaults_error",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, str(e))
+            )
+
+    @Slot(str)
+    def _handle_export_defaults_error(self, error: str) -> None:
+        """Handle errors in default queries export on the main thread."""
+        self.status_bar.showMessage(f'Error exporting default queries: {error}')
+
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+
+        QMessageBox.critical(
+            self,
+            'Export Error',
+            f'An error occurred while exporting default queries:\n\n{error}',
+            QMessageBox.StandardButton.Ok
+        )
 
     async def _export_default_queries_async(self) -> None:
-        """Asynchronously export default queries to files."""
+        """Export default queries asynchronously."""
         try:
-            # Create dialog to get save directory
-            save_dir = QFileDialog.getExistingDirectory(
+            # Get directory for export
+            save_dir = None
+
+            # Run this on the main thread to show the dialog
+            future = asyncio.Future()
+
+            def get_directory():
+                nonlocal save_dir
+                save_dir = QFileDialog.getExistingDirectory(
+                    self, 'Select Directory for Exported Queries', ''
+                )
+                future.set_result(save_dir)
+
+            QMetaObject.invokeMethod(
                 self,
-                'Select Directory for Exported Queries',
-                ''
+                get_directory,
+                Qt.ConnectionType.BlockingQueuedConnection
             )
+
+            await future
 
             if not save_dir:
                 return
 
-            # Define some default queries
+            # Show progress dialog
+            QMetaObject.invokeMethod(
+                self,
+                "show_progress_dialog",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, 'Exporting Queries'),
+                Q_ARG(str, 'Exporting default queries...')
+            )
+
+            # Define default queries
             default_queries = [
                 {
                     'name': 'all_toyota_2020',
                     'description': 'All 2020 Toyota vehicles',
-                    'filters': FilterDTO(year_id=2020, make_id=1)  # Assuming Toyota is make_id=1
+                    'filters': FilterDTO(year_id=2020, make_id=1)
                 },
                 {
                     'name': 'honda_accords_2018_2022',
@@ -1409,35 +1802,45 @@ class AutocareQueryTab(QWidget):
                         use_year_range=True,
                         year_range_start=2018,
                         year_range_end=2022,
-                        make_id=2,  # Assuming Honda is make_id=2
-                        model_id=10  # Assuming Accord is model_id=10
+                        make_id=2,
+                        model_id=10
                     )
                 }
             ]
 
-            # Show progress dialog
-            self.show_progress_dialog('Exporting Queries', 'Exporting default queries...')
-            self.progress_dialog.setValue(10)
-
-            # Execute and export each query
+            # Export each query
             for i, query_def in enumerate(default_queries):
                 try:
+                    # Update progress
+                    self.progressUpdated.emit(
+                        10 + 30 * i // len(default_queries),
+                        f"Executing query for {query_def['name']}..."
+                    )
+
                     # Execute query
                     results = await self.db_repo.execute_vehicle_query(
                         query_def['filters'],
                         limit=1000
                     )
 
-                    # Convert to DataFrame
+                    # Convert to dict for pandas
                     data = [result.model_dump() for result in results]
-                    df = pd.DataFrame(data)
 
-                    # Save to Excel
+                    # Update progress
+                    self.progressUpdated.emit(
+                        40 + 30 * i // len(default_queries),
+                        f"Processing results for {query_def['name']}..."
+                    )
+
+                    # Create dataframe
+                    df = pd.DataFrame(data)
                     file_path = os.path.join(save_dir, f"{query_def['name']}.xlsx")
+
+                    # Export to Excel
                     with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
                         df.to_excel(writer, index=False, sheet_name='Vehicle Data')
 
-                        # Add description sheet
+                        # Add query info sheet
                         description_df = pd.DataFrame([
                             {'Key': 'Name', 'Value': query_def['name']},
                             {'Key': 'Description', 'Value': query_def['description']},
@@ -1446,7 +1849,7 @@ class AutocareQueryTab(QWidget):
                         ])
                         description_df.to_excel(writer, index=False, sheet_name='Query Info')
 
-                        # Adjust column widths
+                        # Format columns
                         for sheet_name in writer.sheets:
                             worksheet = writer.sheets[sheet_name]
                             for idx, col in enumerate(worksheet.columns):
@@ -1461,64 +1864,66 @@ class AutocareQueryTab(QWidget):
                                 adjusted_width = (max_len + 2) * 1.2
                                 worksheet.column_dimensions[column].width = min(adjusted_width, 50)
 
-                    self.progress_dialog.setValue(10 + (85 * (i + 1) // len(default_queries)))
-                    self._logger.info(f'Exported query {query_def["name"]} to {file_path}')
+                    self.progressUpdated.emit(
+                        70 + 30 * (i + 1) // len(default_queries),
+                        f"Exported {query_def['name']} to {file_path}"
+                    )
+
+                    self._logger.info(f"Exported query {query_def['name']} to {file_path}")
                 except Exception as e:
-                    self._logger.error(f'Error exporting query {query_def["name"]}', error=str(e))
+                    self._logger.error(f"Error exporting query {query_def['name']}", error=str(e))
 
-            self.progress_dialog.setValue(100)
+            # Complete
+            self.progressUpdated.emit(100, 'Export complete')
 
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
-
-            self.status_bar.showMessage(f'Default queries exported to {save_dir}')
-            QMessageBox.information(
+            # Close progress dialog and show success message on main thread
+            QMetaObject.invokeMethod(
                 self,
-                'Export Complete',
-                f'Default queries have been exported to:\n{save_dir}',
-                QMessageBox.StandardButton.Ok
+                "_show_export_complete",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, save_dir)
             )
         except Exception as e:
             self._logger.error('Error exporting default queries', error=str(e))
-            self.status_bar.showMessage(f'Error exporting default queries: {str(e)}')
-
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
-
-            QMessageBox.critical(
+            # Signal error to main thread
+            QMetaObject.invokeMethod(
                 self,
-                'Export Error',
-                f'An error occurred while exporting default queries:\n\n{str(e)}',
-                QMessageBox.StandardButton.Ok
+                "_handle_export_defaults_error",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, str(e))
             )
+            raise
+
+    @Slot(str)
+    def _show_export_complete(self, save_dir: str) -> None:
+        """Show export complete message on the main thread."""
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+
+        self.status_bar.showMessage(f'Default queries exported to {save_dir}')
+
+        QMessageBox.information(
+            self,
+            'Export Complete',
+            f'Default queries have been exported to:\n{save_dir}',
+            QMessageBox.StandardButton.Ok
+        )
 
     def cleanup(self) -> None:
-        """Clean up resources."""
+        """Clean up resources when tab is closed."""
         try:
-            # Close any open progress dialog
             if self.progress_dialog:
                 self.progress_dialog.close()
                 self.progress_dialog = None
 
-            # Clean up sync engine connection immediately
             if hasattr(self, 'db_repo') and self.db_repo:
                 if hasattr(self.db_repo, 'sync_engine') and self.db_repo.sync_engine:
                     self.db_repo.sync_engine.dispose()
 
-                # Run async cleanup in background for async engine
                 if hasattr(self.db_repo, 'engine') and self.db_repo.engine:
-                    # Use run_async_task for async engine disposal
-                    # This will create a task but not block shutdown
                     if self._thread_manager:
-                        self._thread_manager.submit_task(
-                            func=self._dispose_async_engine,
-                            name='dispose_async_engine',
-                            submitter='autocarequery'
-                        )
-                    # If no thread manager, we can't properly await this
-                    # Just log a warning
+                        self._schedule_engine_disposal()
                     else:
                         self._logger.warning('Thread manager not available, async engine may not be properly disposed')
 
@@ -1526,12 +1931,27 @@ class AutocareQueryTab(QWidget):
         except Exception as e:
             self._logger.error('Error cleaning up resources', error=str(e))
 
-    async def _dispose_async_engine(self) -> None:
-        """Properly dispose the async engine."""
-        try:
-            if hasattr(self, 'db_repo') and self.db_repo:
-                if hasattr(self.db_repo, 'engine') and self.db_repo.engine:
-                    await self.db_repo.engine.dispose()
-                    self._logger.debug('Async engine disposed properly')
-        except Exception as e:
-            self._logger.error(f'Error disposing async engine: {str(e)}')
+    def _schedule_engine_disposal(self) -> None:
+        """Schedule engine disposal using thread manager."""
+        if not self._thread_manager:
+            return
+
+        def _run_dispose_async(*args, **kwargs):
+            """Run coroutine in a new event loop."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                async def _dispose_engine():
+                    if hasattr(self.db_repo, 'engine') and self.db_repo.engine:
+                        await self.db_repo.engine.dispose()
+                        self._logger.debug('Async engine disposed properly')
+
+                return loop.run_until_complete(_dispose_engine())
+            finally:
+                loop.close()
+
+        self._thread_manager.submit_task(
+            func=_run_dispose_async,
+            name='dispose_async_engine',
+            submitter='autocarequery'
+        )
