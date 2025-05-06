@@ -1,0 +1,193 @@
+{
+  "name": "example_plugin",
+  "display_name": "Example Plugin",
+  "version": "1.0.0",
+  "description": "An example plugin showcasing the enhanced plugin system features",
+  "author": {
+    "name": "Qorzen Team",
+    "email": "developers@qorzen.com",
+    "url": "https://qorzen.com",
+    "organization": "Qorzen"
+  },
+  "license": "MIT",
+  "homepage": "https://qorzen.com/plugins/example",
+  "capabilities": [
+    "ui.extend",
+    "event.subscribe",
+    "event.publish",
+    "config.read"
+  ],
+  "dependencies": [
+    {
+      "name": "core",
+      "version": ">=0.1.0"
+    }
+  ],
+  "entry_point": "code.plugin",
+  "min_core_version": "0.1.0",
+  "tags": ["example", "demo", "template"],
+  "extension_points": [
+    {
+      "id": "text.transform",
+      "name": "Text Transformer",
+      "description": "Transform text in various ways",
+      "interface": "func(text: str, options: Optional[Dict[str, Any]] = None) -> str",
+      "version": "1.0.0"
+    },
+    {
+      "id": "ui.widget",
+      "name": "UI Widget Provider",
+      "description": "Provide a UI widget for integration in other plugins",
+      "interface": "func(parent: QWidget) -> QWidget",
+      "version": "1.0.0"
+    }
+  ],
+  "extension_uses": [],
+  "lifecycle_hooks": {
+    "pre_install": "hooks.pre_install",
+    "post_install": "hooks.post_install",
+    "pre_uninstall": "hooks.pre_uninstall",
+    "post_uninstall": "hooks.post_uninstall",
+    "pre_update": "hooks.pre_update",
+    "post_update": "hooks.post_update"
+  },
+  "config_schema": {
+    "fields": [
+      {
+        "name": "username",
+        "type": "string",
+        "label": "Username",
+        "description": "Your username for the service",
+        "required": true,
+        "default_value": "",
+        "order": 1,
+        "group": "credentials"
+      },
+      {
+        "name": "api_key",
+        "type": "password",
+        "label": "API Key",
+        "description": "Your API key for the service",
+        "required": true,
+        "order": 2,
+        "group": "credentials"
+      },
+      {
+        "name": "enable_logging",
+        "type": "boolean",
+        "label": "Enable Logging",
+        "description": "Whether to enable detailed logging",
+        "default_value": true,
+        "order": 1,
+        "group": "advanced"
+      },
+      {
+        "name": "log_level",
+        "type": "select",
+        "label": "Log Level",
+        "description": "The level of detail for logs",
+        "default_value": "info",
+        "options": [
+          {"value": "debug", "label": "Debug"},
+          {"value": "info", "label": "Info"},
+          {"value": "warning", "label": "Warning"},
+          {"value": "error", "label": "Error"}
+        ],
+        "order": 2,
+        "group": "advanced",
+        "conditional_display": {
+          "field": "enable_logging",
+          "value": true
+        }
+      },
+      {
+        "name": "max_retries",
+        "type": "integer",
+        "label": "Maximum Retries",
+        "description": "Maximum number of retry attempts for failed operations",
+        "default_value": 3,
+        "order": 3,
+        "group": "advanced",
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 0},
+            "error_message": "Retries must be a non-negative number"
+          },
+          {
+            "rule_type": "max",
+            "parameters": {"value": 10},
+            "error_message": "Retries cannot exceed 10"
+          }
+        ]
+      },
+      {
+        "name": "timeout",
+        "type": "float",
+        "label": "Timeout (seconds)",
+        "description": "Time to wait before operations timeout",
+        "default_value": 30.0,
+        "order": 4,
+        "group": "advanced",
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 1.0},
+            "error_message": "Timeout must be at least 1 second"
+          }
+        ]
+      },
+      {
+        "name": "theme",
+        "type": "select",
+        "label": "Theme",
+        "description": "Visual theme for plugin UI elements",
+        "default_value": "system",
+        "options": [
+          {"value": "system", "label": "System Default"},
+          {"value": "light", "label": "Light"},
+          {"value": "dark", "label": "Dark"},
+          {"value": "custom", "label": "Custom"}
+        ],
+        "order": 1,
+        "group": "appearance"
+      },
+      {
+        "name": "custom_theme_color",
+        "type": "color",
+        "label": "Custom Theme Color",
+        "description": "Primary color for custom theme",
+        "default_value": "#3498db",
+        "order": 2,
+        "group": "appearance",
+        "conditional_display": {
+          "field": "theme",
+          "value": "custom"
+        }
+      }
+    ],
+    "groups": [
+      {
+        "name": "credentials",
+        "label": "Credentials",
+        "description": "API credentials for external services",
+        "order": 1,
+        "collapsed": false
+      },
+      {
+        "name": "advanced",
+        "label": "Advanced Settings",
+        "description": "Advanced configuration options",
+        "order": 3,
+        "collapsed": true
+      },
+      {
+        "name": "appearance",
+        "label": "Appearance",
+        "description": "Visual appearance settings",
+        "order": 2,
+        "collapsed": false
+      }
+    ]
+  }
+}

@@ -1,10 +1,3 @@
-"""Plugin manager with packaging system integration.
-
-This module enhances the original plugin manager with integration for
-the plugin packaging system, adding capabilities for installation,
-verification, and management of packaged plugins.
-"""
-
 from __future__ import annotations
 
 import importlib
@@ -22,17 +15,23 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union, cast
 
 from qorzen.core.base import QorzenManager
-from qorzen.plugin_system.installer import PluginInstaller, InstalledPlugin
-from qorzen.plugin_system.manifest import PluginManifest
-from qorzen.plugin_system.package import PluginPackage
-from qorzen.plugin_system.signing import PluginVerifier
 from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownError, PluginError
-from tests.unit.core.test_cloud_manager import cloud_manager
+
+# Import the enhanced plugin system components
+from qorzen.plugin_system.integration import IntegratedPluginInstaller
+from qorzen.plugin_system.repository import PluginRepositoryManager
+from qorzen.plugin_system.signing import PluginVerifier
+from qorzen.plugin_system.manifest import PluginManifest, PluginLifecycleHook
+from qorzen.plugin_system.lifecycle import execute_hook, set_logger as set_lifecycle_logger
+from qorzen.plugin_system.extension import (
+    register_plugin_extensions,
+    unregister_plugin_extensions,
+    extension_registry
+)
+from qorzen.plugin_system.config_schema import ConfigSchema
 
 
 class PluginState(Enum):
-    """State of a plugin in the plugin manager."""
-
     DISCOVERED = 'discovered'
     LOADED = 'loaded'
     ACTIVE = 'active'
@@ -43,23 +42,6 @@ class PluginState(Enum):
 
 @dataclass
 class PluginInfo:
-    """Information about a plugin.
-
-    Attributes:
-        name: Plugin identifier
-        version: Plugin version
-        description: Brief description
-        author: Plugin author
-        state: Current plugin state
-        dependencies: List of plugin dependencies
-        path: Path to the plugin directory
-        instance: Plugin instance if loaded
-        error: Error message if loading failed
-        load_time: When the plugin was loaded
-        metadata: Additional plugin metadata
-        manifest: Plugin manifest if installed from a package
-    """
-
     name: str
     version: str
     description: str
@@ -72,9 +54,9 @@ class PluginInfo:
     load_time: Optional[float] = None
     metadata: Dict[str, Any] = None
     manifest: Optional[PluginManifest] = None
+    config_schema: Optional[ConfigSchema] = None
 
     def __post_init__(self) -> None:
-        """Initialize default values."""
         if self.dependencies is None:
             self.dependencies = []
         if self.metadata is None:
@@ -82,43 +64,19 @@ class PluginInfo:
 
 
 class PluginManager(QorzenManager):
-    """Enhanced plugin manager with packaging system integration.
-
-    This class extends the original plugin manager with capabilities
-    for installation, verification, and management of packaged plugins.
-
-    Attributes:
-        plugin_installer: Plugin installer for package management
-        plugin_verifier: Plugin verifier for signature verification
-    """
-
     def __init__(
-            self,
-            config_manager: Any,
-            logger_manager: Any,
-            event_bus_manager: Any,
-            file_manager: Any,
-            thread_manager: Any,
-            database_manager: Any,
-            remote_service_manager: Any,
-            security_manager: Any,
-            api_manager: Any,
-            cloud_manager: Any,
+        self,
+        config_manager: Any,
+        logger_manager: Any,
+        event_bus_manager: Any,
+        file_manager: Any,
+        thread_manager: Any,
+        database_manager: Any,
+        remote_service_manager: Any,
+        security_manager: Any,
+        api_manager: Any,
+        cloud_manager: Any
     ) -> None:
-        """Initialize the plugin manager.
-
-        Args:
-            config_manager: Configuration manager
-            logger_manager: Logger manager
-            event_bus_manager: Event bus manager
-            file_manager: File manager
-            thread_manager: Thread manager
-            database_manager: Database manager
-            remote_service_manager: Remote service manager
-            security_manager: Security manager
-            api_manager: API manager
-            cloud_manager: Cloud manager
-        """
         super().__init__(name='PluginManager')
         self._config_manager = config_manager
         self._logger_manager = logger_manager
@@ -131,27 +89,24 @@ class PluginManager(QorzenManager):
         self._security_manager = security_manager
         self._api_manager = api_manager
         self._cloud_manager = cloud_manager
+
         self._plugins: Dict[str, PluginInfo] = {}
         self._plugin_dir: Optional[pathlib.Path] = None
         self._entry_point_group = 'qorzen.plugins'
         self._auto_load = True
         self._enabled_plugins: List[str] = []
         self._disabled_plugins: List[str] = []
+        self._repository_config_path: Optional[Path] = None
 
-        # Plugin packaging system integration
-        self.plugin_installer: Optional[PluginInstaller] = None
+        # Enhanced plugin installer with repository support
+        self.plugin_installer: Optional[IntegratedPluginInstaller] = None
         self.plugin_verifier: Optional[PluginVerifier] = None
-        self._trusted_keys_dir: Optional[pathlib.Path] = None
+        self.repository_manager: Optional[PluginRepositoryManager] = None
+
+        # Set up lifecycle logger
+        set_lifecycle_logger(self._logger)
 
     def initialize(self) -> None:
-        """Initialize the plugin manager.
-
-        This loads configuration, discovers plugins, and sets up
-        event handlers.
-
-        Raises:
-            ManagerInitializationError: If initialization fails
-        """
         try:
             plugin_config = self._config_manager.get('plugins', {})
             plugin_dir = plugin_config.get('directory', 'plugins')
@@ -159,14 +114,11 @@ class PluginManager(QorzenManager):
             self._auto_load = plugin_config.get('autoload', True)
             self._enabled_plugins = plugin_config.get('enabled', [])
             self._disabled_plugins = plugin_config.get('disabled', [])
+            self._repository_config_path = self._plugin_dir / 'repositories.json'
 
-            # Create plugin directories
             os.makedirs(self._plugin_dir, exist_ok=True)
-
-            # Initialize plugin packaging system
             self._init_packaging_system(plugin_config)
 
-            # Subscribe to events
             self._event_bus.subscribe(
                 event_type='plugin/install',
                 callback=self._on_plugin_install_event,
@@ -187,8 +139,13 @@ class PluginManager(QorzenManager):
                 callback=self._on_plugin_disable_event,
                 subscriber_id='plugin_manager'
             )
+            self._event_bus.subscribe(
+                event_type='plugin/update',
+                callback=self._on_plugin_update_event,
+                subscriber_id='plugin_manager'
+            )
 
-            # Discover plugins
+            # Discover plugins from various sources
             self._discover_entry_point_plugins()
             self._discover_directory_plugins()
             self._discover_packaged_plugins()
@@ -207,7 +164,6 @@ class PluginManager(QorzenManager):
 
             if self._auto_load:
                 self._load_enabled_plugins()
-
         except Exception as e:
             self._logger.error(f'Failed to initialize Plugin Manager: {str(e)}')
             raise ManagerInitializationError(
@@ -216,22 +172,14 @@ class PluginManager(QorzenManager):
             ) from e
 
     def _init_packaging_system(self, plugin_config: Dict[str, Any]) -> None:
-        """Initialize the plugin packaging system.
-
-        Args:
-            plugin_config: Plugin configuration dictionary
-        """
+        """Initialize the plugin packaging system with repository support."""
         package_config = plugin_config.get('packaging', {})
-
-        # Set up trusted keys directory
         trusted_keys_dir = package_config.get('trusted_keys_dir', 'keys')
         self._trusted_keys_dir = self._plugin_dir / trusted_keys_dir
         os.makedirs(self._trusted_keys_dir, exist_ok=True)
 
-        # Create plugin verifier
+        # Initialize plugin verifier
         self.plugin_verifier = PluginVerifier()
-
-        # Load trusted keys
         if self._trusted_keys_dir.exists():
             try:
                 count = self.plugin_verifier.load_trusted_keys(self._trusted_keys_dir)
@@ -239,25 +187,54 @@ class PluginManager(QorzenManager):
             except Exception as e:
                 self._logger.warning(f'Failed to load trusted keys: {str(e)}')
 
-        # Create plugin installer
-        self.plugin_installer = PluginInstaller(
-            plugins_dir=self._plugin_dir,
-            verifier=self.plugin_verifier,
-            logger=self._package_logger
-        )
+        # Initialize repository manager
+        try:
+            self.repository_manager = PluginRepositoryManager(
+                config_file=self._repository_config_path if self._repository_config_path.exists() else None,
+                logger=self._package_logger
+            )
+            repos_count = len(self.repository_manager.repositories)
+            self._logger.info(f'Initialized repository manager with {repos_count} repositories')
+        except Exception as e:
+            self._logger.warning(f'Failed to initialize repository manager: {str(e)}')
+            self.repository_manager = None
 
-    def _package_logger(self, message: str, level: str = "info") -> None:
-        """Logger function for the plugin installer.
+        # Initialize enhanced plugin installer with repository support
+        try:
+            self.plugin_installer = IntegratedPluginInstaller(
+                plugins_dir=self._plugin_dir,
+                repository_manager=self.repository_manager,
+                verifier=self.plugin_verifier,
+                logger=self._package_logger,
+                core_version=self._get_core_version()
+            )
+            self._logger.info('Initialized enhanced plugin installer')
+        except Exception as e:
+            self._logger.warning(f'Failed to initialize enhanced plugin installer: {str(e)}')
+            # Fall back to basic installer
+            from qorzen.plugin_system.installer import PluginInstaller
+            self.plugin_installer = PluginInstaller(
+                plugins_dir=self._plugin_dir,
+                verifier=self.plugin_verifier,
+                logger=self._package_logger
+            )
+            self._logger.info('Initialized basic plugin installer (without repository support)')
 
-        Args:
-            message: Log message
-            level: Log level
-        """
-        if level.lower() == "info":
+    def _get_core_version(self) -> str:
+        """Get the core application version."""
+        try:
+            from qorzen.__version__ import __version__
+            return __version__
+        except ImportError:
+            return "0.1.0"  # Default version if not available
+
+    def _package_logger(self, message: str, level: str='info') -> None:
+        """Logger for plugin packaging components."""
+        if level.lower() == 'info':
             self._logger.info(message)
-        elif level.lower() == "warning":
+        elif level.lower() == 'warning':
             self._logger.warning(message)
-        elif level.lower() == "error":
+        elif level.lower() == 'error':
             self._logger.error(message)
         else:
             self._logger.debug(message)
@@ -288,7 +265,7 @@ class PluginManager(QorzenManager):
             self._logger.error(f'Failed to discover entry point plugins: {str(e)}')
 
     def _discover_directory_plugins(self) -> None:
-        """Discover plugins from the plugin directory."""
+        """Discover plugins from the plugins directory."""
         if not self._plugin_dir or not self._plugin_dir.exists():
             self._logger.warning(f'Plugin directory does not exist: {self._plugin_dir}')
             return
@@ -302,27 +279,102 @@ class PluginManager(QorzenManager):
                 if not item.is_dir():
                     continue
 
-                # Skip special directories
                 if item.name.startswith('.') or item.name in ('__pycache__', 'backups'):
                     continue
 
-                # Check for Python module structure
                 init_file = item / '__init__.py'
                 plugin_file = item / 'plugin.py'
+                manifest_file = item / 'manifest.json'
 
+                # First check for manifest.json
+                if manifest_file.exists():
+                    try:
+                        manifest = PluginManifest.load(manifest_file)
+
+                        # Find plugin class based on manifest
+                        plugin_class = None
+                        module_name = item.name
+                        entry_point = manifest.entry_point
+
+                        if entry_point.endswith('.py'):
+                            entry_path = item / entry_point
+                            if entry_path.exists():
+                                try:
+                                    spec = importlib.util.spec_from_file_location(
+                                        f"{module_name}.{entry_point.replace('.py', '')}",
+                                        entry_path
+                                    )
+                                    if spec and spec.loader:
+                                        module = importlib.util.module_from_spec(spec)
+                                        spec.loader.exec_module(module)
+                                        plugin_class = self._find_plugin_class(module)
+                                except Exception as e:
+                                    self._logger.warning(
+                                        f"Failed to load entry point {entry_point} for plugin {manifest.name}: {str(e)}",
+                                        extra={'plugin': manifest.name, 'entry_point': entry_point}
+                                    )
+                        else:
+                            # Try to import as module
+                            try:
+                                module = importlib.import_module(f"{module_name}.{entry_point}")
+                                plugin_class = self._find_plugin_class(module)
+                            except Exception as e:
+                                self._logger.warning(
+                                    f"Failed to import module {entry_point} for plugin {manifest.name}: {str(e)}",
+                                    extra={'plugin': manifest.name, 'entry_point': entry_point}
+                                )
+
+                        if plugin_class:
+                            plugin_info = self._extract_plugin_metadata(
+                                plugin_class,
+                                manifest.name,
+                                path=str(item),
+                                manifest=manifest
+                            )
+
+                            # Parse config schema if available
+                            config_schema_path = item / 'config_schema.json'
+                            if config_schema_path.exists():
+                                try:
+                                    import json
+                                    with open(config_schema_path, 'r') as f:
+                                        schema_data = json.load(f)
+                                    from qorzen.plugin_system.config_schema import ConfigSchema
+                                    plugin_info.config_schema = ConfigSchema(**schema_data)
+                                except Exception as e:
+                                    self._logger.warning(
+                                        f"Failed to load config schema for plugin {manifest.name}: {str(e)}",
+                                        extra={'plugin': manifest.name}
+                                    )
+
+                            if plugin_info.name not in self._plugins:
+                                self._plugins[plugin_info.name] = plugin_info
+                                self._logger.debug(
+                                    f"Discovered plugin '{plugin_info.name}' from manifest",
+                                    extra={'plugin': plugin_info.name, 'version': plugin_info.version, 'path': str(item)}
+                                )
+                        else:
+                            self._logger.warning(
+                                f"No plugin class found for manifest {manifest.name}",
+                                extra={'plugin': manifest.name}
+                            )
+                    except Exception as e:
+                        self._logger.error(
+                            f"Failed to load manifest for plugin directory '{item.name}': {str(e)}",
+                            extra={'directory': str(item)}
+                        )
+                        continue
+
+                # Try legacy method (no manifest)
                 if init_file.exists() or plugin_file.exists():
                     try:
                         module_name = item.name
                         if init_file.exists():
                             module = importlib.import_module(module_name)
                         elif plugin_file.exists():
-                            spec = importlib.util.spec_from_file_location(
-                                f'{module_name}.plugin',
-                                plugin_file
-                            )
+                            spec = importlib.util.spec_from_file_location(f'{module_name}.plugin', plugin_file)
                             if not spec or not spec.loader:
                                 continue
-
                             module = importlib.util.module_from_spec(spec)
                             spec.loader.exec_module(module)
                         else:
@@ -330,10 +382,11 @@ class PluginManager(QorzenManager):
 
                         plugin_class = self._find_plugin_class(module)
                         if not plugin_class:
-                            self._logger.warning(
-                                f'No plugin class found in {module_name}',
-                                extra={'module': module_name}
-                            )
+                            if not manifest_file.exists():  # Only log if no manifest was found
+                                self._logger.warning(
+                                    f'No plugin class found in {module_name}',
+                                    extra={'module': module_name}
+                                )
                             continue
 
                         plugin_info = self._extract_plugin_metadata(
@@ -346,37 +399,28 @@ class PluginManager(QorzenManager):
                             self._plugins[plugin_info.name] = plugin_info
                             self._logger.debug(
                                 f"Discovered plugin '{plugin_info.name}' from directory",
-                                extra={
-                                    'plugin': plugin_info.name,
-                                    'version': plugin_info.version,
-                                    'path': str(item)
-                                }
+                                extra={'plugin': plugin_info.name, 'version': plugin_info.version, 'path': str(item)}
                             )
-
                     except Exception as e:
                         self._logger.error(
                             f"Failed to discover plugin from directory '{item.name}': {str(e)}",
                             extra={'directory': str(item)}
                         )
-
         except Exception as e:
             self._logger.error(f'Failed to discover directory plugins: {str(e)}')
 
     def _discover_packaged_plugins(self) -> None:
-        """Discover plugins from installed packages."""
+        """Discover plugins from the plugin installer's database."""
         if not self.plugin_installer:
             return
 
         try:
             installed_plugins = self.plugin_installer.get_installed_plugins()
-
             for name, plugin in installed_plugins.items():
-                # Skip if already discovered
                 if name in self._plugins:
                     continue
 
                 try:
-                    # Convert manifest to plugin info
                     manifest = plugin.manifest
                     plugin_info = PluginInfo(
                         name=manifest.name,
@@ -401,10 +445,19 @@ class PluginManager(QorzenManager):
                         manifest=manifest
                     )
 
-                    # Add plugin info
+                    # Load config schema if available in metadata
+                    if manifest.config_schema:
+                        try:
+                            from qorzen.plugin_system.config_schema import ConfigSchema
+                            plugin_info.config_schema = ConfigSchema(**manifest.config_schema)
+                        except Exception as e:
+                            self._logger.warning(
+                                f"Failed to parse config schema for plugin {name}: {str(e)}",
+                                extra={'plugin': name}
+                            )
+
                     self._plugins[name] = plugin_info
 
-                    # Update enabled/disabled lists
                     if plugin.enabled and name not in self._enabled_plugins:
                         self._enabled_plugins.append(name)
                     elif not plugin.enabled and name not in self._disabled_plugins:
@@ -412,60 +465,42 @@ class PluginManager(QorzenManager):
 
                     self._logger.debug(
                         f"Discovered installed plugin '{name}' v{manifest.version}",
-                        extra={
-                            'plugin': name,
-                            'version': manifest.version,
-                            'enabled': plugin.enabled
-                        }
+                        extra={'plugin': name, 'version': manifest.version, 'enabled': plugin.enabled}
                     )
-
                 except Exception as e:
                     self._logger.error(
                         f"Failed to process installed plugin '{name}': {str(e)}",
                         extra={'plugin': name, 'error': str(e)}
                     )
-
         except Exception as e:
             self._logger.error(f'Failed to discover installed plugins: {str(e)}')
 
     def _find_plugin_class(self, module: Any) -> Optional[Type]:
-        """Find a plugin class in a module.
-
-        Args:
-            module: Module to search
-
-        Returns:
-            Plugin class if found, None otherwise
-        """
         for _, obj in inspect.getmembers(module, inspect.isclass):
             if hasattr(obj, 'name') and hasattr(obj, 'version') and hasattr(obj, 'description'):
                 return obj
-
         return None
 
     def _extract_plugin_metadata(
-            self,
-            plugin_class: Type,
-            default_name: str,
-            path: Optional[str] = None,
-            entry_point_name: Optional[str] = None
+        self,
+        plugin_class: Type,
+        default_name: str,
+        path: Optional[str] = None,
+        entry_point_name: Optional[str] = None,
+        manifest: Optional[PluginManifest] = None
     ) -> PluginInfo:
-        """Extract metadata from a plugin class.
-
-        Args:
-            plugin_class: Plugin class
-            default_name: Default name to use if not specified
-            path: Path to the plugin directory
-            entry_point_name: Entry point name if from entry points
-
-        Returns:
-            Plugin information
-        """
+        """Extract metadata from a plugin class."""
         name = getattr(plugin_class, 'name', default_name)
         version = getattr(plugin_class, 'version', '0.1.0')
         description = getattr(plugin_class, 'description', 'No description')
         author = getattr(plugin_class, 'author', 'Unknown')
         dependencies = getattr(plugin_class, 'dependencies', [])
+
+        metadata = {
+            'class': plugin_class.__name__,
+            'module': plugin_class.__module__,
+            'entry_point': entry_point_name
+        }
 
         plugin_info = PluginInfo(
             name=name,
@@ -475,43 +510,60 @@ class PluginManager(QorzenManager):
             state=PluginState.DISCOVERED,
             dependencies=dependencies,
             path=path,
-            metadata={
-                'class': plugin_class.__name__,
-                'module': plugin_class.__module__,
-                'entry_point': entry_point_name
-            }
+            metadata=metadata,
+            manifest=manifest
         )
 
         return plugin_info
 
     def _load_enabled_plugins(self) -> None:
-        """Load all enabled plugins."""
-        # Load plugins without dependencies first
-        for plugin_name, plugin_info in self._plugins.items():
-            if not plugin_info.dependencies and self._is_plugin_enabled(plugin_name):
-                self.load_plugin(plugin_name)
+        """Load all enabled plugins in dependency order."""
+        if not self.plugin_installer:
+            # Legacy method - load plugins without dependency resolution
+            for plugin_name, plugin_info in self._plugins.items():
+                if not plugin_info.dependencies and self._is_plugin_enabled(plugin_name):
+                    self.load_plugin(plugin_name)
 
-        # Then load plugins with dependencies
-        for plugin_name, plugin_info in self._plugins.items():
-            if plugin_info.dependencies and self._is_plugin_enabled(plugin_name):
-                self.load_plugin(plugin_name)
+            for plugin_name, plugin_info in self._plugins.items():
+                if plugin_info.dependencies and self._is_plugin_enabled(plugin_name):
+                    self.load_plugin(plugin_name)
+        else:
+            # Enhanced method - use dependency resolver
+            try:
+                # Get all manifests of enabled plugins
+                plugin_manifests = {}
+                for plugin_name, plugin_info in self._plugins.items():
+                    if self._is_plugin_enabled(plugin_name) and plugin_info.manifest:
+                        plugin_manifests[plugin_name] = plugin_info.manifest
+
+                # Get the loading order
+                loading_order = self.plugin_installer.get_loading_order()
+
+                # Load plugins in the correct order
+                for plugin_name in loading_order:
+                    if plugin_name in self._plugins and self._is_plugin_enabled(plugin_name):
+                        self.load_plugin(plugin_name)
+            except Exception as e:
+                self._logger.error(f"Failed to load plugins in dependency order: {str(e)}")
+
+                # Fall back to legacy method
+                self._logger.warning("Falling back to legacy plugin loading method")
+                for plugin_name, plugin_info in self._plugins.items():
+                    if not plugin_info.dependencies and self._is_plugin_enabled(plugin_name):
+                        self.load_plugin(plugin_name)
+
+                for plugin_name, plugin_info in self._plugins.items():
+                    if plugin_info.dependencies and self._is_plugin_enabled(plugin_name):
+                        self.load_plugin(plugin_name)
 
     def _is_plugin_enabled(self, plugin_name: str) -> bool:
-        """Check if a plugin is enabled.
-
-        Args:
-            plugin_name: Name of the plugin
-
-        Returns:
-            True if the plugin is enabled, False otherwise
-        """
+        """Check if a plugin is enabled."""
         if plugin_name in self._disabled_plugins:
             return False
 
         if plugin_name in self._enabled_plugins:
             return True
 
-        # For packaged plugins, also check the installer
         if self.plugin_installer:
             plugin = self.plugin_installer.get_installed_plugin(plugin_name)
             if plugin:
@@ -520,16 +572,17 @@ class PluginManager(QorzenManager):
         return self._auto_load
 
     def load_plugin(self, plugin_name: str) -> bool:
-        """Load a plugin.
+        """
+        Load a plugin.
 
         Args:
-            plugin_name: Name of the plugin to load
+            plugin_name: The name of the plugin to load
 
         Returns:
-            True if the plugin was loaded successfully, False otherwise
+            True if successful, False otherwise
 
         Raises:
-            PluginError: If plugin loading fails
+            PluginError: If there's an error loading the plugin
         """
         if not self._initialized:
             raise PluginError('Plugin Manager not initialized', plugin_name=plugin_name)
@@ -553,7 +606,7 @@ class PluginManager(QorzenManager):
             )
             return False
 
-        # Check and load dependencies
+        # Check dependencies
         for dependency in plugin_info.dependencies:
             if dependency == 'core':
                 continue
@@ -573,24 +626,49 @@ class PluginManager(QorzenManager):
                     plugin_info.state = PluginState.FAILED
                     plugin_info.error = f"Failed to load dependency '{dependency}'"
                     self._logger.error(
-                        f"Failed to load plugin '{plugin_name}': Dependency '{dependency}' could not be loaded",
+                        f"Failed to load plugin '{plugin_name}': "
+                        f"Dependency '{dependency}' could not be loaded",
                         extra={'plugin': plugin_name, 'dependency': dependency}
                     )
                     return False
 
         try:
-            # Get plugin class
+            # Execute pre-enable lifecycle hook if available
+            if plugin_info.manifest and PluginLifecycleHook.PRE_ENABLE in plugin_info.manifest.lifecycle_hooks:
+                try:
+                    execute_hook(
+                        hook=PluginLifecycleHook.PRE_ENABLE,
+                        plugin_name=plugin_name,
+                        manifest=plugin_info.manifest,
+                        context={
+                            'plugin_manager': self,
+                            'config_manager': self._config_manager,
+                            'logger_manager': self._logger_manager,
+                            'event_bus': self._event_bus,
+                            'file_manager': self._file_manager,
+                            'thread_manager': self._thread_manager,
+                            'database_manager': self._database_manager,
+                            'remote_services_manager': self._remote_services_manager,
+                            'security_manager': self._security_manager,
+                            'api_manager': self._api_manager,
+                            'cloud_manager': self._cloud_manager
+                        }
+                    )
+                except Exception as e:
+                    self._logger.warning(
+                        f"Pre-enable hook failed for plugin '{plugin_name}': {str(e)}",
+                        extra={'plugin': plugin_name, 'error': str(e)}
+                    )
+
+            # Get the plugin class and instantiate it
             if plugin_info.manifest:
-                # Load packaged plugin
                 plugin_class = self._load_packaged_plugin(plugin_info)
             else:
-                # Load regular plugin
                 plugin_class = self._get_plugin_class(plugin_info)
 
-            # Instantiate plugin
             plugin_info.instance = plugin_class()
 
-            # Initialize plugin
+            # Initialize the plugin
             if hasattr(plugin_info.instance, 'initialize'):
                 plugin_info.instance.initialize(
                     event_bus=self._event_bus,
@@ -605,6 +683,15 @@ class PluginManager(QorzenManager):
                     cloud_manager=self._cloud_manager
                 )
 
+            # Register extension points and uses
+            if plugin_info.manifest:
+                register_plugin_extensions(
+                    plugin_name=plugin_name,
+                    plugin_instance=plugin_info.instance,
+                    manifest=plugin_info.manifest
+                )
+
+            # Update state
             plugin_info.state = PluginState.ACTIVE
             plugin_info.load_time = time.time()
 
@@ -613,6 +700,35 @@ class PluginManager(QorzenManager):
                 extra={'plugin': plugin_name, 'version': plugin_info.version}
             )
 
+            # Execute post-enable lifecycle hook if available
+            if plugin_info.manifest and PluginLifecycleHook.POST_ENABLE in plugin_info.manifest.lifecycle_hooks:
+                try:
+                    execute_hook(
+                        hook=PluginLifecycleHook.POST_ENABLE,
+                        plugin_name=plugin_name,
+                        manifest=plugin_info.manifest,
+                        plugin_instance=plugin_info.instance,
+                        context={
+                            'plugin_manager': self,
+                            'config_manager': self._config_manager,
+                            'logger_manager': self._logger_manager,
+                            'event_bus': self._event_bus,
+                            'file_manager': self._file_manager,
+                            'thread_manager': self._thread_manager,
+                            'database_manager': self._database_manager,
+                            'remote_services_manager': self._remote_services_manager,
+                            'security_manager': self._security_manager,
+                            'api_manager': self._api_manager,
+                            'cloud_manager': self._cloud_manager
+                        }
+                    )
+                except Exception as e:
+                    self._logger.warning(
+                        f"Post-enable hook failed for plugin '{plugin_name}': {str(e)}",
+                        extra={'plugin': plugin_name, 'error': str(e)}
+                    )
+
+            # Publish event
             self._event_bus.publish(
                 event_type='plugin/loaded',
                 source='plugin_manager',
@@ -647,78 +763,61 @@ class PluginManager(QorzenManager):
             ) from e
 
     def _load_packaged_plugin(self, plugin_info: PluginInfo) -> Type:
-        """Load a plugin from a package.
-
-        Args:
-            plugin_info: Plugin information
-
-        Returns:
-            Plugin class
-
-        Raises:
-            PluginError: If plugin loading fails
-        """
+        """Load a plugin class from a packaged plugin."""
         if not plugin_info.manifest or not plugin_info.path:
-            raise PluginError("Plugin has no manifest or path")
+            raise PluginError('Plugin has no manifest or path')
 
         manifest = plugin_info.manifest
         plugin_path = pathlib.Path(plugin_info.path)
+        code_dir = plugin_path / 'code'
 
-        # Get code directory
-        code_dir = plugin_path / "code"
         if not code_dir.exists():
-            raise PluginError(f"Plugin code directory not found: {code_dir}")
+            raise PluginError(f'Plugin code directory not found: {code_dir}')
 
-        # Find entry point
         entry_point = manifest.entry_point
         entry_path = code_dir / entry_point
 
         if not entry_path.exists():
-            raise PluginError(f"Plugin entry point not found: {entry_path}")
+            raise PluginError(f'Plugin entry point not found: {entry_path}')
 
-        # Add plugin directory to sys.path
         if str(plugin_path) not in sys.path:
             sys.path.insert(0, str(plugin_path))
 
-        # Import plugin module
         module_name = f"{plugin_info.name.replace('-', '_')}_plugin"
 
         if entry_point.endswith('.py'):
-            # Load from .py file
             spec = importlib.util.spec_from_file_location(module_name, entry_path)
             if not spec or not spec.loader:
-                raise PluginError(f"Failed to load plugin module: {entry_path}")
+                raise PluginError(f'Failed to load plugin module: {entry_path}')
 
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
-
         else:
-            # Try to load as a package
             sys.path.insert(0, str(code_dir))
             try:
                 module = importlib.import_module(entry_point)
             except ImportError:
-                raise PluginError(f"Failed to import plugin module: {entry_point}")
+                raise PluginError(f'Failed to import plugin module: {entry_point}')
 
-        # Find plugin class
         plugin_class = self._find_plugin_class(module)
         if not plugin_class:
-            raise PluginError(f"No plugin class found in module: {module_name}")
+            raise PluginError(f'No plugin class found in module: {module_name}')
 
         return plugin_class
 
     def unload_plugin(self, plugin_name: str) -> bool:
-        """Unload a plugin.
+        """
+        Unload a plugin.
 
         Args:
-            plugin_name: Name of the plugin to unload
+            plugin_name: The name of the plugin to unload
 
         Returns:
-            True if the plugin was unloaded successfully, False otherwise
+            True if successful, False otherwise
 
         Raises:
-            PluginError: If plugin unloading fails
+            PluginError: If there's an error unloading the plugin
         """
         if not self._initialized:
             raise PluginError('Plugin Manager not initialized', plugin_name=plugin_name)
@@ -735,10 +834,12 @@ class PluginManager(QorzenManager):
             )
             return True
 
-        # Check dependencies - don't unload if other plugins depend on this
+        # Check for dependent plugins
         for other_name, other_info in self._plugins.items():
-            if other_name != plugin_name and plugin_name in other_info.dependencies and (
-                    other_info.state in (PluginState.LOADED, PluginState.ACTIVE)
+            if (
+                other_name != plugin_name and
+                plugin_name in other_info.dependencies and
+                other_info.state in (PluginState.LOADED, PluginState.ACTIVE)
             ):
                 self._logger.warning(
                     f"Cannot unload plugin '{plugin_name}': Plugin '{other_name}' depends on it",
@@ -747,10 +848,43 @@ class PluginManager(QorzenManager):
                 return False
 
         try:
-            # Shutdown plugin
+            # Execute pre-disable lifecycle hook if available
+            if plugin_info.manifest and PluginLifecycleHook.PRE_DISABLE in plugin_info.manifest.lifecycle_hooks:
+                try:
+                    execute_hook(
+                        hook=PluginLifecycleHook.PRE_DISABLE,
+                        plugin_name=plugin_name,
+                        manifest=plugin_info.manifest,
+                        plugin_instance=plugin_info.instance,
+                        context={
+                            'plugin_manager': self,
+                            'config_manager': self._config_manager,
+                            'logger_manager': self._logger_manager,
+                            'event_bus': self._event_bus,
+                            'file_manager': self._file_manager,
+                            'thread_manager': self._thread_manager,
+                            'database_manager': self._database_manager,
+                            'remote_services_manager': self._remote_services_manager,
+                            'security_manager': self._security_manager,
+                            'api_manager': self._api_manager,
+                            'cloud_manager': self._cloud_manager
+                        }
+                    )
+                except Exception as e:
+                    self._logger.warning(
+                        f"Pre-disable hook failed for plugin '{plugin_name}': {str(e)}",
+                        extra={'plugin': plugin_name, 'error': str(e)}
+                    )
+
+            # Unregister extension points
+            if plugin_info.manifest:
+                unregister_plugin_extensions(plugin_name)
+
+            # Call shutdown method
             if plugin_info.instance and hasattr(plugin_info.instance, 'shutdown'):
                 plugin_info.instance.shutdown()
 
+            # Update state
             plugin_info.state = PluginState.INACTIVE
             plugin_info.instance = None
 
@@ -759,6 +893,34 @@ class PluginManager(QorzenManager):
                 extra={'plugin': plugin_name}
             )
 
+            # Execute post-disable lifecycle hook if available
+            if plugin_info.manifest and PluginLifecycleHook.POST_DISABLE in plugin_info.manifest.lifecycle_hooks:
+                try:
+                    execute_hook(
+                        hook=PluginLifecycleHook.POST_DISABLE,
+                        plugin_name=plugin_name,
+                        manifest=plugin_info.manifest,
+                        context={
+                            'plugin_manager': self,
+                            'config_manager': self._config_manager,
+                            'logger_manager': self._logger_manager,
+                            'event_bus': self._event_bus,
+                            'file_manager': self._file_manager,
+                            'thread_manager': self._thread_manager,
+                            'database_manager': self._database_manager,
+                            'remote_services_manager': self._remote_services_manager,
+                            'security_manager': self._security_manager,
+                            'api_manager': self._api_manager,
+                            'cloud_manager': self._cloud_manager
+                        }
+                    )
+                except Exception as e:
+                    self._logger.warning(
+                        f"Post-disable hook failed for plugin '{plugin_name}': {str(e)}",
+                        extra={'plugin': plugin_name, 'error': str(e)}
+                    )
+
+            # Publish event
             self._event_bus.publish(
                 event_type='plugin/unloaded',
                 source='plugin_manager',
@@ -785,28 +947,28 @@ class PluginManager(QorzenManager):
             ) from e
 
     def reload_plugin(self, plugin_name: str) -> bool:
-        """Reload a plugin.
+        """
+        Reload a plugin.
 
         Args:
-            plugin_name: Name of the plugin to reload
+            plugin_name: The name of the plugin to reload
 
         Returns:
-            True if the plugin was reloaded successfully, False otherwise
+            True if successful, False otherwise
 
         Raises:
-            PluginError: If plugin reloading fails
+            PluginError: If there's an error reloading the plugin
         """
         if not self._initialized:
             raise PluginError('Plugin Manager not initialized', plugin_name=plugin_name)
 
         try:
-            # Unload the plugin
             if not self.unload_plugin(plugin_name):
                 return False
 
-            # Reload the module
             plugin_info = self._plugins[plugin_name]
 
+            # Reload module if applicable
             if plugin_info.metadata.get('module'):
                 module_name = plugin_info.metadata['module']
                 if '.' in module_name:
@@ -817,7 +979,6 @@ class PluginManager(QorzenManager):
                 if base_module_name in sys.modules:
                     importlib.reload(sys.modules[base_module_name])
 
-            # Load the plugin again
             return self.load_plugin(plugin_name)
 
         except Exception as e:
@@ -838,13 +999,17 @@ class PluginManager(QorzenManager):
             ) from e
 
     def enable_plugin(self, plugin_name: str) -> bool:
-        """Enable a plugin.
+        """
+        Enable a plugin.
 
         Args:
-            plugin_name: Name of the plugin to enable
+            plugin_name: The name of the plugin to enable
 
         Returns:
-            True if the plugin was enabled, False otherwise
+            True if successful, False otherwise
+
+        Raises:
+            PluginError: If there's an error enabling the plugin
         """
         if not self._initialized:
             raise PluginError('Plugin Manager not initialized', plugin_name=plugin_name)
@@ -852,7 +1017,7 @@ class PluginManager(QorzenManager):
         if plugin_name not in self._plugins:
             raise PluginError(f"Plugin '{plugin_name}' not found", plugin_name=plugin_name)
 
-        # Update plugin installer if available
+        # Enable in installer
         if self.plugin_installer and self.plugin_installer.is_plugin_installed(plugin_name):
             self.plugin_installer.enable_plugin(plugin_name)
 
@@ -866,7 +1031,10 @@ class PluginManager(QorzenManager):
         self._config_manager.set('plugins.enabled', self._enabled_plugins)
         self._config_manager.set('plugins.disabled', self._disabled_plugins)
 
-        self._logger.info(f"Enabled plugin '{plugin_name}'", extra={'plugin': plugin_name})
+        self._logger.info(
+            f"Enabled plugin '{plugin_name}'",
+            extra={'plugin': plugin_name}
+        )
 
         self._event_bus.publish(
             event_type='plugin/enabled',
@@ -877,13 +1045,17 @@ class PluginManager(QorzenManager):
         return True
 
     def disable_plugin(self, plugin_name: str) -> bool:
-        """Disable a plugin.
+        """
+        Disable a plugin.
 
         Args:
-            plugin_name: Name of the plugin to disable
+            plugin_name: The name of the plugin to disable
 
         Returns:
-            True if the plugin was disabled, False otherwise
+            True if successful, False otherwise
+
+        Raises:
+            PluginError: If there's an error disabling the plugin
         """
         if not self._initialized:
             raise PluginError('Plugin Manager not initialized', plugin_name=plugin_name)
@@ -893,7 +1065,7 @@ class PluginManager(QorzenManager):
 
         plugin_info = self._plugins[plugin_name]
 
-        # Unload the plugin if it's loaded
+        # Unload if active
         if plugin_info.state in (PluginState.LOADED, PluginState.ACTIVE):
             if not self.unload_plugin(plugin_name):
                 raise PluginError(
@@ -901,7 +1073,7 @@ class PluginManager(QorzenManager):
                     plugin_name=plugin_name
                 )
 
-        # Update plugin installer if available
+        # Disable in installer
         if self.plugin_installer and self.plugin_installer.is_plugin_installed(plugin_name):
             self.plugin_installer.disable_plugin(plugin_name)
 
@@ -917,7 +1089,10 @@ class PluginManager(QorzenManager):
         self._config_manager.set('plugins.enabled', self._enabled_plugins)
         self._config_manager.set('plugins.disabled', self._disabled_plugins)
 
-        self._logger.info(f"Disabled plugin '{plugin_name}'", extra={'plugin': plugin_name})
+        self._logger.info(
+            f"Disabled plugin '{plugin_name}'",
+            extra={'plugin': plugin_name}
+        )
 
         self._event_bus.publish(
             event_type='plugin/disabled',
@@ -928,25 +1103,30 @@ class PluginManager(QorzenManager):
         return True
 
     def install_plugin(
-            self,
-            package_path: Union[str, Path],
-            force: bool = False,
-            skip_verification: bool = False,
-            enable: bool = True
+        self,
+        package_path: Union[str, Path],
+        force: bool = False,
+        skip_verification: bool = False,
+        enable: bool = True,
+        resolve_dependencies: bool = True,
+        install_dependencies: bool = True
     ) -> bool:
-        """Install a plugin from a package.
+        """
+        Install a plugin.
 
         Args:
             package_path: Path to the plugin package
-            force: Whether to force installation (overwrite existing)
+            force: Whether to overwrite existing plugins
             skip_verification: Whether to skip signature verification
             enable: Whether to enable the plugin after installation
+            resolve_dependencies: Whether to resolve dependencies
+            install_dependencies: Whether to install missing dependencies
 
         Returns:
-            True if the plugin was installed successfully, False otherwise
+            True if successful, False otherwise
 
         Raises:
-            PluginError: If plugin installation fails
+            PluginError: If there's an error during installation
         """
         if not self._initialized:
             raise PluginError('Plugin Manager not initialized')
@@ -955,16 +1135,29 @@ class PluginManager(QorzenManager):
             raise PluginError('Plugin installer not available')
 
         try:
-            # Install the plugin
-            installed_plugin = self.plugin_installer.install_plugin(
-                package_path=package_path,
-                force=force,
-                skip_verification=skip_verification,
-                enable=enable
-            )
+            # Use the enhanced installer if available
+            if hasattr(self.plugin_installer, 'resolve_dependencies'):
+                installed_plugin = self.plugin_installer.install_plugin(
+                    package_path=package_path,
+                    force=force,
+                    skip_verification=skip_verification,
+                    enable=enable,
+                    resolve_dependencies=resolve_dependencies,
+                    install_dependencies=install_dependencies
+                )
+            else:
+                # Fall back to basic installer
+                installed_plugin = self.plugin_installer.install_plugin(
+                    package_path=package_path,
+                    force=force,
+                    skip_verification=skip_verification,
+                    enable=enable
+                )
 
-            # Add the plugin to our registry
             manifest = installed_plugin.manifest
+            plugin_name = manifest.name
+
+            # Create or update plugin info
             plugin_info = PluginInfo(
                 name=manifest.name,
                 version=manifest.version,
@@ -988,19 +1181,30 @@ class PluginManager(QorzenManager):
                 manifest=manifest
             )
 
-            self._plugins[manifest.name] = plugin_info
+            # Parse config schema if available
+            if manifest.config_schema:
+                try:
+                    from qorzen.plugin_system.config_schema import ConfigSchema
+                    plugin_info.config_schema = ConfigSchema(**manifest.config_schema)
+                except Exception as e:
+                    self._logger.warning(
+                        f"Failed to parse config schema for plugin {plugin_name}: {str(e)}",
+                        extra={'plugin': plugin_name}
+                    )
+
+            self._plugins[plugin_name] = plugin_info
 
             # Update enabled/disabled lists
             if enable:
-                if manifest.name not in self._enabled_plugins:
-                    self._enabled_plugins.append(manifest.name)
-                if manifest.name in self._disabled_plugins:
-                    self._disabled_plugins.remove(manifest.name)
+                if plugin_name not in self._enabled_plugins:
+                    self._enabled_plugins.append(plugin_name)
+                if plugin_name in self._disabled_plugins:
+                    self._disabled_plugins.remove(plugin_name)
             else:
-                if manifest.name not in self._disabled_plugins:
-                    self._disabled_plugins.append(manifest.name)
-                if manifest.name in self._enabled_plugins:
-                    self._enabled_plugins.remove(manifest.name)
+                if plugin_name not in self._disabled_plugins:
+                    self._disabled_plugins.append(plugin_name)
+                if plugin_name in self._enabled_plugins:
+                    self._enabled_plugins.remove(plugin_name)
 
             self._config_manager.set('plugins.enabled', self._enabled_plugins)
             self._config_manager.set('plugins.disabled', self._disabled_plugins)
@@ -1029,7 +1233,7 @@ class PluginManager(QorzenManager):
             return True
 
         except Exception as e:
-            self._logger.error(f"Failed to install plugin: {str(e)}")
+            self._logger.error(f'Failed to install plugin: {str(e)}')
 
             self._event_bus.publish(
                 event_type='plugin/error',
@@ -1037,20 +1241,22 @@ class PluginManager(QorzenManager):
                 payload={'error': str(e)}
             )
 
-            raise PluginError(f"Failed to install plugin: {str(e)}") from e
+            raise PluginError(f'Failed to install plugin: {str(e)}') from e
 
-    def uninstall_plugin(self, plugin_name: str, keep_data: bool = False) -> bool:
-        """Uninstall a plugin.
+    def uninstall_plugin(self, plugin_name: str, keep_data: bool = False, check_dependents: bool = True) -> bool:
+        """
+        Uninstall a plugin.
 
         Args:
-            plugin_name: Name of the plugin to uninstall
+            plugin_name: The name of the plugin to uninstall
             keep_data: Whether to keep plugin data
+            check_dependents: Whether to check for dependents
 
         Returns:
-            True if the plugin was uninstalled successfully, False otherwise
+            True if successful, False otherwise
 
         Raises:
-            PluginError: If plugin uninstallation fails
+            PluginError: If there's an error during uninstallation
         """
         if not self._initialized:
             raise PluginError('Plugin Manager not initialized', plugin_name=plugin_name)
@@ -1061,8 +1267,9 @@ class PluginManager(QorzenManager):
         if plugin_name not in self._plugins:
             raise PluginError(f"Plugin '{plugin_name}' not found", plugin_name=plugin_name)
 
-        # Unload the plugin first
         plugin_info = self._plugins[plugin_name]
+
+        # Unload if active
         if plugin_info.state in (PluginState.LOADED, PluginState.ACTIVE):
             if not self.unload_plugin(plugin_name):
                 raise PluginError(
@@ -1070,38 +1277,46 @@ class PluginManager(QorzenManager):
                     plugin_name=plugin_name
                 )
 
+        # Use the enhanced installer if available
         try:
-            # Uninstall the plugin
-            success = self.plugin_installer.uninstall_plugin(
-                plugin_name=plugin_name,
-                keep_data=keep_data
-            )
+            if hasattr(self.plugin_installer, 'uninstall_plugin') and hasattr(self.plugin_installer, '_get_dependent_plugins'):
+                success = self.plugin_installer.uninstall_plugin(
+                    plugin_name=plugin_name,
+                    keep_data=keep_data,
+                    check_dependents=check_dependents
+                )
+            else:
+                # Fall back to basic installer
+                success = self.plugin_installer.uninstall_plugin(
+                    plugin_name=plugin_name,
+                    keep_data=keep_data
+                )
 
-            if not success:
-                return False
+            if success:
+                # Remove from plugins dict
+                del self._plugins[plugin_name]
 
-            # Remove from our registry
-            del self._plugins[plugin_name]
+                # Update enabled/disabled lists
+                if plugin_name in self._enabled_plugins:
+                    self._enabled_plugins.remove(plugin_name)
+                if plugin_name in self._disabled_plugins:
+                    self._disabled_plugins.remove(plugin_name)
 
-            # Update enabled/disabled lists
-            if plugin_name in self._enabled_plugins:
-                self._enabled_plugins.remove(plugin_name)
+                self._config_manager.set('plugins.enabled', self._enabled_plugins)
+                self._config_manager.set('plugins.disabled', self._disabled_plugins)
 
-            if plugin_name in self._disabled_plugins:
-                self._disabled_plugins.remove(plugin_name)
+                self._logger.info(
+                    f"Uninstalled plugin '{plugin_name}'",
+                    extra={'plugin': plugin_name}
+                )
 
-            self._config_manager.set('plugins.enabled', self._enabled_plugins)
-            self._config_manager.set('plugins.disabled', self._disabled_plugins)
+                self._event_bus.publish(
+                    event_type='plugin/uninstalled',
+                    source='plugin_manager',
+                    payload={'plugin_name': plugin_name}
+                )
 
-            self._logger.info(f"Uninstalled plugin '{plugin_name}'", extra={'plugin': plugin_name})
-
-            self._event_bus.publish(
-                event_type='plugin/uninstalled',
-                source='plugin_manager',
-                payload={'plugin_name': plugin_name}
-            )
-
-            return True
+            return success
 
         except Exception as e:
             self._logger.error(
@@ -1120,14 +1335,154 @@ class PluginManager(QorzenManager):
                 plugin_name=plugin_name
             ) from e
 
+    def update_plugin(
+        self,
+        package_path: Union[str, Path],
+        skip_verification: bool = False,
+        resolve_dependencies: bool = True,
+        install_dependencies: bool = True
+    ) -> bool:
+        """
+        Update a plugin.
+
+        Args:
+            package_path: Path to the plugin package
+            skip_verification: Whether to skip signature verification
+            resolve_dependencies: Whether to resolve dependencies
+            install_dependencies: Whether to install missing dependencies
+
+        Returns:
+            True if successful, False otherwise
+
+        Raises:
+            PluginError: If there's an error during update
+        """
+        if not self._initialized:
+            raise PluginError('Plugin Manager not initialized')
+
+        if not self.plugin_installer:
+            raise PluginError('Plugin installer not available')
+
+        try:
+            # Use the enhanced installer if available
+            if hasattr(self.plugin_installer, 'update_plugin') and hasattr(self.plugin_installer, 'resolve_dependencies'):
+                updated_plugin = self.plugin_installer.update_plugin(
+                    package_path=package_path,
+                    skip_verification=skip_verification,
+                    resolve_dependencies=resolve_dependencies,
+                    install_dependencies=install_dependencies
+                )
+            else:
+                # Fall back to basic installer
+                updated_plugin = self.plugin_installer.update_plugin(
+                    package_path=package_path,
+                    skip_verification=skip_verification
+                )
+
+            manifest = updated_plugin.manifest
+            plugin_name = manifest.name
+
+            # Update plugin info
+            plugin_info = PluginInfo(
+                name=manifest.name,
+                version=manifest.version,
+                description=manifest.description,
+                author=manifest.author.name,
+                state=PluginState.DISCOVERED,
+                dependencies=[dep.name for dep in manifest.dependencies],
+                path=str(updated_plugin.install_path),
+                metadata={
+                    'manifest': True,
+                    'display_name': manifest.display_name,
+                    'license': manifest.license,
+                    'homepage': manifest.homepage,
+                    'capabilities': [cap.value for cap in manifest.capabilities],
+                    'entry_point': manifest.entry_point,
+                    'min_core_version': manifest.min_core_version,
+                    'max_core_version': manifest.max_core_version,
+                    'installed_at': updated_plugin.installed_at.isoformat(),
+                    'enabled': updated_plugin.enabled
+                },
+                manifest=manifest
+            )
+
+            # Parse config schema if available
+            if manifest.config_schema:
+                try:
+                    from qorzen.plugin_system.config_schema import ConfigSchema
+                    plugin_info.config_schema = ConfigSchema(**manifest.config_schema)
+                except Exception as e:
+                    self._logger.warning(
+                        f"Failed to parse config schema for plugin {plugin_name}: {str(e)}",
+                        extra={'plugin': plugin_name}
+                    )
+
+            self._plugins[plugin_name] = plugin_info
+
+            # Update enabled/disabled lists based on updated plugin
+            if updated_plugin.enabled:
+                if plugin_name not in self._enabled_plugins:
+                    self._enabled_plugins.append(plugin_name)
+                if plugin_name in self._disabled_plugins:
+                    self._disabled_plugins.remove(plugin_name)
+            else:
+                if plugin_name not in self._disabled_plugins:
+                    self._disabled_plugins.append(plugin_name)
+                if plugin_name in self._enabled_plugins:
+                    self._enabled_plugins.remove(plugin_name)
+
+            self._config_manager.set('plugins.enabled', self._enabled_plugins)
+            self._config_manager.set('plugins.disabled', self._disabled_plugins)
+
+            self._logger.info(
+                f"Updated plugin '{manifest.name}' to v{manifest.version}",
+                extra={'plugin': manifest.name, 'version': manifest.version}
+            )
+
+            self._event_bus.publish(
+                event_type='plugin/updated',
+                source='plugin_manager',
+                payload={
+                    'plugin_name': manifest.name,
+                    'version': manifest.version,
+                    'description': manifest.description,
+                    'author': manifest.author.name,
+                    'enabled': updated_plugin.enabled
+                }
+            )
+
+            # Reload the plugin if enabled
+            if updated_plugin.enabled:
+                if plugin_info.state in (PluginState.LOADED, PluginState.ACTIVE):
+                    self.reload_plugin(manifest.name)
+                else:
+                    self.load_plugin(manifest.name)
+
+            return True
+
+        except Exception as e:
+            self._logger.error(f'Failed to update plugin: {str(e)}')
+
+            self._event_bus.publish(
+                event_type='plugin/error',
+                source='plugin_manager',
+                payload={'error': str(e)}
+            )
+
+            raise PluginError(f'Failed to update plugin: {str(e)}') from e
+
     def add_trusted_key(self, key_path: Union[str, Path]) -> bool:
-        """Add a trusted key for plugin verification.
+        """
+        Add a trusted key for plugin verification.
 
         Args:
             key_path: Path to the key file
 
         Returns:
-            True if the key was added successfully, False otherwise
+            True if successful, False otherwise
+
+        Raises:
+            PluginError: If there's an error adding the key
         """
         if not self._initialized:
             raise PluginError('Plugin Manager not initialized')
@@ -1140,39 +1495,39 @@ class PluginManager(QorzenManager):
 
             key_path = Path(key_path)
             if not key_path.exists():
-                raise PluginError(f"Key file not found: {key_path}")
+                raise PluginError(f'Key file not found: {key_path}')
 
-            # Load the key
             key = PluginSigner.load_key(key_path)
-
-            # Add to verifier
             self.plugin_verifier.add_trusted_key(key)
 
-            # Copy to trusted keys directory
             if self._trusted_keys_dir:
-                dest_path = self._trusted_keys_dir / f"{key.name}_{key.fingerprint[:8]}.json"
+                dest_path = self._trusted_keys_dir / f'{key.name}_{key.fingerprint[:8]}.json'
                 signer = PluginSigner(key)
                 signer.save_key(dest_path, include_private=False)
 
             self._logger.info(
-                f"Added trusted key: {key.name} ({key.fingerprint})",
+                f'Added trusted key: {key.name} ({key.fingerprint})',
                 extra={'key_name': key.name, 'fingerprint': key.fingerprint}
             )
 
             return True
 
         except Exception as e:
-            self._logger.error(f"Failed to add trusted key: {str(e)}")
-            raise PluginError(f"Failed to add trusted key: {str(e)}") from e
+            self._logger.error(f'Failed to add trusted key: {str(e)}')
+            raise PluginError(f'Failed to add trusted key: {str(e)}') from e
 
     def remove_trusted_key(self, fingerprint: str) -> bool:
-        """Remove a trusted key.
+        """
+        Remove a trusted key.
 
         Args:
-            fingerprint: Fingerprint of the key to remove
+            fingerprint: The fingerprint of the key to remove
 
         Returns:
-            True if the key was removed, False otherwise
+            True if successful, False otherwise
+
+        Raises:
+            PluginError: If there's an error removing the key
         """
         if not self._initialized:
             raise PluginError('Plugin Manager not initialized')
@@ -1180,30 +1535,29 @@ class PluginManager(QorzenManager):
         if not self.plugin_verifier:
             raise PluginError('Plugin verifier not available')
 
-        # Remove from verifier
         success = self.plugin_verifier.remove_trusted_key(fingerprint)
 
         if success:
-            # Remove from trusted keys directory
             if self._trusted_keys_dir:
-                for key_file in self._trusted_keys_dir.glob(f"*_{fingerprint[:8]}.json"):
+                for key_file in self._trusted_keys_dir.glob(f'*_{fingerprint[:8]}.json'):
                     try:
                         key_file.unlink()
                     except Exception as e:
                         self._logger.warning(
-                            f"Failed to delete key file: {str(e)}",
+                            f'Failed to delete key file: {str(e)}',
                             extra={'key_file': str(key_file)}
                         )
 
-            self._logger.info(f"Removed trusted key: {fingerprint[:8]}")
+            self._logger.info(f'Removed trusted key: {fingerprint[:8]}')
 
         return success
 
     def get_trusted_keys(self) -> List[Dict[str, Any]]:
-        """Get a list of trusted keys.
+        """
+        Get all trusted keys.
 
         Returns:
-            List of trusted keys
+            A list of trusted keys
         """
         if not self._initialized or not self.plugin_verifier:
             return []
@@ -1218,20 +1572,20 @@ class PluginManager(QorzenManager):
         ]
 
     def get_plugin_info(self, plugin_name: str) -> Optional[Dict[str, Any]]:
-        """Get information about a plugin.
+        """
+        Get information about a plugin.
 
         Args:
-            plugin_name: Name of the plugin
+            plugin_name: The name of the plugin
 
         Returns:
-            Plugin information or None if not found
+            A dictionary of plugin information, or None if the plugin is not found
         """
         if not self._initialized or plugin_name not in self._plugins:
             return None
 
         plugin_info = self._plugins[plugin_name]
 
-        # Convert to dictionary
         info = {
             'name': plugin_info.name,
             'version': plugin_info.version,
@@ -1242,16 +1596,15 @@ class PluginManager(QorzenManager):
             'path': plugin_info.path,
             'error': plugin_info.error,
             'load_time': plugin_info.load_time,
-            'enabled': self._is_plugin_enabled(plugin_name)
+            'enabled': self._is_plugin_enabled(plugin_name),
+            'instance': plugin_info.instance
         }
 
-        # Add metadata
         if plugin_info.metadata:
             for key, value in plugin_info.metadata.items():
-                if key not in info:
+                if key not in info and key != 'instance':
                     info[key] = value
 
-        # Add manifest information
         if plugin_info.manifest:
             manifest = plugin_info.manifest
             info['display_name'] = manifest.display_name
@@ -1260,50 +1613,90 @@ class PluginManager(QorzenManager):
             info['capabilities'] = [cap.value for cap in manifest.capabilities]
             info['min_core_version'] = manifest.min_core_version
             info['max_core_version'] = manifest.max_core_version
+            info['has_config_schema'] = manifest.config_schema is not None
+            info['extension_points'] = [
+                {
+                    'id': ext.id,
+                    'name': ext.name,
+                    'description': ext.description
+                }
+                for ext in manifest.extension_points
+            ]
+            info['extension_uses'] = [
+                {
+                    'provider': ext.provider,
+                    'id': ext.id,
+                    'version': ext.version,
+                    'required': ext.required
+                }
+                for ext in manifest.extension_uses
+            ]
+            info['has_lifecycle_hooks'] = bool(manifest.lifecycle_hooks)
+
+        if plugin_info.config_schema:
+            info['config_schema_available'] = True
 
         return info
 
-    def get_all_plugins(self) -> List[Dict[str, Any]]:
-        """Get information about all plugins.
+    def get_plugin_config_schema(self, plugin_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the configuration schema for a plugin.
+
+        Args:
+            plugin_name: The name of the plugin
 
         Returns:
-            List of plugin information dictionaries
+            The configuration schema, or None if not available
+        """
+        if not self._initialized or plugin_name not in self._plugins:
+            return None
+
+        plugin_info = self._plugins[plugin_name]
+
+        # First check for schema in plugin_info
+        if plugin_info.config_schema:
+            return plugin_info.config_schema.to_dict()
+
+        # Then check manifest
+        if plugin_info.manifest and plugin_info.manifest.config_schema:
+            return plugin_info.manifest.config_schema
+
+        return None
+
+    def get_all_plugins(self) -> List[Dict[str, Any]]:
+        """
+        Get information about all plugins.
+
+        Returns:
+            A list of plugin information dictionaries
         """
         if not self._initialized:
             return []
 
         return [
-            self.get_plugin_info(plugin_name) for plugin_name in self._plugins
+            self.get_plugin_info(plugin_name)
+            for plugin_name in self._plugins
             if self.get_plugin_info(plugin_name) is not None
         ]
 
     def get_active_plugins(self) -> List[Dict[str, Any]]:
-        """Get information about active plugins.
+        """
+        Get information about all active plugins.
 
         Returns:
-            List of active plugin information dictionaries
+            A list of plugin information dictionaries for active plugins
         """
         if not self._initialized:
             return []
 
         return [
-            self.get_plugin_info(plugin_name) for plugin_name, plugin_info in self._plugins.items()
-            if plugin_info.state == PluginState.ACTIVE
-               and self.get_plugin_info(plugin_name) is not None
+            self.get_plugin_info(plugin_name)
+            for plugin_name, plugin_info in self._plugins.items()
+            if plugin_info.state == PluginState.ACTIVE and self.get_plugin_info(plugin_name) is not None
         ]
 
     def _get_plugin_class(self, plugin_info: PluginInfo) -> Type:
-        """Get the plugin class for a plugin.
-
-        Args:
-            plugin_info: Plugin information
-
-        Returns:
-            Plugin class
-
-        Raises:
-            PluginError: If the plugin class cannot be loaded
-        """
+        """Get the plugin class from plugin info."""
         module_name = plugin_info.metadata.get('module')
         class_name = plugin_info.metadata.get('class')
 
@@ -1324,11 +1717,7 @@ class PluginManager(QorzenManager):
             ) from e
 
     def _on_plugin_install_event(self, event: Any) -> None:
-        """Handle plugin installation events.
-
-        Args:
-            event: Event object
-        """
+        """Handle plugin install event."""
         payload = event.payload
         package_path = payload.get('package_path')
 
@@ -1343,12 +1732,16 @@ class PluginManager(QorzenManager):
             force = payload.get('force', False)
             skip_verification = payload.get('skip_verification', False)
             enable = payload.get('enable', True)
+            resolve_dependencies = payload.get('resolve_dependencies', True)
+            install_dependencies = payload.get('install_dependencies', True)
 
             self.install_plugin(
                 package_path=package_path,
                 force=force,
                 skip_verification=skip_verification,
-                enable=enable
+                enable=enable,
+                resolve_dependencies=resolve_dependencies,
+                install_dependencies=install_dependencies
             )
         except Exception as e:
             self._logger.error(
@@ -1357,11 +1750,7 @@ class PluginManager(QorzenManager):
             )
 
     def _on_plugin_uninstall_event(self, event: Any) -> None:
-        """Handle plugin uninstallation events.
-
-        Args:
-            event: Event object
-        """
+        """Handle plugin uninstall event."""
         payload = event.payload
         plugin_name = payload.get('plugin_name')
 
@@ -1374,8 +1763,13 @@ class PluginManager(QorzenManager):
 
         try:
             keep_data = payload.get('keep_data', False)
+            check_dependents = payload.get('check_dependents', True)
 
-            self.uninstall_plugin(plugin_name=plugin_name, keep_data=keep_data)
+            self.uninstall_plugin(
+                plugin_name=plugin_name,
+                keep_data=keep_data,
+                check_dependents=check_dependents
+            )
         except Exception as e:
             self._logger.error(
                 f"Failed to uninstall plugin '{plugin_name}': {str(e)}",
@@ -1383,11 +1777,7 @@ class PluginManager(QorzenManager):
             )
 
     def _on_plugin_enable_event(self, event: Any) -> None:
-        """Handle plugin enable events.
-
-        Args:
-            event: Event object
-        """
+        """Handle plugin enable event."""
         payload = event.payload
         plugin_name = payload.get('plugin_name')
 
@@ -1409,11 +1799,7 @@ class PluginManager(QorzenManager):
             )
 
     def _on_plugin_disable_event(self, event: Any) -> None:
-        """Handle plugin disable events.
-
-        Args:
-            event: Event object
-        """
+        """Handle plugin disable event."""
         payload = event.payload
         plugin_name = payload.get('plugin_name')
 
@@ -1432,16 +1818,43 @@ class PluginManager(QorzenManager):
                 extra={'plugin': plugin_name, 'error': str(e)}
             )
 
-    def _on_config_changed(self, key: str, value: Any) -> None:
-        """Handle configuration changes.
+    def _on_plugin_update_event(self, event: Any) -> None:
+        """Handle plugin update event."""
+        payload = event.payload
+        package_path = payload.get('package_path')
 
-        Args:
-            key: Configuration key
-            value: New value
-        """
+        if not package_path:
+            self._logger.error(
+                'Invalid plugin update event: Missing package_path',
+                extra={'event_id': event.event_id}
+            )
+            return
+
+        try:
+            skip_verification = payload.get('skip_verification', False)
+            resolve_dependencies = payload.get('resolve_dependencies', True)
+            install_dependencies = payload.get('install_dependencies', True)
+
+            self.update_plugin(
+                package_path=package_path,
+                skip_verification=skip_verification,
+                resolve_dependencies=resolve_dependencies,
+                install_dependencies=install_dependencies
+            )
+        except Exception as e:
+            self._logger.error(
+                f'Failed to update plugin: {str(e)}',
+                extra={'package_path': package_path, 'error': str(e)}
+            )
+
+    def _on_config_changed(self, key: str, value: Any) -> None:
+        """Handle configuration changes."""
         if key == 'plugins.autoload':
             self._auto_load = value
-            self._logger.info(f'Plugin autoload set to {value}', extra={'autoload': value})
+            self._logger.info(
+                f'Plugin autoload set to {value}',
+                extra={'autoload': value}
+            )
         elif key == 'plugins.enabled':
             self._enabled_plugins = value
             self._logger.info(
@@ -1461,41 +1874,78 @@ class PluginManager(QorzenManager):
             )
 
     def shutdown(self) -> None:
-        """Shut down the plugin manager.
-
-        This unloads all plugins in the reverse order of their dependencies.
-        """
+        """Shut down the plugin manager."""
         if not self._initialized:
             return
 
         try:
             self._logger.info('Shutting down Plugin Manager')
 
-            # Unload active plugins in reverse dependency order
+            # Get active plugins in dependency-safe order
             active_plugins = [
                 name for name, info in self._plugins.items()
                 if info.state in (PluginState.LOADED, PluginState.ACTIVE)
             ]
 
-            # Sort plugins by dependencies
-            sorted_plugins = []
-            remaining_plugins = active_plugins.copy()
+            # Sort plugins to unload in reverse dependency order
+            if self.plugin_installer and hasattr(self.plugin_installer, 'get_loading_order'):
+                try:
+                    loading_order = self.plugin_installer.get_loading_order()
+                    # Reverse the order for unloading
+                    sorted_plugins = [
+                        name for name in reversed(loading_order)
+                        if name in active_plugins
+                    ]
 
-            # First, add plugins that nothing depends on
-            for plugin_name in active_plugins:
-                if not any(
-                        plugin_name in self._plugins[other].dependencies
-                        for other in active_plugins if other != plugin_name
-                ):
-                    sorted_plugins.append(plugin_name)
-                    remaining_plugins.remove(plugin_name)
+                    # Add any remaining plugins
+                    for name in active_plugins:
+                        if name not in sorted_plugins:
+                            sorted_plugins.append(name)
+                except Exception as e:
+                    self._logger.warning(
+                        f"Error sorting plugins for shutdown: {str(e)}, falling back to legacy method"
+                    )
+                    # Legacy fallback
+                    sorted_plugins = []
+                    remaining_plugins = active_plugins.copy()
 
-            # Add remaining plugins
-            sorted_plugins.extend(remaining_plugins)
+                    # First, find plugins with no dependents
+                    for plugin_name in active_plugins:
+                        if not any(
+                            (plugin_name in self._plugins[other].dependencies
+                            for other in active_plugins
+                            if other != plugin_name)
+                        ):
+                            sorted_plugins.append(plugin_name)
+                            remaining_plugins.remove(plugin_name)
 
-            # Reverse to unload in opposite order of dependencies
-            sorted_plugins.reverse()
+                    # Add remaining plugins
+                    sorted_plugins.extend(remaining_plugins)
 
+                    # Reverse for unloading
+                    sorted_plugins.reverse()
+            else:
+                # Legacy fallback
+                sorted_plugins = []
+                remaining_plugins = active_plugins.copy()
+
+                # First, find plugins with no dependents
+                for plugin_name in active_plugins:
+                    if not any(
+                        (plugin_name in self._plugins[other].dependencies
+                        for other in active_plugins
+                        if other != plugin_name)
+                    ):
+                        sorted_plugins.append(plugin_name)
+                        remaining_plugins.remove(plugin_name)
+
+                # Add remaining plugins
+                sorted_plugins.extend(remaining_plugins)
+
+                # Reverse for unloading
+                sorted_plugins.reverse()
+
+            # Unload plugins in the correct order
             for plugin_name in sorted_plugins:
                 try:
                     self.unload_plugin(plugin_name)
@@ -1505,11 +1955,14 @@ class PluginManager(QorzenManager):
                         extra={'plugin': plugin_name, 'error': str(e)}
                     )
 
-            # Unsubscribe from events
+            # Unregister from events
             if self._event_bus:
                 self._event_bus.unsubscribe('plugin_manager')
 
-            # Unregister from configuration changes
+            # Clean up extension registry
+            extension_registry.logger = None
+
+            # Unregister config listener
             self._config_manager.unregister_listener('plugins', self._on_config_changed)
 
             self._initialized = False
@@ -1525,23 +1978,18 @@ class PluginManager(QorzenManager):
             ) from e
 
     def status(self) -> Dict[str, Any]:
-        """Get the status of the plugin manager.
-
-        Returns:
-            Dictionary with plugin manager status
-        """
+        """Get the status of the plugin manager."""
         status = super().status()
 
         if self._initialized:
-            # Count plugins by state
             plugin_counts = {state.value: 0 for state in PluginState}
             for plugin_info in self._plugins.values():
                 plugin_counts[plugin_info.state.value] += 1
 
-            # Add plugin packaging info
             packaging_status = {
                 'installed_plugins': len(self.plugin_installer.get_installed_plugins()) if self.plugin_installer else 0,
-                'trusted_keys': len(self.plugin_verifier.trusted_keys) if self.plugin_verifier else 0
+                'trusted_keys': len(self.plugin_verifier.trusted_keys) if self.plugin_verifier else 0,
+                'repositories': len(self.repository_manager.repositories) if self.repository_manager else 0
             }
 
             status.update({
@@ -1558,7 +2006,11 @@ class PluginManager(QorzenManager):
                     'enabled_count': len(self._enabled_plugins),
                     'disabled_count': len(self._disabled_plugins)
                 },
-                'packaging': packaging_status
+                'packaging': packaging_status,
+                'extensions': {
+                    'registered_points': sum(len(exts) for exts in extension_registry.extension_points.values()),
+                    'pending_uses': sum(len(uses) for uses in extension_registry.pending_uses.values())
+                }
             })
 
         return status

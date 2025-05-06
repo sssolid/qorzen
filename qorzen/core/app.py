@@ -6,8 +6,13 @@ import signal
 import sys
 import traceback
 from pathlib import Path
+import logging
 from typing import Any, Dict, List, Optional, Type, cast
 
+from qorzen.plugin_system.integration import IntegratedPluginInstaller
+from qorzen.plugin_system.repository import PluginRepositoryManager
+from qorzen.plugin_system.extension import extension_registry
+from qorzen.plugin_system.lifecycle import set_logger as set_lifecycle_logger
 from qorzen.core import QorzenManager
 from qorzen.core import ResourceMonitoringManager
 from qorzen.core import APIManager
@@ -23,6 +28,7 @@ from qorzen.core import SecurityManager
 from qorzen.core import CloudManager
 from qorzen.utils.exceptions import ManagerInitializationError, QorzenError
 
+logger = logging.getLogger(__name__)
 
 class ApplicationCore:
     """Core application controller for Qorzen.
@@ -105,21 +111,58 @@ class ApplicationCore:
             cloud_manager.initialize()
             self._managers["cloud_manager"] = cloud_manager
 
-            plugin_manager = PluginManager(config_manager, logging_manager, event_bus_manager, file_manager, thread_manager, database_manager, remote_services_manager, security_manager, api_manager, cloud_manager)
-            plugin_manager.initialize()
-            self._managers["plugin_manager"] = plugin_manager
+            # plugin_manager = PluginManager(config_manager, logging_manager, event_bus_manager, file_manager, thread_manager, database_manager, remote_services_manager, security_manager, api_manager, cloud_manager)
+            # plugin_manager.initialize()
+            # self._managers["plugin_manager"] = plugin_manager
 
-            # For example:
-            # - Thread Manager
-            # - File Manager
-            # - Resource Manager
-            # - Database Manager
-            # - Plugin Manager
-            # - Remote Services Manager
-            # - Monitoring Manager
-            # - Security Manager
-            # - API Manager
-            # - Cloud Manager
+            # Initialize repository manager with configuration
+            repository_manager = PluginRepositoryManager(
+                config_file=self._config_path,  # Or a specific path for repositories config
+                logger=lambda msg, level: self._logger.log(level.upper(), msg) if self._logger else None
+            )
+
+            from qorzen.plugin_system.signing import PluginVerifier
+            plugin_verifier = PluginVerifier()
+
+            from qorzen.__version__ import __version__ as app_version
+
+            from qorzen.plugin_system.integration import IntegratedPluginInstaller
+            plugin_installer = IntegratedPluginInstaller(
+                plugins_dir=config_manager.get('plugins.directory', 'plugins'),
+                repository_manager=repository_manager,
+                verifier=plugin_verifier,
+                logger=lambda msg, level: self._logger.log(level.upper(), msg) if self._logger else None,
+                core_version=app_version
+            )
+
+            # Set extension registry logger
+            from qorzen.plugin_system.extension import extension_registry
+            extension_registry.logger = lambda msg, level: self._logger.log(level.upper(),
+                                                                            msg) if self._logger else None
+
+            # Now initialize the plugin manager with these components
+            plugin_manager = PluginManager(
+                config_manager=config_manager,
+                logger_manager=logging_manager,
+                event_bus_manager=event_bus_manager,
+                file_manager=file_manager,
+                thread_manager=thread_manager,
+                database_manager=database_manager,
+                remote_service_manager=remote_services_manager,
+                security_manager=security_manager,
+                api_manager=api_manager,
+                cloud_manager=cloud_manager
+            )
+
+            # Pass our pre-configured components to the plugin manager
+            # This requires adding these parameters to the PluginManager.__init__ method
+            plugin_manager.repository_manager = repository_manager
+            plugin_manager.plugin_installer = plugin_installer
+            plugin_manager.plugin_verifier = plugin_verifier
+
+            # Then continue with initialization
+            plugin_manager.initialize()
+            self._managers['plugin_manager'] = plugin_manager
 
             # Set up signal handlers
             self._setup_signal_handlers()
