@@ -8,8 +8,10 @@ from PySide6.QtWidgets import QMenu
 from PySide6.QtGui import QAction
 from PySide6.QtCore import QObject, Signal, Slot
 
+from qorzen.core import FileManager, ThreadManager, SecurityManager, EventBusManager
 from qorzen.plugins.autocarequery.ui.query_tab import AutocareQueryTab
 from qorzen.plugins.autocarequery.config.settings import DEFAULT_CONNECTION_STRING
+from tests.unit.core.test_security_manager import security_manager
 
 
 class AutocareQueryPlugin(QObject):
@@ -41,7 +43,7 @@ class AutocareQueryPlugin(QObject):
         self.ui_ready_signal.connect(self._handle_ui_ready_on_main_thread)
 
     def initialize(self, event_bus: Any, logger_provider: Any, config_provider: Any,
-                   file_manager: Any = None, thread_manager: Any = None, security_manager: Any = None) -> None:
+                   file_manager: Any = None, thread_manager: Any = None, database_manager: Any = None, security_manager=security_manager, **kwargs: Any) -> None:
         """
         Initialize the plugin with core services.
 
@@ -53,12 +55,12 @@ class AutocareQueryPlugin(QObject):
             thread_manager: Manager for thread operations
             security_manager: Manager for security operations
         """
-        self._event_bus = event_bus
+        self._event_bus: EventBusManager = event_bus
         self._logger = logger_provider.get_logger(f'plugin.{self.name}')
         self._config = config_provider
-        self._file_manager = file_manager
-        self._thread_manager = thread_manager
-        self._security_manager = security_manager
+        self._file_manager: FileManager = file_manager
+        self._thread_manager: ThreadManager = thread_manager
+        self._security_manager: SecurityManager = security_manager
 
         self._logger.info(f'Initializing {self.name} plugin v{self.version}')
 
@@ -66,7 +68,7 @@ class AutocareQueryPlugin(QObject):
         if self._file_manager:
             try:
                 plugin_data_dir = self._file_manager.get_file_path(self.name, directory_type='plugin_data')
-                os.makedirs(plugin_data_dir, exist_ok=True)
+                self._file_manager.ensure_directory(plugin_data_dir.as_posix())
                 self._logger.debug(f'Plugin data directory: {plugin_data_dir}')
             except Exception as e:
                 self._logger.warning(f'Failed to create plugin data directory: {str(e)}')

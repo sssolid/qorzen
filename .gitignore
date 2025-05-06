@@ -1,6 +1,8 @@
 /processed_project/
 /resources/music/
 /resources/logos/
+build/
+!qorzen/build/
 
 config.yaml
 
@@ -13,7 +15,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
 develop-eggs/
 dist/
 downloads/

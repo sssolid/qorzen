@@ -41,7 +41,7 @@ class AS400ConnectorPlugin(QObject):
         self.ui_ready_signal.connect(self._handle_ui_ready_on_main_thread)
 
     def initialize(self, event_bus: Any, logger_provider: Any, config_provider: Any, file_manager: Any = None,
-                   thread_manager: Any = None, security_manager: Any = None) -> None:
+                   thread_manager: Any = None, database_manager: Any = None, security_manager: Any = None, **kwargs: Any) -> None:
         self._event_bus = event_bus
         self._logger = logger_provider.get_logger(f'plugin.{self.name}')
         self._config = config_provider
