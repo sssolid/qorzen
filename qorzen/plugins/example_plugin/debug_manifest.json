@@ -1,0 +1,20 @@
+{
+  "name": "example_plugin",
+  "display_name": "Example Plugin",
+  "version": "1.0.0",
+  "description": "Debug version for testing plugin loading",
+  "author": {
+    "name": "Qorzen Team",
+    "email": "developers@qorzen.com"
+  },
+  "license": "MIT",
+  "entry_point": "debug_plugin.py",
+  "min_core_version": "0.1.0",
+  "capabilities": [],
+  "dependencies": [
+    {
+      "name": "core",
+      "version": ">=0.1.0"
+    }
+  ]
+}
