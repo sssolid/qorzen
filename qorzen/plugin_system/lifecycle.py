@@ -20,13 +20,20 @@ class LifecycleHookError(Exception):
 class LifecycleManager:
     """Manager for plugin lifecycle hooks."""
 
-    def __init__(self, logger: Optional[Callable[[str, str], None]] = None):
-        self.logger = logger or (lambda msg, level: None)
+    def __init__(self, logger_manager: Optional[Any],):
+        self._logger_manager = logger_manager
+        self._logger = None
+        if logger_manager:
+            self._logger = logger_manager.get_logger("lifecycle_manager")
+
+    def set_logger(self, logger: Any) -> None:
+        self._logger = logger
 
     def log(self, message: str, level: str = "info") -> None:
-        """Log a message."""
-        if self.logger:
-            self.logger(message, level)
+        if self._logger:
+            log_method = getattr(self._logger, level, None)
+            if callable(log_method):
+                log_method(message)
 
     def execute_hook(
             self,
@@ -97,9 +104,9 @@ class LifecycleManager:
 
                 # Call the hook function with context
                 if plugin_instance is not None:
-                    return hook_function(plugin_instance, context=context)
-                else:
-                    return hook_function(context=context)
+                    context["plugin_instance"] = plugin_instance
+
+                return hook_function(context=context)
 
             except ImportError as e:
                 raise LifecycleHookError(
@@ -150,9 +157,16 @@ class LifecycleManager:
         return hooks
 
 
-# Create a singleton instance
-lifecycle_manager = LifecycleManager()
+_lifecycle_manager: Optional[LifecycleManager] = None
 
+def get_lifecycle_manager() -> LifecycleManager:
+    global _lifecycle_manager
+    if _lifecycle_manager is None:
+        _lifecycle_manager = LifecycleManager(None)
+    return _lifecycle_manager
+
+def set_logger(logger: Any) -> None:
+    get_lifecycle_manager().set_logger(logger)
 
 def execute_hook(
         hook: PluginLifecycleHook,
@@ -177,19 +191,13 @@ def execute_hook(
     Raises:
         LifecycleHookError: If there's an error executing the hook
     """
-    return lifecycle_manager.execute_hook(
+    return get_lifecycle_manager().execute_hook(
         hook=hook,
         plugin_name=plugin_name,
         manifest=manifest,
         plugin_instance=plugin_instance,
         **context
     )
-
-
-def set_logger(logger: Callable[[str, str], None]) -> None:
-    """Set the logger for the lifecycle manager."""
-    lifecycle_manager.logger = logger
-
 
 def find_plugin_hooks(plugin_instance: Any) -> Dict[PluginLifecycleHook, str]:
     """
@@ -201,4 +209,4 @@ def find_plugin_hooks(plugin_instance: Any) -> Dict[PluginLifecycleHook, str]:
     Returns:
         A dictionary mapping hooks to method names
     """
-    return lifecycle_manager.find_plugin_hooks(plugin_instance)
+    return get_lifecycle_manager().find_plugin_hooks(plugin_instance)

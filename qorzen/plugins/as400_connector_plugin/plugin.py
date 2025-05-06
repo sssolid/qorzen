@@ -48,6 +48,7 @@ class AS400ConnectorPlugin(QObject):
         self._file_manager = file_manager
         self._thread_manager = thread_manager
         self._security_manager = security_manager
+        self._main_window = self._config.get("_app_core")
         self._logger.info(f'Initializing {self.name} plugin v{self.version}')
 
         if self._file_manager:
@@ -82,7 +83,7 @@ class AS400ConnectorPlugin(QObject):
     def _on_ui_ready_event(self, event: Any) -> None:
         """Handle UI ready event from any thread by emitting a signal."""
         try:
-            main_window = event.payload.get('main_window')
+            main_window = event.payload.get('main_window', self._config.get("_app_core"))
             if not main_window:
                 self._logger.error('Main window not provided in event payload')
                 return

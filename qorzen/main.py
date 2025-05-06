@@ -13,6 +13,10 @@ import traceback
 from pathlib import Path
 from typing import Dict, Optional, Any
 
+from PySide6.QtWidgets import QSplashScreen
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
+
 
 def setup_environment() -> None:
     """Set up the application environment.
@@ -62,9 +66,20 @@ def start_ui(app_core: Any, args: argparse.Namespace) -> None:
         from qorzen.ui.main_window import QorzenMainWindow
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance() or QApplication(sys.argv)
+
+        splash_path = Path("resources/logos/qorzen_256x256.png").resolve().as_posix()
+        pix = QPixmap(str(splash_path))
+        splash = QSplashScreen(pix, Qt.WindowStaysOnTopHint)
+        splash.show()
+
+        icon_path = Path("resources/logos/qorzen.ico").resolve().as_posix()
+        print(icon_path)
+        from PySide6.QtGui import QIcon
+        app.setWindowIcon(QIcon(str(icon_path)))
         main_window = QorzenMainWindow(app_core)
         app_core.set_main_window(main_window)
         main_window.show()
+        splash.close()
         sys.exit(app.exec())
     except ImportError as e:
         print(f'Error importing UI module: {e}')

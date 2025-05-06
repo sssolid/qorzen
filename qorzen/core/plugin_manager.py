@@ -22,7 +22,7 @@ from qorzen.plugin_system.integration import IntegratedPluginInstaller
 from qorzen.plugin_system.repository import PluginRepositoryManager
 from qorzen.plugin_system.signing import PluginVerifier
 from qorzen.plugin_system.manifest import PluginManifest, PluginLifecycleHook
-from qorzen.plugin_system.lifecycle import execute_hook, set_logger as set_lifecycle_logger
+from qorzen.plugin_system.lifecycle import execute_hook, set_logger as set_lifecycle_logger, get_lifecycle_manager
 from qorzen.plugin_system.extension import (
     register_plugin_extensions,
     unregister_plugin_extensions,
@@ -66,6 +66,7 @@ class PluginInfo:
 class PluginManager(QorzenManager):
     def __init__(
         self,
+        application_core: Any,
         config_manager: Any,
         logger_manager: Any,
         event_bus_manager: Any,
@@ -78,6 +79,7 @@ class PluginManager(QorzenManager):
         cloud_manager: Any
     ) -> None:
         super().__init__(name='PluginManager')
+        self._application_core = application_core
         self._config_manager = config_manager
         self._logger_manager = logger_manager
         self._logger = logger_manager.get_logger('plugin_manager')
@@ -104,7 +106,7 @@ class PluginManager(QorzenManager):
         self.repository_manager: Optional[PluginRepositoryManager] = None
 
         # Set up lifecycle logger
-        set_lifecycle_logger(self._logger)
+        get_lifecycle_manager().set_logger(self._logger)
 
     def initialize(self) -> None:
         try:
@@ -297,11 +299,11 @@ class PluginManager(QorzenManager):
                         entry_point = manifest.entry_point
 
                         if entry_point.endswith('.py'):
-                            entry_path = item / entry_point
+                            entry_path = item / 'code' / entry_point
                             if entry_path.exists():
                                 try:
                                     spec = importlib.util.spec_from_file_location(
-                                        f"{module_name}.{entry_point.replace('.py', '')}",
+                                        f"{module_name}.code.{entry_point.replace('.py', '')}",
                                         entry_path
                                     )
                                     if spec and spec.loader:
@@ -709,6 +711,7 @@ class PluginManager(QorzenManager):
                         manifest=plugin_info.manifest,
                         plugin_instance=plugin_info.instance,
                         context={
+                            'app_core': self._application_core,
                             'plugin_manager': self,
                             'config_manager': self._config_manager,
                             'logger_manager': self._logger_manager,
@@ -770,6 +773,7 @@ class PluginManager(QorzenManager):
         manifest = plugin_info.manifest
         plugin_path = pathlib.Path(plugin_info.path)
         code_dir = plugin_path / 'code'
+        code_dir = code_dir.resolve()
 
         if not code_dir.exists():
             raise PluginError(f'Plugin code directory not found: {code_dir}')
@@ -780,10 +784,11 @@ class PluginManager(QorzenManager):
         if not entry_path.exists():
             raise PluginError(f'Plugin entry point not found: {entry_path}')
 
+        plugin_path = plugin_path.resolve()
         if str(plugin_path) not in sys.path:
             sys.path.insert(0, str(plugin_path))
 
-        module_name = f"{plugin_info.name.replace('-', '_')}_plugin"
+        module_name = f"{plugin_info.name.replace('-', '_')}.code.plugin"
 
         if entry_point.endswith('.py'):
             spec = importlib.util.spec_from_file_location(module_name, entry_path)

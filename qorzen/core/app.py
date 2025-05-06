@@ -142,6 +142,7 @@ class ApplicationCore:
 
             # Now initialize the plugin manager with these components
             plugin_manager = PluginManager(
+                application_core=self,
                 config_manager=config_manager,
                 logger_manager=logging_manager,
                 event_bus_manager=event_bus_manager,

@@ -18,7 +18,7 @@ from qorzen.core import FileManager, EventBusManager, ThreadManager, ConfigManag
 from .services.vehicle_service import VehicleService
 from .services.export_service import ExportService
 from .routes.api import register_api_routes
-from qorzen.plugins.initialdb.config.settings import DEFAULT_CONNECTION_STRING
+from qorzen.plugins.initialdb.code.config.settings import DEFAULT_CONNECTION_STRING
 
 
 class InitialDBPlugin(QObject):
@@ -376,6 +376,21 @@ class InitialDBPlugin(QObject):
 
         if self._export_service:
             self._export_service.shutdown()
+
+        # Clean up UI
+        if self._main_window:
+            if self._tab and self._tab_index is not None:
+                central_tabs = self._main_window._central_tabs
+                if central_tabs:
+                    central_tabs.removeTab(self._tab_index)
+                    self._logger.debug(f'Removed InitialDB tab at index {self._tab_index}')
+            for action in self._menu_items:
+                if action and action.menu():
+                    menu = action.menu()
+                    menu.clear()
+                    menu.deleteLater()
+                elif action and action.parent():
+                    action.parent().removeAction(action)
 
         self._initialized = False
         self._logger.info(f"{self.name} plugin shut down successfully")
