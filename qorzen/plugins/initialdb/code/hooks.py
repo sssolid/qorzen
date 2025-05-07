@@ -6,6 +6,7 @@ Lifecycle hooks for the InitialDB plugin.
 This module contains hooks for different lifecycle events of the plugin,
 such as installation, updates, enabling/disabling, etc.
 """
+
 import os
 import logging
 from typing import Dict, Any, Optional, cast
@@ -25,7 +26,7 @@ def pre_install(context: Dict[str, Any]) -> None:
     if logger:
         logger.info("Running pre-install hook for InitialDB plugin")
 
-    # Check for SQLAlchemy
+    # Check for SQLAlchemy dependency
     try:
         import sqlalchemy
         if logger:
@@ -51,7 +52,7 @@ def post_install(context: Dict[str, Any]) -> None:
     if logger:
         logger.info("Running post-install hook for InitialDB plugin")
 
-    # Create data and exports directories
+    # Create data directories
     if install_path:
         data_dir = os.path.join(install_path, "data")
         exports_dir = os.path.join(data_dir, "exports")
@@ -68,18 +69,11 @@ def post_install(context: Dict[str, Any]) -> None:
     config_manager = context.get("config_manager")
     if config_manager:
         try:
-            from qorzen.plugins.initialdb.code.config.settings import (
-                DEFAULT_CONNECTION_STRING,
-                DEFAULT_QUERY_LIMIT,
-                MAX_QUERY_LIMIT,
-                UI_REFRESH_INTERVAL_MS,
-            )
-
             default_config = {
-                "connection_string": DEFAULT_CONNECTION_STRING,
-                "default_query_limit": DEFAULT_QUERY_LIMIT,
-                "max_query_limit": MAX_QUERY_LIMIT,
-                "ui_refresh_interval_ms": UI_REFRESH_INTERVAL_MS,
+                "connection_string": "postgresql+asyncpg://initialdb:password@localhost:5432/crown_nexus",
+                "default_query_limit": 1000,
+                "max_query_limit": 10000,
+                "ui_refresh_interval_ms": 500,
                 "enable_caching": True,
                 "cache_timeout": 300,
                 "exports_dir": "exports",
@@ -94,21 +88,16 @@ def post_install(context: Dict[str, Any]) -> None:
 
             if logger:
                 logger.info("Installed default plugin configuration")
-        except ImportError:
+        except Exception as e:
             if logger:
-                logger.warning("Could not import settings, using fallback values")
+                logger.warning(f"Error setting configuration: {e}")
+                logger.warning("Using fallback configuration")
 
-            # Fallback configuration
+            # Fallback with minimal configuration
             default_config = {
                 "connection_string": "sqlite:///data/initialdb/vehicles.db",
                 "default_query_limit": 1000,
-                "max_query_limit": 10000,
-                "ui_refresh_interval_ms": 500,
-                "enable_caching": True,
-                "cache_timeout": 300,
-                "exports_dir": "exports",
-                "templates_dir": "templates",
-                "log_level": "info"
+                "max_query_limit": 10000
             }
 
             for key, value in default_config.items():
@@ -131,7 +120,7 @@ def pre_uninstall(context: Dict[str, Any]) -> None:
     if logger:
         logger.info("Running pre-uninstall hook for InitialDB plugin")
 
-    # Backup data if keep_data is true
+    # Backup data if requested
     keep_data = context.get("keep_data", False)
     install_path = context.get("install_path")
 
@@ -172,14 +161,13 @@ def post_uninstall(context: Dict[str, Any]) -> None:
     if logger:
         logger.info("Running post-uninstall hook for InitialDB plugin")
 
-    # Clean up configuration
+    # Clean up configuration (optional)
     config_manager = context.get("config_manager")
     if config_manager:
         try:
-            # In a real implementation, we might remove configuration
-            # but here we just log that we would do that
+            # We're just logging here as we may not want to actually remove the config
             if logger:
-                logger.info("Cleaning up plugin configuration")
+                logger.info("Plugin configuration preserved for future reinstall")
         except Exception as e:
             if logger:
                 logger.error(f"Error cleaning up configuration: {str(e)}")
@@ -199,10 +187,10 @@ def pre_update(context: Dict[str, Any]) -> None:
         plugin_logger = logger_manager.get_logger("initialdb")
         plugin_logger.info(f"Preparing to update from v{current_version} to v{new_version}")
 
-        # Perform version-specific migrations if needed
+        # Example of version-specific migration
         if current_version == "0.1.0" and new_version == "0.2.0":
             plugin_logger.info("Performing migration from v0.1.0 to v0.2.0")
-            # Migration logic would go here
+            # Any migration tasks would go here
 
 
 def post_update(context: Dict[str, Any]) -> None:
@@ -240,7 +228,6 @@ def post_enable(context: Dict[str, Any]) -> None:
     Args:
         context: Enable context
     """
-    # The original was empty but we'll add some functionality based on the guide
     plugin_instance = context.get("plugin_instance")
     event_bus = context.get("event_bus")
     logger_manager = context.get("logger_manager")
@@ -249,6 +236,7 @@ def post_enable(context: Dict[str, Any]) -> None:
         logger = logger_manager.get_logger("initialdb")
         logger.info("Plugin enabled, registering UI integration")
 
+    # Publish event to notify other components
     if event_bus and logger_manager:
         event_bus.publish(
             event_type="initialdb/enabled",
@@ -272,11 +260,10 @@ def post_disable(context: Dict[str, Any]) -> None:
         logger = logger_manager.get_logger("initialdb")
         logger.info("Plugin disabled, cleaning up UI integration")
 
-    # Clean up any main window references to prevent memory leaks
+    # Clean up UI references
     if hasattr(plugin_instance, "_main_window"):
         plugin_instance._main_window = None
 
-    # Clear any UI component references
     if hasattr(plugin_instance, "_tab"):
         plugin_instance._tab = None
 

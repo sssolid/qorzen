@@ -19,8 +19,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox, QFormLayout
 )
 
-from ...config.settings import TEMPLATES_DIR
-from ...utils.template_manager import TemplateManager, FieldMapping
+from ...services.export_service import TemplateManager, FieldMapping
 
 logger = structlog.get_logger(__name__)
 

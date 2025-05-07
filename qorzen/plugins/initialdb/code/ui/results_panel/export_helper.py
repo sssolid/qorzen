@@ -19,7 +19,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from ...config.settings import settings
-from ...utils.template_manager import TemplateManager
+from ...services.export_service import ExportService
 
 logger = structlog.get_logger(__name__)
 
@@ -51,7 +51,7 @@ class ExportHelper:
 
         self._registry = resolve(SchemaRegistry)
 
-        self.template_manager = TemplateManager()
+        self.export_service = ExportService()
         self.results_model = results_model
         self.visible_columns = visible_columns
         self.repository = repository
@@ -83,7 +83,7 @@ class ExportHelper:
             True if export was successful, False otherwise
         """
         # Get the template field mappings
-        template = self.template_manager.get_template(template_name)
+        template = self.export_service.get_template(template_name)
         if not template:
             logger.error(f"Template '{template_name}' not found")
             return False
@@ -157,7 +157,7 @@ class ExportHelper:
         success = False
         try:
             if format_type == 'csv':
-                success = self.template_manager.export_to_template_csv(
+                success = self.export_service.export_to_csv(
                     data=rows_data,
                     template_name=template_name,
                     output_path=filename
@@ -171,7 +171,7 @@ class ExportHelper:
                     )
                     return False
 
-                success = self.template_manager.export_to_template_excel(
+                success = self.export_service.export_to_excel(
                     data=rows_data,
                     template_name=template_name,
                     output_path=filename

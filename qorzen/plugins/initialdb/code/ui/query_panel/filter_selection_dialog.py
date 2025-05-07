@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from ...config.settings import DEFAULT_SETTINGS
-from ...utils.dependency_container import resolve
-from ...utils.schema_registry import SchemaRegistry
-
 """
 Filter selection dialog for the InitialDB application.
 
@@ -29,8 +25,6 @@ class FilterSelectionDialog(QDialog):
             parent=None
     ) -> None:
         super().__init__(parent)
-
-        self._registry = resolve(SchemaRegistry)
 
         self.setWindowTitle('Select Filters')
         self.resize(600, 500)
@@ -115,7 +109,9 @@ class FilterSelectionDialog(QDialog):
 
     def _group_filters_by_category(self) -> Dict[str, List[Tuple[str, str, str]]]:
         # Use registry directly to group filters by category
-        return self._registry.group_filters_by_category()
+        ...
+        # TODO: Reimplement this
+        # return self._registry.group_filters_by_category()
 
     def _select_all(self) -> None:
         for i in range(self.filters_list.count()):
@@ -134,19 +130,21 @@ class FilterSelectionDialog(QDialog):
 
     def _reset_to_default(self) -> None:
         # Reference settings DEFAULT_SETTINGS
-        default_filter_columns = [col for _, col, _ in DEFAULT_SETTINGS['active_filters']]
-
-        for i in range(self.filters_list.count()):
-            item = self.filters_list.item(i)
-            if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
-                data = item.data(Qt.ItemDataRole.UserRole)
-                if data:
-                    _, column, _ = data
-                    if column in ['year_id', 'make_id', 'model_id', 'sub_model_id']:
-                        item.setCheckState(Qt.CheckState.Checked)
-                    else:
-                        item.setCheckState(
-                            Qt.CheckState.Checked if column in default_filter_columns else Qt.CheckState.Unchecked)
+        ...
+        # TODO: Reimplement this
+        # default_filter_columns = [col for _, col, _ in DEFAULT_SETTINGS['active_filters']]
+        #
+        # for i in range(self.filters_list.count()):
+        #     item = self.filters_list.item(i)
+        #     if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+        #         data = item.data(Qt.ItemDataRole.UserRole)
+        #         if data:
+        #             _, column, _ = data
+        #             if column in ['year_id', 'make_id', 'model_id', 'sub_model_id']:
+        #                 item.setCheckState(Qt.CheckState.Checked)
+        #             else:
+        #                 item.setCheckState(
+        #                     Qt.CheckState.Checked if column in default_filter_columns else Qt.CheckState.Unchecked)
 
     def _on_accepted(self) -> None:
         """

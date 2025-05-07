@@ -6,8 +6,8 @@ Database models package for the InitialDB plugin.
 This package provides SQLAlchemy models for vehicle component database (VCdb) access.
 """
 
-from .vehicle import (
-    Base, Vehicle, BaseVehicle, Make, Model, Year, SubModel,
+from .models import (
+    Vehicle, BaseVehicle, Make, Model, Year, SubModel,
     Region, EngineBlock, EngineConfig, FuelType, Aspiration,
     TransmissionType, Transmission, BodyType, BodyStyleConfig,
     VehicleType, VehicleTypeGroup, PublicationStage,
@@ -15,7 +15,7 @@ from .vehicle import (
 )
 
 __all__ = [
-    'Base', 'Vehicle', 'BaseVehicle', 'Make', 'Model', 'Year', 'SubModel',
+    'Vehicle', 'BaseVehicle', 'Make', 'Model', 'Year', 'SubModel',
     'Region', 'EngineBlock', 'EngineConfig', 'FuelType', 'Aspiration',
     'TransmissionType', 'Transmission', 'BodyType', 'BodyStyleConfig',
     'VehicleType', 'VehicleTypeGroup', 'PublicationStage',
