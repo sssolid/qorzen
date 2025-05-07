@@ -14,36 +14,37 @@ def post_enable(context: Dict[str, Any]) -> None:
     Args:
         context: Hook context containing app_core, plugin_instance, etc.
     """
-    # Get required objects from context
-    app_core = context.get('app_core')
-    plugin_instance = context.get('plugin_instance')
-    event_bus = context.get('event_bus')
-
-    if not app_core or not plugin_instance:
-        return
-
-    # Check if main window is available
-    if hasattr(app_core, '_main_window') and app_core._main_window:
-        # Create UI integration for the main window
-        ui_integration = MainWindowIntegration(app_core._main_window)
-
-        # Register UI integration with lifecycle manager
-        plugin_name = getattr(plugin_instance, 'name', 'initialdb')
-        register_ui_integration(plugin_name, ui_integration)
-
-        # If plugin has on_ui_ready method, call it directly
-        if hasattr(plugin_instance, 'on_ui_ready'):
-            plugin_instance.on_ui_ready(ui_integration)
-        else:
-            # Legacy support: set main_window property and publish UI ready event
-            plugin_instance._main_window = app_core._main_window
-
-            if event_bus:
-                event_bus.publish(
-                    event_type=EventType.UI_READY.value,
-                    source=f'hook:{plugin_name}',
-                    payload={'main_window': app_core._main_window}
-                )
+    ...
+    # # Get required objects from context
+    # app_core = context.get('app_core')
+    # plugin_instance = context.get('plugin_instance')
+    # event_bus = context.get('event_bus')
+    #
+    # if not app_core or not plugin_instance:
+    #     return
+    #
+    # # Check if main window is available
+    # if hasattr(app_core, '_main_window') and app_core._main_window:
+    #     # Create UI integration for the main window
+    #     ui_integration = MainWindowIntegration(app_core._main_window)
+    #
+    #     # Register UI integration with lifecycle manager
+    #     plugin_name = getattr(plugin_instance, 'name', 'initialdb')
+    #     register_ui_integration(plugin_name, ui_integration)
+    #
+    #     # If plugin has on_ui_ready method, call it directly
+    #     if hasattr(plugin_instance, 'on_ui_ready'):
+    #         plugin_instance.on_ui_ready(ui_integration)
+    #     else:
+    #         # Legacy support: set main_window property and publish UI ready event
+    #         plugin_instance._main_window = app_core._main_window
+    #
+    #         if event_bus:
+    #             event_bus.publish(
+    #                 event_type=EventType.UI_READY.value,
+    #                 source=f'hook:{plugin_name}',
+    #                 payload={'main_window': app_core._main_window}
+    #             )
 
 
 def post_disable(context: Dict[str, Any]) -> None:

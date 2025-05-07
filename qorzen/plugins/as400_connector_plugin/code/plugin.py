@@ -4,15 +4,19 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Set, cast
 from pathlib import Path
-from PySide6.QtWidgets import QMenu
+from PySide6.QtWidgets import QMenu, QToolBar
 from PySide6.QtGui import QAction
 from PySide6.QtCore import QMetaObject, Qt, Slot, QObject, Signal
 
-from qorzen.plugins.as400_connector_plugin.ui.as400_tab import AS400Tab
+from qorzen.core.event_model import EventType
+from qorzen.plugins.as400_connector_plugin.code.ui.as400_tab import AS400Tab
+
+from qorzen.plugin_system.interface import BasePlugin
+from qorzen.ui.integration import UIIntegration
 
 
 # Thread-safe plugin implementation
-class AS400ConnectorPlugin(QObject):
+class AS400ConnectorPlugin(BasePlugin):
     # Define signals for thread-safe operations
     ui_ready_signal = Signal(object)  # Signal to pass main window from event to main thread
 
@@ -36,9 +40,9 @@ class AS400ConnectorPlugin(QObject):
         self._menu_items: List[QAction] = []
         self._tab: Optional[AS400Tab] = None
         self._tab_index: Optional[int] = None
-
-        # Connect signal to slot for thread-safe handling
-        self.ui_ready_signal.connect(self._handle_ui_ready_on_main_thread)
+        self._toolbar: Optional[QToolBar] = None
+        self._menu: Optional[QMenu] = None
+        self._actions: List[Any] = []
 
     def initialize(self, event_bus: Any, logger_provider: Any, config_provider: Any, file_manager: Any = None,
                    thread_manager: Any = None, database_manager: Any = None, security_manager: Any = None, **kwargs: Any) -> None:
@@ -59,13 +63,6 @@ class AS400ConnectorPlugin(QObject):
             except Exception as e:
                 self._logger.warning(f'Failed to create plugin data directory: {str(e)}')
 
-        # Subscribe to the UI ready event
-        self._subscriber_id = self._event_bus.subscribe(
-            event_type='ui/ready',
-            callback=self._on_ui_ready_event,
-            subscriber_id=f'{self.name}_ui_subscriber'
-        )
-
         self._event_bus.subscribe(
             event_type='config/changed',
             callback=self._on_config_changed,
@@ -80,109 +77,88 @@ class AS400ConnectorPlugin(QObject):
             payload={'plugin_name': self.name, 'version': self.version, 'has_ui': True}
         )
 
-    def _on_ui_ready_event(self, event: Any) -> None:
-        """Handle UI ready event from any thread by emitting a signal."""
-        try:
-            main_window = event.payload.get('main_window', self._config.get("_app_core"))
-            if not main_window:
-                self._logger.error('Main window not provided in event payload')
-                return
+    def on_ui_ready(self, ui_integration: UIIntegration) -> None:
+        """Set up UI components when UI is ready.
 
-            # Emit signal to handle this on the main thread
-            self.ui_ready_signal.emit(main_window)
-
-        except Exception as e:
-            self._logger.error(f'Error in UI ready event handler: {str(e)}')
-
-    @Slot(object)
-    def _handle_ui_ready_on_main_thread(self, main_window: Any) -> None:
+        Args:
+            ui_integration: The UI integration.
         """
-        Handle UI ready event on the main thread.
-        This slot is connected to the signal and runs on the main thread.
-        """
+        self._logger.info('Setting up UI components')
+
+        # Create and add tab
+        self._tab = AS400Tab(event_bus=self._event_bus, logger=self._logger, config=self._config, file_manager=self._file_manager, thread_manager=self._thread_manager)
+        tab_index = ui_integration.add_tab(
+            plugin_id=self.name,
+            tab=self._tab,
+            title='AS400 Connector'
+        )
+        self._logger.debug(f'Added AS400 Connector tab at index {tab_index}')
+
+        # Add toolbar in a safe way
         try:
-            self._logger.debug('Handling UI ready on main thread')
-            self._main_window = main_window
-
-            # These operations now run on the main thread
-            self._add_tab_to_ui()
-            self._add_menu_items()
-
-            self._event_bus.publish(
-                event_type=f'plugin/{self.name}/ui_added',
-                source=self.name,
-                payload={'tab_index': self._tab_index}
+            self._toolbar = ui_integration.add_toolbar(
+                plugin_id=self.name,
+                title='AS400 Connector'
             )
 
-        except Exception as e:
-            self._logger.error(f'Error handling UI ready on main thread: {str(e)}')
-
-    def _add_tab_to_ui(self) -> None:
-        """Add the AS400 tab to the main UI."""
-        if not self._main_window:
-            return
-        try:
-            self._logger.info('Creating AS400Tab')
-            self._tab = AS400Tab(
-                event_bus=self._event_bus,
-                logger=self._logger,
-                config=self._config,
-                file_manager=self._file_manager,
-                thread_manager=self._thread_manager,
-                security_manager=self._security_manager,
-                parent=self._main_window
+            # Add toolbar action
+            action = ui_integration.add_toolbar_action(
+                plugin_id=self.name,
+                toolbar=self._toolbar,
+                text='Refresh',
+                callback=self._refresh_metrics
             )
+            self._actions.append(action)
 
-            central_tabs = self._main_window._central_tabs
-            if central_tabs:
-                self._tab_index = central_tabs.addTab(self._tab, 'AS400 Connector')
-                self._logger.info(f'Added AS400 tab at index {self._tab_index}')
-            else:
-                self._logger.error('Central tabs widget not found in main window')
         except Exception as e:
-            self._logger.error(f'Error adding AS400 tab to UI: {str(e)}')
+            self._logger.warning(f'Error adding toolbar: {str(e)}')
 
-    def _add_menu_items(self) -> None:
-        """Add menu items to the main UI."""
-        if not self._main_window:
-            return
+        # Try to find and add to Tools menu safely
         try:
-            tools_menu = None
-            for action in self._main_window.menuBar().actions():
-                if action.text() == '&Tools':
-                    tools_menu = action.menu()
-                    break
-
+            tools_menu = ui_integration.find_menu('&Tools')
             if tools_menu:
-                as400_menu = QMenu('AS400 Connector', self._main_window)
+                # Keep a reference to the menu
+                self._menu = ui_integration.add_menu(
+                    plugin_id=self.name,
+                    title='AS400 Connector',
+                    parent_menu=tools_menu
+                )
 
-                connect_action = QAction('Connect to AS400...', self._main_window)
-                connect_action.triggered.connect(self._open_connection_dialog)
-                as400_menu.addAction(connect_action)
+                # Add menu actions
+                action1 = ui_integration.add_menu_action(
+                    plugin_id=self.name,
+                    menu=self._menu,
+                    text='Connection...',
+                    callback=self._open_connection_dialog
+                )
 
-                manage_connections_action = QAction('Manage Connections', self._main_window)
-                manage_connections_action.triggered.connect(self._manage_connections)
-                as400_menu.addAction(manage_connections_action)
+                action2 = ui_integration.add_menu_action(
+                    plugin_id=self.name,
+                    menu=self._menu,
+                    text='Manage Connections...',
+                    callback=self._manage_connections
+                )
 
-                as400_menu.addSeparator()
+                self._menu.addSeparator()
 
-                import_action = QAction('Import Queries...', self._main_window)
-                import_action.triggered.connect(self._import_queries)
-                as400_menu.addAction(import_action)
+                action3 = ui_integration.add_menu_action(
+                    plugin_id=self.name,
+                    menu=self._menu,
+                    text='Import Queries...',
+                    callback=self._import_queries
+                )
 
-                export_action = QAction('Export Queries...', self._main_window)
-                export_action.triggered.connect(self._export_queries)
-                as400_menu.addAction(export_action)
+                action4 = ui_integration.add_menu_action(
+                    plugin_id=self.name,
+                    menu=self._menu,
+                    text='Export Queries...',
+                    callback=self._export_queries
+                )
 
-                tools_menu.addSeparator()
-                tools_menu.addMenu(as400_menu)
+                self._actions.extend([action1, action2, action3, action4])
 
-                self._menu_items.extend([connect_action, manage_connections_action, import_action, export_action])
-                self._logger.debug('Added AS400 menu items to Tools menu')
-            else:
-                self._logger.warning('Tools menu not found in main window')
         except Exception as e:
-            self._logger.error(f'Error adding menu items: {str(e)}')
+            self._logger.warning(f'Error adding menu items: {str(e)}')
 
     # Keep the rest of your methods for opening connection dialog, etc.
     def _open_connection_dialog(self) -> None:

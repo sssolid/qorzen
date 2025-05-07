@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QWidget, QCompleter, QAbstractItemView
 )
 
-from qorzen.plugins.as400_connector_plugin.utils import (
+from qorzen.plugins.as400_connector_plugin.code.utils import (
     get_sql_keywords, get_syntax_highlighting_colors, detect_query_parameters
 )
 

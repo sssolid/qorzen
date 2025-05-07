@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (
     QToolButton, QSizePolicy, QComboBox
 )
 
-from qorzen.plugins.as400_connector_plugin.models import AS400ConnectionConfig
-from qorzen.plugins.as400_connector_plugin.utils import guess_jar_locations
+from qorzen.plugins.as400_connector_plugin.code.models import AS400ConnectionConfig
+from qorzen.plugins.as400_connector_plugin.code.utils import guess_jar_locations
 
 
 class ConnectionDialog(QDialog):

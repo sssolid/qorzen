@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Union, Tuple, Set, cast
 from PySide6.QtCore import QSettings, QByteArray
 from PySide6.QtGui import QColor
 
-from qorzen.plugins.as400_connector_plugin.models import (
+from qorzen.plugins.as400_connector_plugin.code.models import (
     AS400ConnectionConfig,
     SavedQuery,
     QueryHistoryEntry,

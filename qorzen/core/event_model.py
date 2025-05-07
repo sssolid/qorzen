@@ -15,6 +15,17 @@ class EventType(str, enum.Enum):
     # UI events
     UI_READY = "ui/ready"
 
+    # Log events
+    LOG_MESSAGE = "log/message"
+    LOG_ERROR = "log/error"
+    LOG_EXCEPTION = "log/exception"
+    LOG_WARNING = "log/warning"
+    LOG_DEBUG = "log/debug"
+    LOG_INFO = "log/info"
+    LOG_TRACE = "log/trace"
+    LOG_CRITICAL = "log/critical"
+    LOG_EVENT = "log/event"
+
     # Plugin events
     PLUGIN_LOADED = "plugin/loaded"
     PLUGIN_UNLOADED = "plugin/unloaded"
@@ -26,6 +37,10 @@ class EventType(str, enum.Enum):
     PLUGIN_ERROR = "plugin/error"
     PLUGIN_INITIALIZED = "plugin/initialized"
     PLUGIN_MANAGER_INITIALIZED = "plugin_manager/initialized"
+
+    # Monitoring events
+    MONITORING_METRICS = "monitoring/metrics"
+    MONITORING_ALERT = "monitoring/alert"
 
     # Config events
     CONFIG_CHANGED = "config/changed"

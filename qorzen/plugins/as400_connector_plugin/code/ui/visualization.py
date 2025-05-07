@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from qorzen.plugins.as400_connector_plugin.models import ColumnMetadata, QueryResult
+from qorzen.plugins.as400_connector_plugin.code.models import ColumnMetadata, QueryResult
 
 
 class ChartConfigWidget(QWidget):
@@ -202,11 +202,11 @@ class ChartConfigWidget(QWidget):
         self._y_axis_combo.addItems(self._numeric_columns)
 
         # Enable/disable based on available columns
-        self._x_axis_combo.setEnabled(len(self._x_axis_combo) > 0)
-        self._y_axis_combo.setEnabled(len(self._y_axis_combo) > 0)
+        self._x_axis_combo.setEnabled(self._x_axis_combo.count() > 0)
+        self._y_axis_combo.setEnabled(self._y_axis_combo.count() > 0)
 
         self._apply_button.setEnabled(
-            len(self._x_axis_combo) > 0 and len(self._y_axis_combo) > 0
+            self._x_axis_combo.count() > 0 and self._y_axis_combo.count() > 0
         )
 
     def _on_config_changed(self) -> None:
@@ -222,10 +222,10 @@ class ChartConfigWidget(QWidget):
 
         # Enable Apply button if we have enough data for the selected chart type
         if chart_type == "Pie Chart":
-            self._apply_button.setEnabled(len(self._x_axis_combo) > 0)
+            self._apply_button.setEnabled(self._x_axis_combo.count() > 0)
         else:
             self._apply_button.setEnabled(
-                len(self._x_axis_combo) > 0 and len(self._y_axis_combo) > 0
+                self._x_axis_combo.count() > 0 and self._y_axis_combo.count() > 0
             )
 
     def get_chart_type(self) -> str:
@@ -281,7 +281,7 @@ class ChartWidget(QWidget):
         self.setMinimumSize(400, 300)
 
         # Enable painting
-        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("background-color: white;")
 
     def set_config(self,
@@ -355,7 +355,7 @@ class ChartWidget(QWidget):
     def _paint_placeholder(self) -> None:
         """Paint a placeholder when no chart can be displayed."""
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Fill background
         painter.fillRect(self.rect(), QColor(255, 255, 255))
@@ -371,12 +371,12 @@ class ChartWidget(QWidget):
         else:
             message = "Chart type not supported"
 
-        painter.drawText(self.rect(), Qt.AlignCenter, message)
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, message)
 
     def _paint_pie_chart(self) -> None:
         """Paint a pie chart."""
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # This is a placeholder. In a real implementation, you would:
         # 1. Process the data (aggregate values by category)
@@ -397,14 +397,14 @@ class ChartWidget(QWidget):
         painter.setFont(QFont("Arial", 10))
         painter.drawText(
             self.rect(),
-            Qt.AlignCenter,
+            Qt.AlignmentFlag.AlignCenter,
             "Pie Chart Visualization\n(Placeholder - would use actual data in production)"
         )
 
     def _paint_bar_chart(self) -> None:
         """Paint a bar chart."""
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # This is a placeholder. In a real implementation, you would:
         # 1. Process the data (calculate bar heights)
@@ -420,14 +420,14 @@ class ChartWidget(QWidget):
         painter.setFont(QFont("Arial", 10))
         painter.drawText(
             self.rect(),
-            Qt.AlignCenter,
+            Qt.AlignmentFlag.AlignCenter,
             "Bar Chart Visualization\n(Placeholder - would use actual data in production)"
         )
 
     def _paint_line_chart(self) -> None:
         """Paint a line chart."""
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # This is a placeholder. In a real implementation, you would:
         # 1. Process the data (sort by x-axis, calculate points)
@@ -443,14 +443,14 @@ class ChartWidget(QWidget):
         painter.setFont(QFont("Arial", 10))
         painter.drawText(
             self.rect(),
-            Qt.AlignCenter,
+            Qt.AlignmentFlag.AlignCenter,
             "Line Chart Visualization\n(Placeholder - would use actual data in production)"
         )
 
     def _paint_scatter_plot(self) -> None:
         """Paint a scatter plot."""
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # This is a placeholder. In a real implementation, you would:
         # 1. Process the data (calculate point positions)
@@ -466,14 +466,14 @@ class ChartWidget(QWidget):
         painter.setFont(QFont("Arial", 10))
         painter.drawText(
             self.rect(),
-            Qt.AlignCenter,
+            Qt.AlignmentFlag.AlignCenter,
             "Scatter Plot Visualization\n(Placeholder - would use actual data in production)"
         )
 
     def _paint_area_chart(self) -> None:
         """Paint an area chart."""
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # This is a placeholder. In a real implementation, you would:
         # 1. Process the data (sort by x-axis, calculate points)
@@ -489,7 +489,7 @@ class ChartWidget(QWidget):
         painter.setFont(QFont("Arial", 10))
         painter.drawText(
             self.rect(),
-            Qt.AlignCenter,
+            Qt.AlignmentFlag.AlignCenter,
             "Area Chart Visualization\n(Placeholder - would use actual data in production)"
         )
 
@@ -529,7 +529,7 @@ class VisualizationView(QWidget):
         main_layout.addWidget(toolbar)
 
         # Create splitter for config and chart
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Config panel
         self._config_widget = ChartConfigWidget()

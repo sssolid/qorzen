@@ -25,7 +25,7 @@ from qorzen.plugin_system.lifecycle import (
     register_ui_integration,
     cleanup_ui
 )
-from qorzen.plugin_system.extension import register_plugin_extensions, unregister_plugin_extensions
+from qorzen.plugin_system.extension import register_plugin_extensions, unregister_plugin_extensions, extension_registry
 from qorzen.plugin_system.config_schema import ConfigSchema
 from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownError, PluginError
 
@@ -601,6 +601,9 @@ class PluginManager(QorzenManager):
         """
         for _, obj in inspect.getmembers(module, inspect.isclass):
             if hasattr(obj, 'name') and hasattr(obj, 'version') and hasattr(obj, 'description'):
+                # Skip BasePlugin class
+                if obj.__name__ == 'BasePlugin':
+                    continue
                 return obj
         return None
 
@@ -942,39 +945,27 @@ class PluginManager(QorzenManager):
 
         manifest = plugin_info.manifest
         plugin_path = pathlib.Path(plugin_info.path)
-
-        # If entry_point includes 'code/', strip it as code_dir already includes it
-        entry_point = manifest.entry_point
-        if entry_point.startswith('code/'):
-            entry_point = entry_point[5:]
-
         code_dir = plugin_path / 'code'
         code_dir = code_dir.resolve()
 
         if not code_dir.exists():
             raise PluginError(f'Plugin code directory not found: {code_dir}')
 
+        entry_point = manifest.entry_point
         entry_path = code_dir / entry_point
 
         if not entry_path.exists():
             raise PluginError(f'Plugin entry point not found: {entry_path}')
 
-        # Add plugin path and code path to Python path
+        # Add plugin path to Python path
         plugin_path = plugin_path.resolve()
         if str(plugin_path) not in sys.path:
             sys.path.insert(0, str(plugin_path))
 
-        if str(code_dir) not in sys.path:
-            sys.path.insert(0, str(code_dir))
+        # Load module
+        module_name = f"{plugin_info.name.replace('-', '_')}.code.plugin"
 
-        # Determine module name
-        module_name = None
-
-        # If it's a Python file, use spec_from_file_location
         if entry_point.endswith('.py'):
-            module_base_name = os.path.splitext(os.path.basename(entry_point))[0]
-            module_name = f"{plugin_info.name.replace('-', '_')}.code.{module_base_name}"
-
             spec = importlib.util.spec_from_file_location(module_name, entry_path)
             if not spec or not spec.loader:
                 raise PluginError(f'Failed to load plugin module: {entry_path}')
@@ -983,52 +974,14 @@ class PluginManager(QorzenManager):
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
         else:
-            # Try direct import - assume it's a module
+            sys.path.insert(0, str(code_dir))
             try:
-                # First try as a relative path from code directory
-                module_name = entry_point.replace('/', '.').replace('.py', '')
-                module = importlib.import_module(module_name)
+                module = importlib.import_module(entry_point)
             except ImportError:
-                # Try absolute import as fallback
-                module_name = f"{plugin_info.name.replace('-', '_')}.{entry_point.replace('/', '.').replace('.py', '')}"
-                try:
-                    module = importlib.import_module(module_name)
-                except ImportError:
-                    raise PluginError(f'Failed to import plugin module: {entry_point}')
+                raise PluginError(f'Failed to import plugin module: {entry_point}')
 
-        # Find plugin class - more aggressively look at all classes
-        plugin_class = None
-
-        # First try known plugin class names
-        possible_class_names = [
-            plugin_info.name.replace('-', '_').title() + 'Plugin',  # my_plugin -> MyPluginPlugin
-            ''.join(word.title() for word in plugin_info.name.split('_')) + 'Plugin',  # my_plugin -> MyPluginPlugin
-            ''.join(word.title() for word in plugin_info.name.split('-')) + 'Plugin',  # my-plugin -> MyPluginPlugin
-            plugin_info.name.title() + 'Plugin',  # myplugin -> MypluginPlugin
-            'Plugin',
-            'MainPlugin'
-        ]
-
-        # Look for class by expected name patterns
-        for class_name in possible_class_names:
-            if hasattr(module, class_name):
-                cls = getattr(module, class_name)
-                if (inspect.isclass(cls) and
-                        hasattr(cls, 'name') and
-                        hasattr(cls, 'version') and
-                        hasattr(cls, 'description')):
-                    plugin_class = cls
-                    break
-
-        # If not found, try all classes in the module
-        if not plugin_class:
-            for name, obj in inspect.getmembers(module, inspect.isclass):
-                if (hasattr(obj, 'name') and
-                        hasattr(obj, 'version') and
-                        hasattr(obj, 'description')):
-                    plugin_class = obj
-                    break
-
+        # Find plugin class
+        plugin_class = self._find_plugin_class(module)
         if not plugin_class:
             raise PluginError(f'No plugin class found in module: {module_name}')
 

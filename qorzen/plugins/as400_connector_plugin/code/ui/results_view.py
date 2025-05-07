@@ -54,8 +54,8 @@ from PySide6.QtWidgets import (
     QWidget
 )
 
-from qorzen.plugins.as400_connector_plugin.models import ColumnMetadata, QueryResult
-from qorzen.plugins.as400_connector_plugin.utils import format_value_for_display
+from qorzen.plugins.as400_connector_plugin.code.models import ColumnMetadata, QueryResult
+from qorzen.plugins.as400_connector_plugin.code.utils import format_value_for_display
 
 
 class QueryResultsTableModel(QAbstractTableModel):

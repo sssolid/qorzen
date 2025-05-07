@@ -27,15 +27,15 @@ from PySide6.QtWidgets import (
     QButtonGroup, QScrollArea
 )
 
-from qorzen.plugins.as400_connector_plugin.models import (
+from qorzen.plugins.as400_connector_plugin.code.models import (
     AS400ConnectionConfig,
     SavedQuery,
     QueryHistoryEntry,
     PluginSettings,
     QueryResult
 )
-from qorzen.plugins.as400_connector_plugin.connector import AS400Connector
-from qorzen.plugins.as400_connector_plugin.utils import (
+from qorzen.plugins.as400_connector_plugin.code.connector import AS400Connector
+from qorzen.plugins.as400_connector_plugin.code.utils import (
     load_connections,
     save_connections,
     load_saved_queries,
@@ -47,8 +47,8 @@ from qorzen.plugins.as400_connector_plugin.utils import (
     format_value_for_display,
     detect_query_parameters
 )
-from qorzen.plugins.as400_connector_plugin.ui.results_view import ResultsView
-from qorzen.plugins.as400_connector_plugin.ui.visualization import VisualizationView
+from qorzen.plugins.as400_connector_plugin.code.ui.results_view import ResultsView
+from qorzen.plugins.as400_connector_plugin.code.ui.visualization import VisualizationView
 
 
 class AS400Tab(QWidget):
@@ -622,7 +622,7 @@ class AS400Tab(QWidget):
     def _on_new_connection(self) -> None:
         """Handle creating a new connection."""
         # Import connection dialog here to avoid circular imports
-        from qorzen.plugins.as400_connector_plugin.ui.connection_dialog import ConnectionDialog
+        from qorzen.plugins.as400_connector_plugin.code.ui.connection_dialog import ConnectionDialog
 
         # Create the dialog
         dialog = ConnectionDialog(
@@ -1556,7 +1556,7 @@ class AS400Tab(QWidget):
     def open_connection_manager(self) -> None:
         """Open the connection management dialog."""
         # Import here to avoid circular imports
-        from qorzen.plugins.as400_connector_plugin.ui.connection_dialog import ConnectionManagerDialog
+        from qorzen.plugins.as400_connector_plugin.code.ui.connection_dialog import ConnectionManagerDialog
 
         # Create and show the dialog
         dialog = ConnectionManagerDialog(

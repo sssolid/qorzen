@@ -13,7 +13,52 @@ import structlog
 from pythonjsonlogger import jsonlogger
 
 from qorzen.core.base import QorzenManager
-from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownError
+from qorzen.core.event_model import EventType
+from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownError, EventBusError
+
+
+class ExcludeLoggerFilter(logging.Filter):
+    def __init__(self, excluded_logger_name):
+        super().__init__()
+        self.excluded_logger_name = excluded_logger_name
+
+    def filter(self, record):
+        return not record.name.startswith(self.excluded_logger_name)
+
+
+class EventBusLogHandler(logging.Handler):
+    def __init__(self, event_bus_manager):
+        super().__init__()
+        self._event_bus = event_bus_manager  # Directly the manager itself
+
+    def emit(self, record):
+        try:
+            if self.formatter:
+                timestamp = self.formatter.formatTime(record)
+                message = self.format(record)
+            else:
+                timestamp = record.created
+                message = record.getMessage()
+
+            event_payload = {
+                "timestamp": timestamp,
+                "level": record.levelname,
+                "message": message,
+            }
+
+            try:
+                self._event_bus.publish(
+                    event_type=EventType.LOG_EVENT,
+                    source="logging_manager",
+                    payload=event_payload
+                )
+            except EventBusError:
+                pass
+            except Exception:
+                self.handleError(record)
+
+        except Exception:
+            self.handleError(record)
 
 
 class LoggingManager(QorzenManager):
@@ -50,6 +95,9 @@ class LoggingManager(QorzenManager):
         self._log_directory: Optional[pathlib.Path] = None
         self._enable_structlog = False
         self._handlers: List[logging.Handler] = []
+
+        # Set after app initialization
+        self._event_bus_manager = None
 
     def initialize(self) -> None:
         """Initialize the Logging Manager.
@@ -223,6 +271,29 @@ class LoggingManager(QorzenManager):
         else:
             return logging.getLogger(name)
 
+    def set_event_bus_manager(self, event_bus_manager):
+        self._event_bus_manager = event_bus_manager
+        logging_config = self._config_manager.get("logging", {})
+        log_level_str = logging_config.get("level", "INFO").lower()
+        log_level = self.LOG_LEVELS.get(log_level_str, logging.INFO)
+        log_format = logging_config.get("format", "json").lower()
+        # Set up formatters based on format type
+        if log_format == "json":
+            self._enable_structlog = True
+            formatter = self._create_json_formatter()
+        else:
+            formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            )
+        if logging_config.get("ui", {}).get("enabled", True):
+            if self._event_bus_manager:
+                event_handler = EventBusLogHandler(self._event_bus_manager)
+                event_handler.addFilter(ExcludeLoggerFilter('event_bus'))
+                event_handler.setLevel(log_level)
+                event_handler.setFormatter(formatter)
+                self._root_logger.addHandler(event_handler)
+                self._handlers.append(event_handler)
+
     def _on_config_changed(self, key: str, value: Any) -> None:
         """Handle configuration changes for logging.
 
@@ -299,6 +370,9 @@ class LoggingManager(QorzenManager):
 
             # Close all handlers
             for handler in self._handlers:
+                if isinstance(handler, EventBusLogHandler):
+                    self._root_logger.removeHandler(handler)
+                    handler.close()
                 try:
                     handler.flush()
                     handler.close()

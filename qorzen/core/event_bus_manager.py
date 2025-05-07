@@ -138,6 +138,8 @@ class EventBusManager(QorzenManager):
                                 event_type=str(event_type))
 
         # Create the event
+        if isinstance(event_type, EventType):
+            event_type = event_type.value
         event = Event.create(
             event_type=event_type,
             source=source,

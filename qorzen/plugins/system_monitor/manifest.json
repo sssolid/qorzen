@@ -24,7 +24,7 @@
       "version": ">=0.1.0"
     }
   ],
-  "entry_point": "code/plugin.py",
+  "entry_point": "plugin.py",
   "min_core_version": "0.1.0",
   "tags": ["monitoring", "performance", "system", "resources"],
   "extension_uses": [],

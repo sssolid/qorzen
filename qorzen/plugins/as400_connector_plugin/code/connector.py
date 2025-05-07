@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union, cast
 from functools import cache
 
 from qorzen.utils.exceptions import DatabaseError, SecurityError, ConfigurationError
-from qorzen.plugins.as400_connector_plugin.models import (
+from qorzen.plugins.as400_connector_plugin.code.models import (
     AS400ConnectionConfig,
     ColumnMetadata,
     QueryResult

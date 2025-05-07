@@ -250,35 +250,36 @@ def post_enable(context: Dict[str, Any]) -> None:
     Args:
         context: Hook context
     """
-    # Get required objects from context
-    app_core = context.get('app_core')
-    plugin_instance = context.get('plugin_instance')
-    ui_integration = context.get('ui_integration')
-
-    # Get logger if available
-    logger_manager = context.get('logger_manager')
-    logger = None
-    if logger_manager:
-        logger = logger_manager.get_logger('system_monitor')
-
-    if logger:
-        logger.info("Running post-enable hook for System Monitor plugin")
-
-    # If we have UI integration available but no main window, wait for UI ready event
-    # Usually the plugin manager handles this, but this is a fallback just in case
-    if not ui_integration and app_core and hasattr(app_core, '_main_window') and app_core._main_window:
-        from qorzen.ui.integration import MainWindowIntegration
-        from qorzen.plugin_system.lifecycle import register_ui_integration
-
-        # Create and register UI integration
-        ui_integration = MainWindowIntegration(app_core._main_window)
-        register_ui_integration('system_monitor', ui_integration)
-
-        # Call on_ui_ready if plugin instance available
-        if plugin_instance and hasattr(plugin_instance, 'on_ui_ready'):
-            if logger:
-                logger.debug("Calling on_ui_ready on plugin instance")
-            plugin_instance.on_ui_ready(ui_integration)
+    ...
+    # # Get required objects from context
+    # app_core = context.get('app_core')
+    # plugin_instance = context.get('plugin_instance')
+    # ui_integration = context.get('ui_integration')
+    #
+    # # Get logger if available
+    # logger_manager = context.get('logger_manager')
+    # logger = None
+    # if logger_manager:
+    #     logger = logger_manager.get_logger('system_monitor')
+    #
+    # if logger:
+    #     logger.info("Running post-enable hook for System Monitor plugin")
+    #
+    # # If we have UI integration available but no main window, wait for UI ready event
+    # # Usually the plugin manager handles this, but this is a fallback just in case
+    # if not ui_integration and app_core and hasattr(app_core, '_main_window') and app_core._main_window:
+    #     from qorzen.ui.integration import MainWindowIntegration
+    #     from qorzen.plugin_system.lifecycle import register_ui_integration
+    #
+    #     # Create and register UI integration
+    #     ui_integration = MainWindowIntegration(app_core._main_window)
+    #     register_ui_integration('system_monitor', ui_integration)
+    #
+    #     # Call on_ui_ready if plugin instance available
+    #     if plugin_instance and hasattr(plugin_instance, 'on_ui_ready'):
+    #         if logger:
+    #             logger.debug("Calling on_ui_ready on plugin instance")
+    #         plugin_instance.on_ui_ready(ui_integration)
 
 
 def post_disable(context: Dict[str, Any]) -> None:

@@ -85,6 +85,8 @@ class ApplicationCore:
             event_bus_manager.initialize()
             self._managers['event_bus'] = event_bus_manager
 
+            logging_manager.set_event_bus_manager(event_bus_manager)
+
             # Initialize thread manager
             thread_manager = ThreadManager(config_manager, logging_manager)
             thread_manager.initialize()
