@@ -12,7 +12,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 import structlog
-from sqlalchemy import text, Table, select, Column, MetaData
+from sqlalchemy import text, Table, select, Column, MetaData, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 

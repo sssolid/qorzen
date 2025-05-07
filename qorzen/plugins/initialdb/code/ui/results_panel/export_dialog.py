@@ -11,15 +11,15 @@ import os
 from enum import Enum, auto
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QFileDialog, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QComboBox, QGroupBox,
     QRadioButton, QWidget, QTabWidget, QFormLayout, QSpacerItem, QSizePolicy
 )
 
-from initialdb.config.settings import EXPORTS_DIR, settings
-from initialdb.utils.template_manager import TemplateManager
+from ...config.settings import EXPORTS_DIR, settings
+from ...utils.template_manager import TemplateManager
 
 
 class ExportFormat(Enum):

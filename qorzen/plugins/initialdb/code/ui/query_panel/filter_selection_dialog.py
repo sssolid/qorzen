@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from initialdb.config.settings import DEFAULT_SETTINGS
-from initialdb.utils.dependency_container import resolve
-from initialdb.utils.schema_registry import SchemaRegistry
+from ...config.settings import DEFAULT_SETTINGS
+from ...utils.dependency_container import resolve
+from ...utils.schema_registry import SchemaRegistry
 
 """
 Filter selection dialog for the InitialDB application.
@@ -12,8 +12,8 @@ This module provides a dialog for selecting which filters to display in the filt
 
 from typing import Any, Dict, List, Optional, Tuple, Set
 import structlog
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QDialogButtonBox, QCheckBox
 )

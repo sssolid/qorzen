@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 import structlog
-from PyQt6.QtCore import (
-    QByteArray, QPoint, QSettings, QSize, Qt, pyqtSignal, pyqtSlot
+from PySide6.QtCore import (
+    QByteArray, QPoint, QSettings, QSize, Qt, Signal, Slot
 )
-from PyQt6.QtGui import QAction, QCloseEvent, QIcon, QCursor
-from PyQt6.QtWidgets import (
+from PySide6.QtGui import QAction, QCloseEvent, QIcon, QCursor
+from PySide6.QtWidgets import (
     QApplication, QDockWidget, QFileDialog, QMainWindow, QMenu,
     QMenuBar, QMessageBox, QStatusBar, QTabWidget, QToolBar, QWidget, QDialog, QInputDialog
 )
@@ -32,7 +32,6 @@ from ..services.vehicle_service import VehicleService
 from ..utils.dependency_container import resolve
 from ..utils.schema_registry import SchemaRegistry
 from ..utils.template_manager import TemplateManager
-from ..utils.update_manager import UpdateManager
 from .panels import BottomPanel, LeftPanel, RightPanel
 from .settings_dialog.settings_dialog import SettingsDialog
 
@@ -65,7 +64,6 @@ class MainWindow(QMainWindow):
         self._setup_menu()
         self._setup_toolbar()
         self._setup_status_bar()
-        self._setup_update_manager()
 
         # Connect signals
         self._connect_signals()
@@ -97,12 +95,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.right_panel)
 
         # Bottom Panel (Information)
-        self.update_manager = UpdateManager(
-            parent_widget=self,
-            status_bar=self.statusBar(),
-            help_menu=None  # We'll add this later
-        )
-        self.bottom_panel = BottomPanel(self.update_manager, self)
+        self.bottom_panel = BottomPanel(self)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.bottom_panel)
 
         # Default layout
@@ -306,12 +299,6 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self._show_about_dialog)
         self.help_menu.addAction(about_action)
 
-        check_updates_action = QAction('Check for &Updates', self)
-        check_updates_action.triggered.connect(
-            lambda: self.update_manager.check_for_updates(force=True)
-        )
-        self.help_menu.addAction(check_updates_action)
-
     def _setup_toolbar(self) -> None:
         """Set up the application toolbar."""
         toolbar = QToolBar('Main Toolbar', self)
@@ -361,12 +348,6 @@ class MainWindow(QMainWindow):
     def _setup_status_bar(self) -> None:
         """Set up the application status bar."""
         self.statusBar().showMessage('Ready')
-
-    def _setup_update_manager(self) -> None:
-        """Set up the update manager."""
-        # Add update manager to help menu
-        self.update_manager._help_menu = self.help_menu
-        self.update_manager.add_to_menu(self.help_menu)
 
     def _connect_signals(self) -> None:
         """Connect component signals."""
@@ -956,7 +937,7 @@ class MainWindow(QMainWindow):
 
     def _show_template_manager(self) -> None:
         """Show the template manager dialog."""
-        from initialdb.ui.template_manager.template_manager_dialog import TemplateManagerDialog
+        from ..ui.template_manager.template_manager_dialog import TemplateManagerDialog
         dialog = TemplateManagerDialog(self)
         dialog.exec()
 
@@ -1114,10 +1095,6 @@ class MainWindow(QMainWindow):
         """
         # Save window state
         self._save_window_state()
-
-        # Clean up update manager
-        if hasattr(self, 'update_manager'):
-            self.update_manager.cleanup()
 
         # Clean up vehicle service
         try:

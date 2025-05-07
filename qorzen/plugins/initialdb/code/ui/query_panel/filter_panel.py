@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from ...adapters import VehicleServiceAdapter
+from ...models.schema import FilterDTO, SavedQueryDTO
 from ...services.vehicle_service import VehicleService
 
 """
@@ -18,8 +20,8 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple, Set, cast
 
 import structlog
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal, Slot, QTimer
+from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
     QGroupBox,
@@ -33,8 +35,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...adapters.vehicle_service_adapter import VehicleServiceAdapter
-from ...models.schema import FilterDTO, SavedQueryDTO
 from ...utils.async_manager import AsyncManager, async_slot
 from ...utils.dependency_container import resolve
 from ...utils.schema_registry import SchemaRegistry
@@ -47,11 +47,11 @@ logger = structlog.get_logger(__name__)
 class FilterPanel(QWidget):
     """Panel for filtering query results."""
 
-    filterChanged = pyqtSignal(FilterDTO)
-    executeQueryRequested = pyqtSignal()
-    filterSelectionChanged = pyqtSignal(list)
-    saveQueryRequested = pyqtSignal(FilterDTO, list, str, str)
-    loadQueryRequested = pyqtSignal(str)
+    filterChanged = Signal(FilterDTO)
+    executeQueryRequested = Signal()
+    filterSelectionChanged = Signal(list)
+    saveQueryRequested = Signal(FilterDTO, list, str, str)
+    loadQueryRequested = Signal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """
@@ -611,13 +611,13 @@ class FilterPanel(QWidget):
 
                 logger.debug(f"Reset dependent filter: {table}.{column}")
 
-    @pyqtSlot()
+    @Slot()
     def _execute_query(self) -> None:
         """Execute the query."""
         logger.debug("Execute query requested")
         self.executeQueryRequested.emit()
 
-    @pyqtSlot()
+    @Slot()
     def _reset_filters(self) -> None:
         """Reset all filters."""
         self.filter_dto = FilterDTO()
@@ -768,7 +768,7 @@ class FilterPanel(QWidget):
             self._loading_filters = False
             self._load_next_filter()
 
-    @pyqtSlot(str, list)
+    @Slot(str, list)
     def _on_filter_values_loaded(self, operation_id: str, values: List[Tuple[Any, str]]) -> None:
         """
         Handle filter values loaded.
@@ -1079,7 +1079,7 @@ class FilterPanel(QWidget):
             # Continue with next filter
             QTimer.singleShot(0, self._continue_filter_loading)
 
-    @pyqtSlot(str, str)
+    @Slot(str, str)
     def _update_filter_widget_from_thread(self, table: str, column: str) -> None:
         """
         Update a filter widget from a worker thread.
@@ -1117,7 +1117,7 @@ class FilterPanel(QWidget):
         # Continue with next filter
         self._continue_filter_loading()
 
-    @pyqtSlot()
+    @Slot()
     def _continue_filter_loading(self) -> None:
         """Continue loading filters."""
         QTimer.singleShot(50, self._load_next_filter_nonblocking)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from initialdb.utils.dependency_container import resolve
-from initialdb.utils.schema_registry import SchemaRegistry
+from ...utils.dependency_container import resolve
+from ...utils.schema_registry import SchemaRegistry
 
 """
 Export helper for the InitialDB application.
@@ -15,11 +15,11 @@ import os
 import csv
 import uuid
 import structlog
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QMessageBox
 
-from initialdb.config.settings import settings
-from initialdb.utils.template_manager import TemplateManager
+from ...config.settings import settings
+from ...utils.template_manager import TemplateManager
 
 logger = structlog.get_logger(__name__)
 
@@ -142,7 +142,7 @@ class ExportHelper:
             if not os.path.exists(export_dir):
                 os.makedirs(export_dir, exist_ok=True)
 
-            from PyQt6.QtWidgets import QFileDialog
+            from PySide6.QtWidgets import QFileDialog
             filename, _ = QFileDialog.getSaveFileName(
                 None,
                 'Export Data',

@@ -11,7 +11,7 @@ from enum import Enum, auto
 from typing import Any, Callable, Dict, Optional, Type, cast
 
 import structlog
-from PyQt6.QtWidgets import QMainWindow, QWidget
+from PySide6.QtWidgets import QMainWindow, QWidget
 
 logger = structlog.get_logger(__name__)
 

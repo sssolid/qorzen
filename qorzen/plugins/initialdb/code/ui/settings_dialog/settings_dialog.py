@@ -11,9 +11,9 @@ import os
 from typing import Any, Dict, List, Optional, Set, cast
 
 import structlog
-from PyQt6.QtCore import QSettings, QSize, Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QFont, QIcon
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QSettings, QSize, Qt, Signal, Slot
+from PySide6.QtGui import QFont, QIcon
+from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QFrame, QHBoxLayout,
     QLabel, QMessageBox, QPushButton, QSizePolicy, QSplitter,
     QVBoxLayout, QWidget
@@ -30,7 +30,7 @@ logger = structlog.get_logger(__name__)
 class SettingsDialog(QDialog):
     """Comprehensive settings dialog with category tree and settings panels."""
 
-    settings_changed = pyqtSignal()
+    settings_changed = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """

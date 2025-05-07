@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from initialdb.utils.dependency_container import resolve
-from initialdb.utils.schema_registry import SchemaRegistry
+from ...utils.dependency_container import resolve
+from ...utils.schema_registry import SchemaRegistry
 
 """
 Template field selector widget for the InitialDB application.
@@ -12,8 +12,8 @@ when creating template mappings in the template manager.
 
 from typing import Any, Dict, List, Optional, Set, Tuple, cast
 import structlog
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QComboBox,
     QLabel, QPushButton, QDialog, QDialogButtonBox
 )
@@ -94,7 +94,7 @@ class FieldSelectorDialog(QDialog):
 class TemplateFieldSelector(QWidget):
     """Widget for selecting model and attribute fields in template mappings."""
 
-    valueChanged = pyqtSignal(str, str)
+    valueChanged = Signal(str, str)
 
     def __init__(
             self, parent: Optional[QWidget] = None,

@@ -1,16 +1,14 @@
 {
   "name": "initialdb",
   "display_name": "InitialDB",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "description": "Vehicle Component Database Plugin",
   "author": {
-    "name": "Qorzen Team",
-    "email": "developers@qorzen.com",
-    "url": "https://qorzen.com",
+    "name": "Ryan Serra",
+    "email": "dev@example.com",
     "organization": "Qorzen"
   },
   "license": "MIT",
-  "homepage": "https://qorzen.com/plugins/initialdb",
   "capabilities": [
     "ui.extend",
     "event.subscribe",
@@ -18,6 +16,7 @@
     "config.read",
     "config.write",
     "database.read",
+    "database.write",
     "file.read",
     "file.write"
   ],
@@ -29,9 +28,7 @@
   ],
   "entry_point": "plugin.py",
   "min_core_version": "0.1.0",
-  "tags": ["database", "vehicle", "components", "automotive"],
-  "extension_points": [],
-  "extension_uses": [],
+  "tags": ["database", "vehicle", "automotive", "ACES"],
   "lifecycle_hooks": {
     "pre_install": "initialdb.code.hooks.pre_install",
     "post_install": "initialdb.code.hooks.post_install",
@@ -48,9 +45,9 @@
         "name": "connection_string",
         "type": "string",
         "label": "Database Connection String",
-        "description": "Connection string for the vehicle components database",
+        "description": "Connection string for the vehicle database",
+        "default_value": "postgresql+asyncpg://initialdb:B54C3CBADDFSssALK92@192.168.10.234:5432/crown_nexus",
         "required": true,
-        "default_value": "postgresql+asyncpg://postgres:postgres@192.168.10.234/crown_nexus",
         "order": 1,
         "group": "database"
       },
@@ -58,21 +55,21 @@
         "name": "default_query_limit",
         "type": "integer",
         "label": "Default Query Limit",
-        "description": "Default maximum number of results to return in queries",
-        "required": true,
+        "description": "Default maximum number of results to return",
         "default_value": 1000,
+        "required": true,
         "order": 2,
         "group": "database",
         "validation_rules": [
           {
             "rule_type": "min",
-            "parameters": {"value": 10},
-            "error_message": "Default query limit must be at least 10"
+            "parameters": {"value": 1},
+            "error_message": "Query limit must be at least 1"
           },
           {
             "rule_type": "max",
             "parameters": {"value": 10000},
-            "error_message": "Default query limit cannot exceed 10000"
+            "error_message": "Query limit cannot exceed 10000"
           }
         ]
       },
@@ -80,141 +77,115 @@
         "name": "max_query_limit",
         "type": "integer",
         "label": "Maximum Query Limit",
-        "description": "Maximum number of results to return in queries (hard limit)",
-        "required": true,
+        "description": "Absolute maximum number of results to return",
         "default_value": 10000,
+        "required": true,
         "order": 3,
-        "group": "database",
-        "validation_rules": [
-          {
-            "rule_type": "min",
-            "parameters": {"value": 1000},
-            "error_message": "Maximum query limit must be at least 1000"
-          },
-          {
-            "rule_type": "max",
-            "parameters": {"value": 50000},
-            "error_message": "Maximum query limit cannot exceed 50000"
-          }
-        ]
-      },
-      {
-        "name": "enable_caching",
-        "type": "boolean",
-        "label": "Enable Caching",
-        "description": "Whether to cache database queries to improve performance",
-        "default_value": true,
-        "order": 4,
         "group": "database"
-      },
-      {
-        "name": "cache_timeout",
-        "type": "integer",
-        "label": "Cache Timeout (seconds)",
-        "description": "Time in seconds before cached data expires",
-        "default_value": 300,
-        "order": 5,
-        "group": "database",
-        "conditional_display": {
-          "field": "enable_caching",
-          "value": true
-        },
-        "validation_rules": [
-          {
-            "rule_type": "min",
-            "parameters": {"value": 60},
-            "error_message": "Cache timeout must be at least 60 seconds"
-          },
-          {
-            "rule_type": "max",
-            "parameters": {"value": 3600},
-            "error_message": "Cache timeout cannot exceed 3600 seconds (1 hour)"
-          }
-        ]
-      },
-      {
-        "name": "exports_dir",
-        "type": "string",
-        "label": "Exports Directory",
-        "description": "Directory for exported files",
-        "default_value": "exports",
-        "order": 1,
-        "group": "export"
-      },
-      {
-        "name": "templates_dir",
-        "type": "string",
-        "label": "Templates Directory",
-        "description": "Directory for export templates",
-        "default_value": "templates",
-        "order": 2,
-        "group": "export"
       },
       {
         "name": "ui_refresh_interval_ms",
         "type": "integer",
         "label": "UI Refresh Interval (ms)",
-        "description": "How frequently to refresh the UI in milliseconds",
+        "description": "How frequently to refresh the UI",
         "default_value": 500,
+        "required": true,
         "order": 1,
-        "group": "ui",
-        "validation_rules": [
-          {
-            "rule_type": "min",
-            "parameters": {"value": 100},
-            "error_message": "Refresh interval must be at least 100ms"
-          },
-          {
-            "rule_type": "max",
-            "parameters": {"value": 10000},
-            "error_message": "Refresh interval cannot exceed 10000ms (10 seconds)"
-          }
-        ]
+        "group": "ui"
+      },
+      {
+        "name": "enable_caching",
+        "type": "boolean",
+        "label": "Enable Caching",
+        "description": "Whether to cache database results",
+        "default_value": true,
+        "required": true,
+        "order": 1,
+        "group": "performance"
+      },
+      {
+        "name": "cache_timeout",
+        "type": "integer",
+        "label": "Cache Timeout (seconds)",
+        "description": "How long to cache results",
+        "default_value": 300,
+        "required": true,
+        "order": 2,
+        "group": "performance"
+      },
+      {
+        "name": "exports_dir",
+        "type": "string",
+        "label": "Exports Directory",
+        "description": "Directory for exported data",
+        "default_value": "exports",
+        "required": true,
+        "order": 1,
+        "group": "files"
+      },
+      {
+        "name": "templates_dir",
+        "type": "string",
+        "label": "Templates Directory",
+        "description": "Directory for data templates",
+        "default_value": "templates",
+        "required": true,
+        "order": 2,
+        "group": "files"
       },
       {
         "name": "log_level",
         "type": "select",
         "label": "Log Level",
-        "description": "The level of detail for plugin logs",
+        "description": "Logging verbosity level",
         "default_value": "info",
+        "required": true,
+        "order": 1,
+        "group": "logging",
         "options": [
           {"value": "debug", "label": "Debug"},
           {"value": "info", "label": "Info"},
           {"value": "warning", "label": "Warning"},
-          {"value": "error", "label": "Error"}
-        ],
-        "order": 1,
-        "group": "advanced"
+          {"value": "error", "label": "Error"},
+          {"value": "critical", "label": "Critical"}
+        ]
       }
     ],
     "groups": [
       {
         "name": "database",
         "label": "Database Settings",
-        "description": "Database connection and query settings",
+        "description": "Settings for the database connection",
         "order": 1,
-        "collapsed": false
-      },
-      {
-        "name": "export",
-        "label": "Export Settings",
-        "description": "Settings for data exports",
-        "order": 2,
         "collapsed": false
       },
       {
         "name": "ui",
         "label": "UI Settings",
-        "description": "User interface settings",
+        "description": "Settings for the user interface",
+        "order": 2,
+        "collapsed": false
+      },
+      {
+        "name": "performance",
+        "label": "Performance Settings",
+        "description": "Settings affecting plugin performance",
         "order": 3,
         "collapsed": false
       },
       {
-        "name": "advanced",
-        "label": "Advanced Settings",
-        "description": "Advanced configuration options",
+        "name": "files",
+        "label": "File Locations",
+        "description": "Paths for various file operations",
         "order": 4,
-        "collapsed": true
+        "collapsed": false
+      },
+      {
+        "name": "logging",
+        "label": "Logging Settings",
+        "description": "Settings for logging and diagnostics",
+        "order": 5,
+        "collapsed": false
       }
     ]
   }

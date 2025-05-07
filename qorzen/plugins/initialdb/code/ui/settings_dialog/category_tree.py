@@ -10,9 +10,9 @@ with proper styling and search functionality.
 from typing import Dict, List, Optional, Set
 
 import structlog
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QFont, QIcon
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QFont, QIcon
+from PySide6.QtWidgets import (
     QLineEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 )
 
@@ -24,7 +24,7 @@ logger = structlog.get_logger(__name__)
 class CategoryTree(QWidget):
     """Widget for displaying and selecting settings categories."""
 
-    category_selected = pyqtSignal(str)  # Emits the ID of the selected category
+    category_selected = Signal(str)  # Emits the ID of the selected category
 
     def __init__(
             self,

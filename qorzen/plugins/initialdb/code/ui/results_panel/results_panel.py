@@ -11,11 +11,11 @@ import csv
 import os
 from typing import Any, Dict, List, Optional, Set, Tuple
 import structlog
-from PyQt6.QtCore import (
-    QModelIndex, Qt, pyqtSignal, QSortFilterProxyModel
+from PySide6.QtCore import (
+    QModelIndex, Qt, Signal, QSortFilterProxyModel
 )
-from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import (
+from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
     QLabel, QMenu, QMessageBox, QPushButton, QTableView, QVBoxLayout,
     QWidget, QLineEdit, QToolButton, QStatusBar, QSplitter, QSizePolicy
@@ -29,18 +29,18 @@ try:
 except ImportError:
     EXCEL_AVAILABLE = False
 
-from initialdb.services.vehicle_service import VehicleService
-from initialdb.utils.dependency_container import resolve
-from initialdb.utils.schema_registry import SchemaRegistry
+from ...services.vehicle_service import VehicleService
+from ...utils.dependency_container import resolve
+from ...utils.schema_registry import SchemaRegistry
 
-from initialdb.config.settings import EXPORTS_DIR, settings
-from initialdb.models.schema import FilterDTO
-from initialdb.models.table_model import SortableVehicleTableModel, VehicleResultsTableModel
-from initialdb.ui.results_panel.column_selection_dialog import ColumnSelectionDialog
-from initialdb.ui.results_panel.export_dialog import ExportDialog
-from initialdb.ui.results_panel.multi_filter_panel import MultiFilterPanel
-from initialdb.utils.template_manager import TemplateManager
-from initialdb.ui.results_panel import ExportHelper
+from ...config.settings import EXPORTS_DIR, settings
+from ...models.schema import FilterDTO
+from ...models.table_model import SortableVehicleTableModel, VehicleResultsTableModel
+from ...ui.results_panel.column_selection_dialog import ColumnSelectionDialog
+from ...ui.results_panel.export_dialog import ExportDialog
+from ...ui.results_panel.multi_filter_panel import MultiFilterPanel
+from ...utils.template_manager import TemplateManager
+from ...ui.results_panel import ExportHelper
 
 logger = structlog.get_logger(__name__)
 
@@ -192,8 +192,8 @@ class ResultsPanel(QWidget):
     with options for filtering, sorting, and exporting the data.
     """
 
-    columnSelectionChanged = pyqtSignal(list)
-    resultCountChanged = pyqtSignal(int)
+    columnSelectionChanged = Signal(list)
+    resultCountChanged = Signal(int)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """

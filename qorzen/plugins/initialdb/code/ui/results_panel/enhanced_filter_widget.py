@@ -10,9 +10,9 @@ including text, selection, and range filters.
 from typing import Any, Dict, List, Optional, Set, Tuple, Union, Callable, TypeVar, Generic, cast
 from enum import Enum, auto
 import structlog
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QCompleter, QToolButton, QSlider, QSpinBox, QDoubleSpinBox,
     QSizePolicy, QToolTip, QMenu, QFrame
@@ -39,8 +39,8 @@ class EnhancedFilterWidget(QWidget):
     selection from a list, numeric comparisons, or value ranges.
     """
 
-    filterChanged = pyqtSignal(str, object)
-    filterRemoved = pyqtSignal(str)
+    filterChanged = Signal(str, object)
+    filterRemoved = Signal(str)
 
     def __init__(
             self,

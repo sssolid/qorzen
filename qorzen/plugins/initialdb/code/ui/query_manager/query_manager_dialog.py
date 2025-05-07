@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from initialdb.services.vehicle_service import VehicleService
-from initialdb.utils.dependency_container import resolve
+from ...services.vehicle_service import VehicleService
+from ...utils.dependency_container import resolve
 
 """
 Query manager dialog for the InitialDB application.
@@ -15,9 +15,9 @@ import structlog
 import asyncio
 import json
 from datetime import datetime
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QSize
-from PyQt6.QtGui import QIcon, QAction
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QIcon, QAction
+from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTabWidget,
     QWidget, QListWidget, QListWidgetItem, QDialogButtonBox, QSplitter,
     QTextEdit, QLineEdit, QMessageBox, QMenu, QInputDialog, QFormLayout,
@@ -25,8 +25,8 @@ from PyQt6.QtWidgets import (
 )
 from qasync import asyncSlot
 
-from initialdb.config.settings import settings
-from initialdb.models.schema import FilterDTO, SavedQueryDTO
+from ...config.settings import settings
+from ...models.schema import FilterDTO, SavedQueryDTO
 
 logger = structlog.get_logger(__name__)
 
@@ -38,7 +38,7 @@ class QueryManagerDialog(QDialog):
     This dialog allows users to browse, select, edit, rename, and delete
     saved queries, as well as view and save recent queries.
     """
-    querySelected = pyqtSignal(SavedQueryDTO)
+    querySelected = Signal(SavedQueryDTO)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """

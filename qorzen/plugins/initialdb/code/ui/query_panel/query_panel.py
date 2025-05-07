@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from initialdb.services.vehicle_service import VehicleService
-from initialdb.utils.dependency_container import resolve
-from initialdb.utils.schema_registry import SchemaRegistry
+from ...services.vehicle_service import VehicleService
+from ...utils.dependency_container import resolve
+from ...utils.schema_registry import SchemaRegistry
 
 """
 Async multi-query panel component for the InitialDB application.
@@ -14,17 +14,17 @@ the vehicle_service singleton directly.
 import uuid
 from typing import Dict, Optional
 import structlog
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QPushButton,
     QLabel, QScrollArea, QMessageBox
 )
-from PyQt6.QtGui import QIcon
+from PySide6.QtGui import QIcon
 from qasync import asyncSlot
 
-from initialdb.models.schema import FilterDTO
-from initialdb.adapters.vehicle_service_adapter import VehicleServiceAdapter
-from initialdb.ui.query_panel.query_section import QuerySection
+from ...models.schema import FilterDTO
+from ...adapters.vehicle_service_adapter import VehicleServiceAdapter
+from ...ui.query_panel.query_section import QuerySection
 
 logger = structlog.get_logger(__name__)
 
@@ -35,8 +35,8 @@ class MultiQueryPanel(QWidget):
 
     This panel allows users to create and combine multiple independent queries.
     """
-    executeQueryRequested = pyqtSignal(object)
-    filterChanged = pyqtSignal(object)
+    executeQueryRequested = Signal(object)
+    filterChanged = Signal(object)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """

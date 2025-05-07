@@ -14,7 +14,7 @@ import uuid
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Generic, List, Optional, Protocol, TypeVar, cast
 import structlog
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PySide6.QtCore import QObject, QTimer, Signal
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -95,10 +95,10 @@ class ConnectionConfigProvider(Protocol):
 
 
 class DatabaseHelperSignals(QObject):
-    operation_completed = pyqtSignal(object)
-    operation_failed = pyqtSignal(object, Exception)
-    test_connection_completed = pyqtSignal(bool)
-    test_connection_failed = pyqtSignal(str)
+    operation_completed = Signal(object)
+    operation_failed = Signal(object, Exception)
+    test_connection_completed = Signal(bool)
+    test_connection_failed = Signal(str)
 
 
 class DatabaseHelper:

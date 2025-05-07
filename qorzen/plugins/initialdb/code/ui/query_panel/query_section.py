@@ -11,8 +11,8 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 import structlog
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QSize
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal, Slot, QSize
+from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtGui import QIcon, QFont
+from PySide6.QtGui import QIcon, QFont
 
 from ...adapters.vehicle_service_adapter import VehicleServiceAdapter
 from ...models.schema import FilterDTO
@@ -41,9 +41,9 @@ class QuerySection(QFrame):
     and allows users to create and execute queries independently.
     """
 
-    executeQueryRequested = pyqtSignal(str)
-    removeRequested = pyqtSignal(str)
-    filterChanged = pyqtSignal(str, FilterDTO)
+    executeQueryRequested = Signal(str)
+    removeRequested = Signal(str)
+    filterChanged = Signal(str, FilterDTO)
 
     def __init__(
             self,
@@ -176,12 +176,12 @@ class QuerySection(QFrame):
         """Request removal of this section."""
         self.removeRequested.emit(self.section_id)
 
-    @pyqtSlot()
+    @Slot()
     def _on_execute_requested(self) -> None:
         """Handle execute query request from the filter panel."""
         self.executeQueryRequested.emit(self.section_id)
 
-    @pyqtSlot(FilterDTO)
+    @Slot(FilterDTO)
     def _on_filter_changed(self, filter_dto: FilterDTO) -> None:
         """
         Handle filter changes from the filter panel.
@@ -191,7 +191,7 @@ class QuerySection(QFrame):
         """
         self.filterChanged.emit(self.section_id, filter_dto)
 
-    @pyqtSlot(object)
+    @Slot(object)
     def _on_operation_completed(self, operation: Any) -> None:
         """
         Handle completed operations.
@@ -204,7 +204,7 @@ class QuerySection(QFrame):
         except Exception as e:
             logger.error(f"Error in operation completed handler: {e}")
 
-    @pyqtSlot(object, Exception)
+    @Slot(object, Exception)
     def _on_operation_failed(self, operation: Any, error: Exception) -> None:
         """
         Handle failed operations.

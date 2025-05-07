@@ -10,15 +10,15 @@ users to add, remove, and manage filters for refining search results.
 from typing import Any, Dict, List, Optional, Tuple, Set, cast
 import re
 import structlog
-from PyQt6.QtCore import pyqtSignal, QTimer
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Signal, QTimer
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QMenu, QScrollArea, QFrame, QToolButton
 )
 
-from initialdb.utils.dependency_container import resolve
-from initialdb.utils.schema_registry import SchemaRegistry
-from initialdb.ui.results_panel.enhanced_filter_widget import EnhancedFilterWidget, FilterType
+from ...utils.dependency_container import resolve
+from ...utils.schema_registry import SchemaRegistry
+from ...ui.results_panel.enhanced_filter_widget import EnhancedFilterWidget, FilterType
 
 logger = structlog.get_logger(__name__)
 
@@ -31,7 +31,7 @@ class MultiFilterPanel(QWidget):
     to query results after they've been retrieved from the database.
     """
 
-    filtersChanged = pyqtSignal(dict)
+    filtersChanged = Signal(dict)
 
     def __init__(self, parent: Optional[QWidget] = None, repository=None) -> None:
         """

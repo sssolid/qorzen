@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6 import sip
+from PySide6 import sip
 
 """
 Multi-selection widget component for the InitialDB application.
@@ -12,8 +12,8 @@ replacing the standard QComboBox with a more flexible selection interface.
 from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 import structlog
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QSize
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal, Slot, QSize
+from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QToolButton,
     QApplication
 )
-from PyQt6.QtGui import QIcon, QFont, QColor
+from PySide6.QtGui import QIcon, QFont, QColor
 
 logger = structlog.get_logger(__name__)
 
@@ -37,7 +37,7 @@ logger = structlog.get_logger(__name__)
 class MultiSelectionDialog(QDialog):
     """Dialog for selecting multiple items from a list."""
 
-    selectionChanged = pyqtSignal(list)
+    selectionChanged = Signal(list)
 
     def __init__(
             self,
@@ -286,7 +286,7 @@ class MultiSelectionDialog(QDialog):
 class MultiSelectionWidget(QWidget):
     """Widget for selecting multiple values."""
 
-    selectionChanged = pyqtSignal(list)
+    selectionChanged = Signal(list)
 
     def __init__(
             self, title: str, parent: Optional[QWidget] = None, searchable: bool = True

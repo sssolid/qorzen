@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from initialdb.utils.dependency_container import resolve
-from initialdb.utils.schema_registry import SchemaRegistry
+from ...utils.dependency_container import resolve
+from ...utils.schema_registry import SchemaRegistry
 
 """
 Column selection dialog for the InitialDB application.
@@ -12,13 +12,13 @@ filtered to match the available filters shown in the query panel.
 
 from typing import Any, Dict, List, Optional, Tuple, Set
 import structlog
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QDialogButtonBox, QCheckBox
 )
 
-from initialdb.config.settings import DEFAULT_SETTINGS
+from ...config.settings import DEFAULT_SETTINGS
 
 logger = structlog.get_logger(__name__)
 

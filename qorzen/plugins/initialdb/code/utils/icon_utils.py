@@ -1,11 +1,11 @@
 from typing import Union
 
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
-from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtCore import Qt, QSize
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtCore import Qt, QSize
 from pathlib import Path
 
-from initialdb.config.settings import get_resource_path
+from ..config.settings import get_resource_path
 
 
 def colorize_svg_icon(svg_path: str, color: QColor, size: QSize = QSize(24, 24)) -> QIcon:

@@ -11,16 +11,16 @@ import os
 import json
 from typing import Dict, Optional
 import structlog
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QWidget, QListWidget, QListWidgetItem, QDialogButtonBox,
     QSplitter, QLineEdit, QMessageBox, QInputDialog,
     QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox, QFormLayout
 )
 
-from initialdb.config.settings import TEMPLATES_DIR
-from initialdb.utils.template_manager import TemplateManager, FieldMapping
+from ...config.settings import TEMPLATES_DIR
+from ...utils.template_manager import TemplateManager, FieldMapping
 
 logger = structlog.get_logger(__name__)
 
@@ -296,7 +296,7 @@ class TemplateManagerDialog(QDialog):
         attribute_value = attribute_item.text() if attribute_item else ''
 
         # Create a field selector dialog
-        from initialdb.ui.template_manager.template_field_selector import FieldSelectorDialog
+        from ...ui.template_manager.template_field_selector import FieldSelectorDialog
 
         selector_dialog = FieldSelectorDialog(
             self,

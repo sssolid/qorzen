@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable, Dict, Optional, TypeVar, cast
 
 import structlog
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 T = TypeVar("T")
 logger = structlog.get_logger(__name__)
@@ -37,8 +37,8 @@ class AsyncOperationResult:
 class AsyncManagerSignals(QObject):
     """Qt signals for async operations."""
 
-    operation_completed = pyqtSignal(str, object)
-    operation_failed = pyqtSignal(str, Exception)
+    operation_completed = Signal(str, object)
+    operation_failed = Signal(str, Exception)
 
 
 class AsyncManager:

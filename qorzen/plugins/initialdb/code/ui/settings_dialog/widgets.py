@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Type, Union, cast
 
 import structlog
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QIntValidator, QDoubleValidator
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QIntValidator, QDoubleValidator
+from PySide6.QtWidgets import (
     QCheckBox, QColorDialog, QComboBox, QFileDialog, QFontDialog,
     QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
@@ -29,7 +29,7 @@ logger = structlog.get_logger(__name__)
 class SettingWidget(QWidget):
     """Base class for all setting widgets."""
 
-    value_changed = pyqtSignal(str, object)
+    value_changed = Signal(str, object)
 
     def __init__(self, setting: Setting, parent: Optional[QWidget] = None) -> None:
         """
@@ -531,7 +531,7 @@ class SettingWidgetFactory:
 class CategorySettingsWidget(QScrollArea):
     """Widget for displaying all settings in a category."""
 
-    value_changed = pyqtSignal(str, object)
+    value_changed = Signal(str, object)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """

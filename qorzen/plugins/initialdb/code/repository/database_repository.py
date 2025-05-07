@@ -16,7 +16,7 @@ import structlog
 from sqlalchemy import and_, or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Select
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 from ..models.base_class import Base
 from ..models.schema import FilterDTO, SavedQueryDTO, VehicleResultDTO
@@ -38,10 +38,10 @@ class DatabaseOperationResult:
 class DatabaseRepositorySignals(QObject):
     """Signals for database repository operations."""
 
-    operationCompleted = pyqtSignal(object)
-    operationFailed = pyqtSignal(object, Exception)
-    testConnectionCompleted = pyqtSignal(bool)
-    testConnectionFailed = pyqtSignal(str)
+    operationCompleted = Signal(object)
+    operationFailed = Signal(object, Exception)
+    testConnectionCompleted = Signal(bool)
+    testConnectionFailed = Signal(str)
 
 
 class DatabaseConnectionError(Exception):
