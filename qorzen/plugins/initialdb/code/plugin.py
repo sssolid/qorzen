@@ -1,104 +1,143 @@
 from __future__ import annotations
 
+from qorzen.plugin_system.interface import BasePlugin
+
 """
 InitialDB Plugin for Qorzen framework.
 
 This plugin provides access to vehicle component database information,
 allowing users to query and export vehicle parts and specifications.
 """
+import logging
+from typing import Any, Dict, List, Optional, Union, cast
 
-from logging import Logger
-from typing import Any, Dict, List, Optional
 from PySide6.QtCore import QObject, Signal, Slot
-from PySide6.QtWidgets import QMenu
-from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTabWidget
 
-from qorzen.core import FileManager, EventBusManager, ThreadManager, ConfigManager
+from qorzen.core.event_model import EventType, Event
+from qorzen.ui.integration import UIIntegration, TabComponent
+from qorzen.core.config_manager import ConfigManager
+from qorzen.core.event_bus_manager import EventBusManager
+from qorzen.core.file_manager import FileManager
+from qorzen.core.thread_manager import ThreadManager
 
 from .services.vehicle_service import VehicleService
 from .services.export_service import ExportService
 from .routes.api import register_api_routes
-from qorzen.plugins.initialdb.code.config.settings import DEFAULT_CONNECTION_STRING
+from .config.settings import DEFAULT_CONNECTION_STRING
 
 
-class InitialDBPlugin(QObject):
+class InitialDBTab(TabComponent):
+    """Tab component for the InitialDB plugin."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """Initialize the tab component.
+
+        Args:
+            parent: Optional parent widget
+        """
+        self._widget = QWidget(parent)
+        self._layout = QVBoxLayout(self._widget)
+        self._layout.addWidget(QLabel("This is the InitialDB plugin tab"))
+
+        # Add more UI components as needed
+
+    def get_widget(self) -> QWidget:
+        """Get the underlying widget.
+
+        Returns:
+            The tab widget
+        """
+        return self._widget
+
+    def on_tab_selected(self) -> None:
+        """Called when the tab is selected."""
+        # Handle tab selection if needed
+        pass
+
+    def on_tab_deselected(self) -> None:
+        """Called when the tab is deselected."""
+        # Handle tab deselection if needed
+        pass
+
+
+class InitialDBPlugin(BasePlugin):
+    """Vehicle Component Database Plugin.
+
+    This plugin provides access to vehicle component database information,
+    allowing users to query and export vehicle parts and specifications.
     """
-    InitialDB Plugin for the Qorzen framework.
 
-    This plugin provides database access and querying functionality for vehicle
-    component data, with capabilities for filtering, exporting, and API access.
-    """
+    # Signal to handle UI ready event on the main thread
     ui_ready_signal = Signal(object)
 
-    # Required plugin metadata
-    name = "initialdb"
-    version = "0.2.0"
-    description = "Vehicle Component Database Plugin"
-    author = "Ryan Serra"
-
-    # Optional metadata
+    # Plugin metadata
+    name = 'initialdb'
+    version = '0.2.0'
+    description = 'Vehicle Component Database Plugin'
+    author = 'Ryan Serra'
     dependencies = []
 
     def __init__(self) -> None:
-        """Initialize the plugin without external dependencies."""
+        """Initialize the plugin."""
         super().__init__()
-        self._event_bus = None
-        self._logger = None
-        self._config = None
-        self._file_manager = None
-        self._thread_manager = None
-        self._db_manager = None
-        self._api_manager = None
-        self._main_window = None
-        self._subscriber_id = None
 
-        self._vehicle_service = None
-        self._export_service = None
+        # Core managers
+        self._event_bus: Optional[EventBusManager] = None
+        self._logger: Optional[logging.Logger] = None
+        self._config: Optional[ConfigManager] = None
+        self._file_manager: Optional[FileManager] = None
+        self._thread_manager: Optional[ThreadManager] = None
+        self._db_manager: Optional[Any] = None
+        self._api_manager: Optional[Any] = None
+
+        # Plugin services
+        self._vehicle_service: Optional[VehicleService] = None
+        self._export_service: Optional[ExportService] = None
+
+        # UI components
+        self._tab: Optional[InitialDBTab] = None
+        self._tab_index: Optional[int] = None
+        self._menu_items: List[Any] = []
+
+        # State
         self._initialized = False
 
-        self._menu_items: List[QAction] = []
-        self._tab = None
-        self._tab_index: Optional[int] = None
-
-        # Connect signal to slot
+        # Connect signal
         self.ui_ready_signal.connect(self._handle_ui_ready_on_main_thread)
 
-    def initialize(self,
-                   event_bus: Any,
-                   logger_provider: Any,
-                   config_provider: Any,
-                   file_manager: Any,
-                   thread_manager: Any,
-                   **kwargs: Any) -> None:
-        """
-        Initialize the plugin with Qorzen core services.
+    def initialize(self, event_bus: Any, logger_provider: Any, config_provider: Any,
+                   file_manager: Any, thread_manager: Any, **kwargs: Any) -> None:
+        """Initialize the plugin with the provided managers.
 
         Args:
-            event_bus: Event bus for publishing/subscribing to events
-            logger_provider: Logging provider for creating loggers
-            config_provider: Configuration provider for accessing settings
-            file_manager: File system manager for file operations
+            event_bus: Event bus manager for subscribing to and publishing events
+            logger_provider: Logger provider for creating plugin-specific loggers
+            config_provider: Configuration provider for accessing application config
+            file_manager: File manager for file operations
             thread_manager: Thread manager for background tasks
-            **kwargs: Additional dependencies including database_manager, api_manager
+            **kwargs: Additional managers
         """
-        # Store references to core services
-        self._event_bus: EventBusManager = event_bus
-        self._logger: Logger = logger_provider.get_logger(self.name)
-        self._config: ConfigManager = config_provider
-        self._file_manager: FileManager = file_manager
-        self._thread_manager: ThreadManager = thread_manager
+        # Store core managers
+        self._event_bus = cast(EventBusManager, event_bus)
+        self._logger = logger_provider.get_logger(self.name)
+        self._config = cast(ConfigManager, config_provider)
+        self._file_manager = cast(FileManager, file_manager)
+        self._thread_manager = cast(ThreadManager, thread_manager)
 
-        # Get additional dependencies
+        # Get additional managers
         self._db_manager = kwargs.get('database_manager')
+        self._api_manager = kwargs.get('api_manager')
+
+        # Validate required managers
         if not self._db_manager:
-            self._logger.error("Database manager not available - plugin cannot function")
+            self._logger.error('Database manager not available - plugin cannot function')
             return
 
-        self._api_manager = kwargs.get('api_manager')
         if not self._api_manager:
-            self._logger.warning("API manager not available - API routes will not be registered")
+            self._logger.warning('API manager not available - API routes will not be registered')
 
-        # Create plugin data directory if needed
+        # Create plugin data directory
         if self._file_manager:
             try:
                 plugin_data_dir = self._file_manager.get_file_path(self.name, directory_type='plugin_data')
@@ -107,14 +146,14 @@ class InitialDBPlugin(QObject):
             except Exception as e:
                 self._logger.warning(f'Failed to create plugin data directory: {str(e)}')
 
-        # Initialize services
-        self._logger.info(f"Initializing {self.name} v{self.version} plugin")
+        # Log initialization
+        self._logger.info(f'Initializing {self.name} v{self.version} plugin')
 
         # Load settings
         self._load_settings()
 
         try:
-            # Initialize vehicle service
+            # Initialize services
             self._vehicle_service = VehicleService(
                 db_manager=self._db_manager,
                 logger=self._logger,
@@ -123,7 +162,6 @@ class InitialDBPlugin(QObject):
                 config=self._config
             )
 
-            # Initialize export service
             self._export_service = ExportService(
                 file_manager=self._file_manager,
                 logger=self._logger,
@@ -131,7 +169,7 @@ class InitialDBPlugin(QObject):
                 config=self._config
             )
 
-            # Register API routes if API manager is available
+            # Register API routes
             if self._api_manager:
                 register_api_routes(
                     api_manager=self._api_manager,
@@ -139,28 +177,32 @@ class InitialDBPlugin(QObject):
                     export_service=self._export_service,
                     logger=self._logger
                 )
-                self._logger.info("API routes registered")
+                self._logger.info('API routes registered')
 
             # Subscribe to events
             self._subscribe_to_events()
 
+            # Mark as initialized
             self._initialized = True
             self._logger.info(f'{self.name} plugin initialized')
 
             # Publish initialization event
             self._event_bus.publish(
-                event_type='plugin/initialized',
+                event_type=EventType.PLUGIN_INITIALIZED.value,
                 source=self.name,
-                payload={'plugin_name': self.name, 'version': self.version, 'has_ui': True}
+                payload={
+                    'plugin_name': self.name,
+                    'version': self.version,
+                    'has_ui': True
+                }
             )
 
         except Exception as e:
-            self._logger.error(f"Failed to initialize plugin: {str(e)}", exc_info=True)
+            self._logger.error(f'Failed to initialize plugin: {str(e)}', exc_info=True)
 
     def _load_settings(self) -> None:
         """Load plugin settings from configuration."""
         try:
-            # Check if connection string is already in config, if not set default
             conn_str = self._config.get(f'plugins.{self.name}.connection_string', None)
             if conn_str is None:
                 self._config.set(f'plugins.{self.name}.connection_string', DEFAULT_CONNECTION_STRING)
@@ -169,41 +211,41 @@ class InitialDBPlugin(QObject):
             self._logger.error(f'Error loading settings: {str(e)}')
 
     def _subscribe_to_events(self) -> None:
-        """Subscribe to relevant system events."""
-        # Subscribe to system startup event
+        """Subscribe to system events."""
+        if not self._event_bus:
+            return
+
+        # Subscribe to system events
         self._event_bus.subscribe(
-            event_type="system/started",
+            event_type=EventType.SYSTEM_STARTED.value,
             callback=self._on_system_started,
-            subscriber_id=f"{self.name}_system_started"
+            subscriber_id=f'{self.name}_system_started'
         )
 
-        # Subscribe to config changes
         self._event_bus.subscribe(
-            event_type=f"config/changed",
+            event_type=EventType.CONFIG_CHANGED.value,
             callback=self._on_config_changed,
-            subscriber_id=f"{self.name}_config_changed"
+            subscriber_id=f'{self.name}_config_changed'
         )
 
-        # Subscribe to UI events
-        self._subscriber_id = self._event_bus.subscribe(
-            event_type='ui/ready',
-            callback=self._on_ui_ready_event,
-            subscriber_id=f'{self.name}_ui_subscriber'
-        )
+    def _on_system_started(self, event: Event) -> None:
+        """Handle system started event.
 
-    def _on_system_started(self, event: Any) -> None:
-        """Handle system startup event."""
+        Args:
+            event: The event object
+        """
         if not self._initialized:
             return
 
-        self._logger.info("System started event received")
+        self._logger.info('System started event received')
 
-        # Validate database connection
-        self._thread_manager.submit_task(
-            func=self._validate_database,
-            name=f"{self.name}_validate_db",
-            submitter=self.name
-        )
+        # Validate database in a background thread
+        if self._thread_manager:
+            self._thread_manager.submit_task(
+                func=self._validate_database,
+                name=f'{self.name}_validate_db',
+                submitter=self.name
+            )
 
     def _validate_database(self) -> None:
         """Validate database connection and schema."""
@@ -213,208 +255,193 @@ class InitialDBPlugin(QObject):
         try:
             result = self._vehicle_service.validate_database()
             if result:
-                self._logger.info("Database validation successful")
-                # Publish event that database is ready
-                self._event_bus.publish(
-                    event_type=f"{self.name}/database_ready",
-                    source=self.name,
-                    payload={"status": "ready"}
-                )
-            else:
-                self._logger.error("Database validation failed")
-        except Exception as e:
-            self._logger.error(f"Database validation error: {str(e)}", exc_info=True)
+                self._logger.info('Database validation successful')
 
-    def _on_config_changed(self, event: Any) -> None:
-        """Handle configuration changes."""
+                # Publish database ready event
+                if self._event_bus:
+                    self._event_bus.publish(
+                        event_type=f'{self.name}/database_ready',
+                        source=self.name,
+                        payload={'status': 'ready'}
+                    )
+            else:
+                self._logger.error('Database validation failed')
+        except Exception as e:
+            self._logger.error(f'Database validation error: {str(e)}', exc_info=True)
+
+    def _on_config_changed(self, event: Event) -> None:
+        """Handle configuration changed event.
+
+        Args:
+            event: The event object
+        """
         if not self._initialized:
             return
 
-        # Extract the changed configuration path
-        config_path = event.payload.get("path", "")
-        if not config_path.startswith(f"plugins.{self.name}"):
-            return  # Not our config
+        # Get the changed configuration path
+        config_path = event.payload.get('path', '')
 
-        self._logger.info(f"Configuration changed: {config_path}")
+        # Only process changes to this plugin's configuration
+        if not config_path.startswith(f'plugins.{self.name}'):
+            return
 
-        # Get updated configuration
-        plugin_config = self._config.get(f"plugins.{self.name}", {})
+        self._logger.info(f'Configuration changed: {config_path}')
 
-        # Update service configurations if needed
+        # Get the updated plugin configuration
+        plugin_config = self._config.get(f'plugins.{self.name}', {})
+
+        # Update services with new configuration
         if self._vehicle_service:
             self._vehicle_service.update_config(plugin_config)
 
         if self._export_service:
             self._export_service.update_config(plugin_config)
 
-    def _on_ui_ready_event(self, event: Any) -> None:
-        """Handler for ui/ready event."""
-        try:
-            main_window = event.payload.get('main_window')
-            if not main_window:
-                self._logger.error('Main window not provided in event payload')
-                return
+    def on_ui_ready(self, ui_integration: UIIntegration) -> None:
+        """Set up UI components when UI is ready.
 
-            # Use signal to handle UI updates on the main thread
-            self.ui_ready_signal.emit(main_window)
+        This method is called by the plugin system when the UI is ready.
+
+        Args:
+            ui_integration: UI integration interface
+        """
+        try:
+            self._logger.debug('Setting up UI components')
+
+            # Add tab
+            self._tab = InitialDBTab()
+            self._tab_index = ui_integration.add_tab(
+                plugin_id=self.name,
+                tab=self._tab,
+                title=self.name.capitalize()
+            )
+
+            # Add menu items
+            try:
+                # Find or create Tools menu
+                tools_menu = ui_integration.find_menu('&Tools')
+                if not tools_menu:
+                    tools_menu = ui_integration.add_menu(
+                        plugin_id=self.name,
+                        title='&Tools'
+                    )
+
+                # Add plugin-specific menu
+                plugin_menu = ui_integration.add_menu(
+                    plugin_id=self.name,
+                    title=self.name.capitalize(),
+                    parent_menu=tools_menu
+                )
+
+                # Add actions
+                action1 = ui_integration.add_menu_action(
+                    plugin_id=self.name,
+                    menu=plugin_menu,
+                    text='Refresh Database',
+                    callback=self._refresh_database_connection
+                )
+
+                action2 = ui_integration.add_menu_action(
+                    plugin_id=self.name,
+                    menu=plugin_menu,
+                    text='Connection Settings',
+                    callback=self._show_connection_settings
+                )
+
+                # Store references to menu items
+                self._menu_items = [action1, action2]
+
+                self._logger.debug('Added menu items to Tools menu')
+            except Exception as e:
+                self._logger.error(f'Error adding menu items: {str(e)}')
+
+            # Publish event that UI components have been added
+            if self._event_bus:
+                self._event_bus.publish(
+                    event_type=f'{self.name}/ui_added',
+                    source=self.name,
+                    payload={'tab_index': self._tab_index}
+                )
+
         except Exception as e:
-            self._logger.error(f'Error in UI ready event handler: {str(e)}')
+            self._logger.error(f'Error setting up UI components: {str(e)}')
 
     @Slot(object)
     def _handle_ui_ready_on_main_thread(self, main_window: Any) -> None:
-        """Set up UI components on the main thread."""
-        try:
-            self._logger.debug('Setting up UI components')
-            self._main_window = main_window
+        """Legacy method to handle UI ready events on the main thread.
 
-            # Add plugin tab to main window
-            self._add_tab_to_ui()
+        This is maintained for backward compatibility.
 
-            # Add menu items
-            self._add_menu_items()
-
-            # Publish UI added event
-            self._event_bus.publish(
-                event_type=f'plugin/{self.name}/ui_added',
-                source=self.name,
-                payload={'tab_index': self._tab_index}
-            )
-        except Exception as e:
-            self._logger.error(f'Error handling UI setup: {str(e)}')
-
-    def _add_tab_to_ui(self) -> None:
-        """Add a tab to the main window."""
-        if not self._main_window:
-            return
-
-        try:
-            # Create your tab widget here
-            # Example:
-            from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
-
-            self._tab = QWidget()
-            layout = QVBoxLayout(self._tab)
-            layout.addWidget(QLabel(f"This is the {self.name} plugin tab"))
-
-            # Add tab to main window
-            central_tabs = self._main_window._central_tabs
-            if central_tabs:
-                self._tab_index = central_tabs.addTab(self._tab, self.name)
-                self._logger.info(f'Added tab at index {self._tab_index}')
-            else:
-                self._logger.error('Central tabs widget not found in main window')
-        except Exception as e:
-            self._logger.error(f'Error adding tab to UI: {str(e)}')
-
-    def _add_menu_items(self) -> None:
-        """Add menu items to the main window."""
-        if not self._main_window:
-            return
-
-        try:
-            # Find Tools menu
-            tools_menu = None
-            for action in self._main_window.menuBar().actions():
-                if action.text() == '&Tools':
-                    tools_menu = action.menu()
-                    break
-
-            if tools_menu:
-                # Create plugin menu
-                plugin_menu = QMenu(self.name, self._main_window)
-
-                # Add actions to the menu
-                action1 = QAction('Action 1', self._main_window)
-                # action1.triggered.connect(self._action1_handler)
-                plugin_menu.addAction(action1)
-
-                action2 = QAction('Action 2', self._main_window)
-                # action2.triggered.connect(self._action2_handler)
-                plugin_menu.addAction(action2)
-
-                # Add separator and plugin menu to Tools menu
-                tools_menu.addSeparator()
-                tools_menu.addMenu(plugin_menu)
-
-                # Store menu items for cleanup
-                self._menu_items.extend([action1, action2])
-
-                self._logger.debug('Added menu items to Tools menu')
-            else:
-                self._logger.warning('Tools menu not found in main window')
-        except Exception as e:
-            self._logger.error(f'Error adding menu items: {str(e)}')
+        Args:
+            main_window: The main window instance
+        """
+        # This is now just a fallback for backward compatibility
+        pass
 
     def _refresh_database_connection(self) -> None:
-        """Handler for refreshing database connection."""
-        if self._tab:
-            self._tab.refresh_database_connection()
-            self._logger.info('Database connection refreshed')
+        """Refresh the database connection."""
+        self._logger.info('Refreshing database connection')
+
+        # Run database validation in a background thread
+        if self._thread_manager and self._vehicle_service:
+            self._thread_manager.submit_task(
+                func=self._validate_database,
+                name=f'{self.name}_validate_db',
+                submitter=self.name
+            )
 
     def _show_connection_settings(self) -> None:
-        """Handler for showing connection settings."""
-        if self._tab:
-            self._tab.show_connection_settings()
-            self._logger.info('Connection settings shown')
+        """Show connection settings dialog."""
+        self._logger.info('Showing connection settings')
+        # Implement settings dialog
 
     def shutdown(self) -> None:
-        """Clean up resources when plugin is being unloaded."""
+        """Shut down the plugin."""
         if not self._initialized:
             return
 
-        self._logger.info(f"Shutting down {self.name} plugin")
+        self._logger.info(f'Shutting down {self.name} plugin')
 
         # Unsubscribe from events
         if self._event_bus:
-            self._event_bus.unsubscribe(f"{self.name}_system_started")
-            self._event_bus.unsubscribe(f"{self.name}_config_changed")
-            self._event_bus.unsubscribe(f"{self.name}_ui_subscriber")
+            self._event_bus.unsubscribe(f'{self.name}_system_started')
+            self._event_bus.unsubscribe(f'{self.name}_config_changed')
 
-        # Shutdown services
+        # Shut down services
         if self._vehicle_service:
             self._vehicle_service.shutdown()
 
         if self._export_service:
             self._export_service.shutdown()
 
-        # Clean up UI
-        if self._main_window:
-            if self._tab and self._tab_index is not None:
-                central_tabs = self._main_window._central_tabs
-                if central_tabs:
-                    central_tabs.removeTab(self._tab_index)
-                    self._logger.debug(f'Removed InitialDB tab at index {self._tab_index}')
-            for action in self._menu_items:
-                if action and action.menu():
-                    menu = action.menu()
-                    menu.clear()
-                    menu.deleteLater()
-                elif action and action.parent():
-                    action.parent().removeAction(action)
+        # UI components are cleaned up by the LifecycleManager via cleanup_ui()
 
+        # Mark as not initialized
         self._initialized = False
-        self._logger.info(f"{self.name} plugin shut down successfully")
+        self._logger.info(f'{self.name} plugin shut down successfully')
 
     def get_vehicle_service(self) -> Optional[VehicleService]:
-        """
-        Get the vehicle service instance.
+        """Get the vehicle service.
 
         Returns:
-            The VehicleService instance or None if not initialized.
+            Vehicle service instance or None if not initialized
         """
         return self._vehicle_service if self._initialized else None
 
     def get_export_service(self) -> Optional[ExportService]:
-        """
-        Get the export service instance.
+        """Get the export service.
 
         Returns:
-            The ExportService instance or None if not initialized.
+            Export service instance or None if not initialized
         """
         return self._export_service if self._initialized else None
 
     def status(self) -> Dict[str, Any]:
-        """Return the status of the plugin."""
+        """Get plugin status.
+
+        Returns:
+            Plugin status information
+        """
         return {
             'name': self.name,
             'version': self.version,
@@ -425,5 +452,9 @@ class InitialDBPlugin(QObject):
                 'tab_index': self._tab_index,
                 'menu_items_count': len(self._menu_items)
             },
-            'subscriptions': ['system/started', 'config/changed', 'ui/ready']
+            'services': {
+                'vehicle_service': self._vehicle_service is not None,
+                'export_service': self._export_service is not None
+            },
+            'subscriptions': ['system/started', 'config/changed']
         }

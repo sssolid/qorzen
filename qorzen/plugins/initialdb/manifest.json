@@ -2,7 +2,7 @@
   "name": "initialdb",
   "display_name": "InitialDB",
   "version": "1.0.0",
-  "description": "Initial DB",
+  "description": "Vehicle Component Database Plugin",
   "author": {
     "name": "Qorzen Team",
     "email": "developers@qorzen.com",
@@ -15,7 +15,8 @@
     "ui.extend",
     "event.subscribe",
     "event.publish",
-    "config.read"
+    "config.read",
+    "database.read"
   ],
   "dependencies": [
     {
@@ -23,55 +24,71 @@
       "version": ">=0.1.0"
     }
   ],
-  "entry_point": "plugin.py",
+  "entry_point": "code/plugin.py",
   "min_core_version": "0.1.0",
-  "tags": ["initialdb"],
+  "tags": ["database", "vehicle", "components"],
   "extension_uses": [],
   "lifecycle_hooks": {
-    "pre_install": "initialdb.code.hooks.hooks.pre_install",
-    "post_install": "initialdb.code.hooks.hooks.post_install",
-    "pre_uninstall": "initialdb.code.hooks.hooks.pre_uninstall",
-    "post_uninstall": "initialdb.code.hooks.hooks.post_uninstall",
-    "pre_update": "initialdb.code.hooks.hooks.pre_update",
-    "post_update": "initialdb.code.hooks.hooks.post_update",
+    "pre_install": "initialdb.code.hooks.pre_install",
+    "post_install": "initialdb.code.hooks.post_install",
+    "pre_uninstall": "initialdb.code.hooks.pre_uninstall",
+    "post_uninstall": "initialdb.code.hooks.post_uninstall",
+    "pre_update": "initialdb.code.hooks.pre_update",
+    "post_update": "initialdb.code.hooks.post_update",
     "post_enable": "initialdb.code.hooks.post_enable",
     "post_disable": "initialdb.code.hooks.post_disable"
   },
   "config_schema": {
     "fields": [
       {
-        "name": "username",
+        "name": "connection_string",
         "type": "string",
-        "label": "Username",
-        "description": "Your username for the service",
+        "label": "Database Connection String",
+        "description": "Connection string for the vehicle components database",
         "required": true,
-        "default_value": "",
+        "default_value": "sqlite:///data/initialdb/vehicles.db",
         "order": 1,
-        "group": "credentials"
+        "group": "database"
       },
       {
-        "name": "api_key",
-        "type": "password",
-        "label": "API Key",
-        "description": "Your API key for the service",
-        "required": true,
-        "order": 2,
-        "group": "credentials"
-      },
-      {
-        "name": "enable_logging",
+        "name": "enable_caching",
         "type": "boolean",
-        "label": "Enable Logging",
-        "description": "Whether to enable detailed logging",
+        "label": "Enable Caching",
+        "description": "Whether to cache database queries to improve performance",
         "default_value": true,
-        "order": 1,
-        "group": "advanced"
+        "order": 2,
+        "group": "database"
+      },
+      {
+        "name": "cache_timeout",
+        "type": "integer",
+        "label": "Cache Timeout (seconds)",
+        "description": "Time in seconds before cached data expires",
+        "default_value": 300,
+        "order": 3,
+        "group": "database",
+        "conditional_display": {
+          "field": "enable_caching",
+          "value": true
+        },
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 60},
+            "error_message": "Cache timeout must be at least 60 seconds"
+          },
+          {
+            "rule_type": "max",
+            "parameters": {"value": 3600},
+            "error_message": "Cache timeout cannot exceed 3600 seconds (1 hour)"
+          }
+        ]
       },
       {
         "name": "log_level",
         "type": "select",
         "label": "Log Level",
-        "description": "The level of detail for logs",
+        "description": "The level of detail for plugin logs",
         "default_value": "info",
         "options": [
           {"value": "debug", "label": "Debug"},
@@ -79,84 +96,36 @@
           {"value": "warning", "label": "Warning"},
           {"value": "error", "label": "Error"}
         ],
-        "order": 2,
-        "group": "advanced",
-        "conditional_display": {
-          "field": "enable_logging",
-          "value": true
-        }
+        "order": 1,
+        "group": "advanced"
       },
       {
-        "name": "max_retries",
+        "name": "max_results",
         "type": "integer",
-        "label": "Maximum Retries",
-        "description": "Maximum number of retry attempts for failed operations",
-        "default_value": 3,
-        "order": 3,
+        "label": "Maximum Results",
+        "description": "Maximum number of results to return in queries",
+        "default_value": 100,
+        "order": 2,
         "group": "advanced",
         "validation_rules": [
           {
             "rule_type": "min",
-            "parameters": {"value": 0},
-            "error_message": "Retries must be a non-negative number"
+            "parameters": {"value": 10},
+            "error_message": "Minimum results must be at least 10"
           },
           {
             "rule_type": "max",
-            "parameters": {"value": 10},
-            "error_message": "Retries cannot exceed 10"
+            "parameters": {"value": 1000},
+            "error_message": "Maximum results cannot exceed 1000"
           }
         ]
-      },
-      {
-        "name": "timeout",
-        "type": "float",
-        "label": "Timeout (seconds)",
-        "description": "Time to wait before operations timeout",
-        "default_value": 30.0,
-        "order": 4,
-        "group": "advanced",
-        "validation_rules": [
-          {
-            "rule_type": "min",
-            "parameters": {"value": 1.0},
-            "error_message": "Timeout must be at least 1 second"
-          }
-        ]
-      },
-      {
-        "name": "theme",
-        "type": "select",
-        "label": "Theme",
-        "description": "Visual theme for plugin UI elements",
-        "default_value": "system",
-        "options": [
-          {"value": "system", "label": "System Default"},
-          {"value": "light", "label": "Light"},
-          {"value": "dark", "label": "Dark"},
-          {"value": "custom", "label": "Custom"}
-        ],
-        "order": 1,
-        "group": "appearance"
-      },
-      {
-        "name": "custom_theme_color",
-        "type": "color",
-        "label": "Custom Theme Color",
-        "description": "Primary color for custom theme",
-        "default_value": "#3498db",
-        "order": 2,
-        "group": "appearance",
-        "conditional_display": {
-          "field": "theme",
-          "value": "custom"
-        }
       }
     ],
     "groups": [
       {
-        "name": "credentials",
-        "label": "Credentials",
-        "description": "API credentials for external services",
+        "name": "database",
+        "label": "Database Settings",
+        "description": "Database connection and caching settings",
         "order": 1,
         "collapsed": false
       },
@@ -164,15 +133,8 @@
         "name": "advanced",
         "label": "Advanced Settings",
         "description": "Advanced configuration options",
-        "order": 3,
-        "collapsed": true
-      },
-      {
-        "name": "appearance",
-        "label": "Appearance",
-        "description": "Visual appearance settings",
         "order": 2,
-        "collapsed": false
+        "collapsed": true
       }
     ]
   }

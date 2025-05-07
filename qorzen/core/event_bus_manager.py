@@ -1,280 +1,243 @@
 from __future__ import annotations
-
 import concurrent.futures
 import queue
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, cast
 
 from qorzen.core.base import QorzenManager
-from qorzen.core.event_model import Event, EventSubscription
-from qorzen.utils.exceptions import (
-    EventBusError,
-    ManagerInitializationError,
-    ManagerShutdownError,
-)
+from qorzen.core.event_model import Event, EventSubscription, EventHandler, EventType
+from qorzen.utils.exceptions import EventBusError, ManagerInitializationError, ManagerShutdownError
 
 
 class EventBusManager(QorzenManager):
-    """Manages the event bus system for inter-component communication.
+    """Manager for the application event bus.
 
-    The Event Bus Manager provides a publish-subscribe messaging system for
-    decoupled communication between components. It allows components to publish
-    events and subscribe to events they're interested in without direct coupling.
-
-    This implementation provides both synchronous and asynchronous event delivery,
-    with configurable thread pools for handling event processing.
+    This manager handles event publishing and subscription, allowing components
+    to communicate via a pub/sub pattern.
     """
 
     def __init__(self, config_manager: Any, logger_manager: Any) -> None:
-        """Initialize the Event Bus Manager.
+        """Initialize the event bus manager.
 
         Args:
-            config_manager: The Configuration Manager to use for event bus settings.
-            logger_manager: The Logging Manager to use for logging.
+            config_manager: Configuration manager
+            logger_manager: Logger manager
         """
-        super().__init__(name="EventBusManager")
+        super().__init__(name='EventBusManager')
         self._config_manager = config_manager
         self._logger_manager = logger_manager
-        self._logger = logger_manager.get_logger("event_bus")
+        self._logger = logger_manager.get_logger('event_bus')
 
-        # Thread pool for asynchronous event processing
+        # Threading and queuing
         self._thread_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._max_queue_size = 1000
         self._publish_timeout = 5.0
 
-        # Event subscriptions
+        # Subscriptions
         self._subscriptions: Dict[str, Dict[str, EventSubscription]] = {}
         self._subscription_lock = threading.RLock()
 
-        # Event queue for asynchronous processing
+        # Event queue
         self._event_queue: Optional[queue.Queue] = None
         self._worker_threads: List[threading.Thread] = []
         self._running = False
         self._stop_event = threading.Event()
 
     def initialize(self) -> None:
-        """Initialize the Event Bus Manager.
-
-        Sets up the event processing thread pool and starts worker threads
-        based on configuration.
+        """Initialize the event bus manager.
 
         Raises:
-            ManagerInitializationError: If initialization fails.
+            ManagerInitializationError: If initialization fails
         """
         try:
-            # Get configuration
-            event_bus_config = self._config_manager.get("event_bus", {})
-            thread_pool_size = event_bus_config.get("thread_pool_size", 4)
-            self._max_queue_size = event_bus_config.get("max_queue_size", 1000)
-            self._publish_timeout = event_bus_config.get("publish_timeout", 5.0)
+            # Load configuration
+            event_bus_config = self._config_manager.get('event_bus', {})
+            thread_pool_size = event_bus_config.get('thread_pool_size', 4)
+            self._max_queue_size = event_bus_config.get('max_queue_size', 1000)
+            self._publish_timeout = event_bus_config.get('publish_timeout', 5.0)
 
-            # Create thread pool
+            # Initialize thread pool and event queue
             self._thread_pool = concurrent.futures.ThreadPoolExecutor(
                 max_workers=thread_pool_size,
-                thread_name_prefix="event-worker",
+                thread_name_prefix='event-worker'
             )
-
-            # Create event queue for asynchronous processing
             self._event_queue = queue.Queue(maxsize=self._max_queue_size)
+            self._running = True
 
             # Start worker threads
-            self._running = True
             for i in range(thread_pool_size):
                 worker = threading.Thread(
                     target=self._event_worker,
-                    name=f"event-worker-{i}",
-                    daemon=True,
+                    name=f'event-worker-{i}',
+                    daemon=True
                 )
                 worker.start()
                 self._worker_threads.append(worker)
 
-            # Register for config changes
-            self._config_manager.register_listener("event_bus", self._on_config_changed)
+            # Register for configuration changes
+            self._config_manager.register_listener('event_bus', self._on_config_changed)
 
-            self._logger.info("Event Bus Manager initialized")
+            self._logger.info('Event Bus Manager initialized')
             self._initialized = True
             self._healthy = True
 
         except Exception as e:
-            self._logger.error(f"Failed to initialize Event Bus Manager: {str(e)}")
+            self._logger.error(f'Failed to initialize Event Bus Manager: {str(e)}')
             raise ManagerInitializationError(
-                f"Failed to initialize EventBusManager: {str(e)}",
-                manager_name=self.name,
+                f'Failed to initialize EventBusManager: {str(e)}',
+                manager_name=self.name
             ) from e
 
     def _event_worker(self) -> None:
-        """Worker thread function for processing events from the queue."""
-        while self._running and not self._stop_event.is_set():
+        """Event processing worker thread."""
+        while self._running and (not self._stop_event.is_set()):
             try:
-                # Get next event from queue with timeout
                 event, subscriptions = self._event_queue.get(timeout=0.1)
-
                 try:
-                    # Process event (call all subscriber callbacks)
                     for subscription in subscriptions:
                         try:
                             subscription.callback(event)
                         except Exception as e:
                             self._logger.error(
-                                f"Error in event handler for {event.event_type}: {str(e)}",
+                                f'Error in event handler for {event.event_type}: {str(e)}',
                                 extra={
-                                    "event_id": event.event_id,
-                                    "subscription_id": subscription.subscriber_id,
-                                    "error": str(e),
-                                },
+                                    'event_id': event.event_id,
+                                    'subscription_id': subscription.subscriber_id,
+                                    'error': str(e)
+                                }
                             )
-
                 finally:
-                    # Mark task as done
                     self._event_queue.task_done()
-
             except queue.Empty:
-                # No events to process, just continue waiting
                 continue
-
             except Exception as e:
-                # Log any unexpected errors but keep the worker running
-                self._logger.error(f"Unexpected error in event worker: {str(e)}")
+                self._logger.error(f'Unexpected error in event worker: {str(e)}')
 
-    def publish(
-        self,
-        event_type: str,
-        source: str,
-        payload: Optional[Dict[str, Any]] = None,
-        correlation_id: Optional[str] = None,
-        synchronous: bool = False,
-    ) -> str:
+    def publish(self, event_type: Union[EventType, str], source: str,
+                payload: Optional[Dict[str, Any]] = None,
+                correlation_id: Optional[str] = None,
+                synchronous: bool = False) -> str:
         """Publish an event to the event bus.
 
         Args:
-            event_type: The type of event being published.
-            source: The source component that is publishing the event.
-            payload: Optional data associated with the event.
-            correlation_id: Optional ID for tracking related events.
-            synchronous: If True, process the event synchronously (blocking).
-                         If False, queue the event for asynchronous processing.
+            event_type: Type of the event (enum or string)
+            source: Source of the event
+            payload: Event payload data
+            correlation_id: ID for tracking related events
+            synchronous: If True, process event synchronously
 
         Returns:
-            str: The ID of the published event.
+            The event ID
 
         Raises:
-            EventBusError: If the event cannot be published.
+            EventBusError: If the event cannot be published
         """
         if not self._initialized:
-            raise EventBusError(
-                "Cannot publish events before initialization",
-                event_type=event_type,
-            )
+            raise EventBusError('Cannot publish events before initialization',
+                                event_type=str(event_type))
 
         # Create the event
         event = Event.create(
             event_type=event_type,
             source=source,
             payload=payload or {},
-            correlation_id=correlation_id,
+            correlation_id=correlation_id
         )
 
         # Find matching subscriptions
         matching_subs = self._get_matching_subscriptions(event)
 
         if not matching_subs:
-            # No subscribers for this event
             self._logger.debug(
-                f"No subscribers for event {event_type}",
-                extra={"event_id": event.event_id},
+                f'No subscribers for event {event.event_type}',
+                extra={'event_id': event.event_id}
             )
             return event.event_id
 
+        # Process the event
         if synchronous:
-            # Process event synchronously
             self._process_event_sync(event, matching_subs)
         else:
-            # Queue event for asynchronous processing
             try:
                 if self._event_queue is None:
-                    raise EventBusError(
-                        "Event queue is not initialized",
-                        event_type=event_type,
-                    )
+                    raise EventBusError('Event queue is not initialized',
+                                        event_type=str(event_type))
 
                 self._event_queue.put(
                     (event, matching_subs),
                     block=True,
-                    timeout=self._publish_timeout,
+                    timeout=self._publish_timeout
                 )
-
             except queue.Full:
                 self._logger.error(
-                    f"Event queue is full, cannot publish event {event_type}",
-                    extra={"event_id": event.event_id},
+                    f'Event queue is full, cannot publish event {event.event_type}',
+                    extra={'event_id': event.event_id}
                 )
                 raise EventBusError(
-                    f"Event queue is full, cannot publish event {event_type}",
-                    event_type=event_type,
+                    f'Event queue is full, cannot publish event {event.event_type}',
+                    event_type=str(event_type)
                 )
 
         self._logger.debug(
-            f"Published event {event_type}",
+            f'Published event {event.event_type}',
             extra={
-                "event_id": event.event_id,
-                "source": source,
-                "subscribers": len(matching_subs),
-                "synchronous": synchronous,
-            },
+                'event_id': event.event_id,
+                'source': source,
+                'subscribers': len(matching_subs),
+                'synchronous': synchronous
+            }
         )
 
         return event.event_id
 
-    def _process_event_sync(
-        self, event: Event, subscriptions: List[EventSubscription]
-    ) -> None:
+    def _process_event_sync(self, event: Event, subscriptions: List[EventSubscription]) -> None:
         """Process an event synchronously.
 
         Args:
-            event: The event to process.
-            subscriptions: The subscriptions that match the event.
+            event: The event to process
+            subscriptions: List of matching subscriptions
         """
         for subscription in subscriptions:
             try:
                 subscription.callback(event)
             except Exception as e:
                 self._logger.error(
-                    f"Error in event handler for {event.event_type}: {str(e)}",
+                    f'Error in event handler for {event.event_type}: {str(e)}',
                     extra={
-                        "event_id": event.event_id,
-                        "subscription_id": subscription.subscriber_id,
-                        "error": str(e),
-                    },
+                        'event_id': event.event_id,
+                        'subscription_id': subscription.subscriber_id,
+                        'error': str(e)
+                    }
                 )
 
-    def subscribe(
-        self,
-        event_type: str,
-        callback: Callable[[Event], None],
-        subscriber_id: Optional[str] = None,
-        filter_criteria: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        """Subscribe to events of a specific type.
+    def subscribe(self, event_type: Union[EventType, str],
+                  callback: EventHandler,
+                  subscriber_id: Optional[str] = None,
+                  filter_criteria: Optional[Dict[str, Any]] = None) -> str:
+        """Subscribe to events.
 
         Args:
-            event_type: The type of events to subscribe to. Use "*" for all events.
-            callback: A function to call when matching events are published.
-            subscriber_id: Optional ID for the subscriber. If not provided, a UUID is generated.
-            filter_criteria: Optional criteria for filtering events beyond their type.
-                             A dict where keys are payload fields and values are the required values.
+            event_type: Type of events to subscribe to
+            callback: Function to call when an event occurs
+            subscriber_id: Optional ID for the subscriber
+            filter_criteria: Optional criteria to filter events
 
         Returns:
-            str: The subscriber ID, which can be used to unsubscribe.
+            The subscriber ID
 
         Raises:
-            EventBusError: If the subscription cannot be created.
+            EventBusError: If subscription fails
         """
         if not self._initialized:
-            raise EventBusError(
-                "Cannot subscribe to events before initialization",
-                event_type=event_type,
-            )
+            raise EventBusError('Cannot subscribe to events before initialization',
+                                event_type=str(event_type))
+
+        # Convert EventType enum to string if needed
+        if isinstance(event_type, EventType):
+            event_type_str = event_type.value
+        else:
+            event_type_str = event_type
 
         # Generate subscriber ID if not provided
         if subscriber_id is None:
@@ -283,57 +246,60 @@ class EventBusManager(QorzenManager):
         # Create subscription
         subscription = EventSubscription(
             subscriber_id=subscriber_id,
-            event_type=event_type,
+            event_type=event_type_str,
             callback=callback,
-            filter_criteria=filter_criteria,
+            filter_criteria=filter_criteria
         )
 
         # Add to subscriptions
         with self._subscription_lock:
-            if event_type not in self._subscriptions:
-                self._subscriptions[event_type] = {}
+            if event_type_str not in self._subscriptions:
+                self._subscriptions[event_type_str] = {}
 
-            self._subscriptions[event_type][subscriber_id] = subscription
+            self._subscriptions[event_type_str][subscriber_id] = subscription
 
         self._logger.debug(
-            f"Subscription added for {event_type}",
+            f'Subscription added for {event_type_str}',
             extra={
-                "subscriber_id": subscriber_id,
-                "has_filter": filter_criteria is not None,
-            },
+                'subscriber_id': subscriber_id,
+                'has_filter': filter_criteria is not None
+            }
         )
 
         return subscriber_id
 
-    def unsubscribe(self, subscriber_id: str, event_type: Optional[str] = None) -> bool:
+    def unsubscribe(self, subscriber_id: str, event_type: Optional[Union[EventType, str]] = None) -> bool:
         """Unsubscribe from events.
 
         Args:
-            subscriber_id: The ID of the subscriber to remove.
-            event_type: Optional event type to unsubscribe from. If None,
-                        unsubscribe from all event types.
+            subscriber_id: The subscriber ID to unsubscribe
+            event_type: Optional event type to unsubscribe from
 
         Returns:
-            bool: True if the subscription was removed, False if not found.
+            True if unsubscribed successfully, False otherwise
         """
         if not self._initialized:
             return False
 
-        removed = False
+        # Convert EventType enum to string if needed
+        event_type_str = None
+        if event_type is not None:
+            if isinstance(event_type, EventType):
+                event_type_str = event_type.value
+            else:
+                event_type_str = event_type
 
+        removed = False
         with self._subscription_lock:
-            if event_type is not None:
+            if event_type_str is not None:
                 # Unsubscribe from specific event type
-                if (
-                    event_type in self._subscriptions
-                    and subscriber_id in self._subscriptions[event_type]
-                ):
-                    del self._subscriptions[event_type][subscriber_id]
+                if event_type_str in self._subscriptions and subscriber_id in self._subscriptions[event_type_str]:
+                    del self._subscriptions[event_type_str][subscriber_id]
                     removed = True
 
-                    # Clean up empty event type dictionaries
-                    if not self._subscriptions[event_type]:
-                        del self._subscriptions[event_type]
+                    # Clean up empty event types
+                    if not self._subscriptions[event_type_str]:
+                        del self._subscriptions[event_type_str]
             else:
                 # Unsubscribe from all event types
                 for evt_type in list(self._subscriptions.keys()):
@@ -341,95 +307,83 @@ class EventBusManager(QorzenManager):
                         del self._subscriptions[evt_type][subscriber_id]
                         removed = True
 
-                        # Clean up empty event type dictionaries
+                        # Clean up empty event types
                         if not self._subscriptions[evt_type]:
                             del self._subscriptions[evt_type]
 
         if removed:
-            self._logger.debug(
-                f"Unsubscribed {subscriber_id} from {event_type or 'all events'}",
-            )
+            self._logger.debug(f"Unsubscribed {subscriber_id} from {event_type_str or 'all events'}")
 
         return removed
 
     def _get_matching_subscriptions(self, event: Event) -> List[EventSubscription]:
-        """Get subscriptions that match an event.
+        """Get subscriptions matching an event.
 
         Args:
-            event: The event to match against subscriptions.
+            event: The event to match
 
         Returns:
-            List[EventSubscription]: The matching subscriptions.
+            List of matching subscriptions
         """
         matching: List[EventSubscription] = []
 
         with self._subscription_lock:
-            # Check specific event type subscriptions
+            # Check for subscriptions to this event type
             if event.event_type in self._subscriptions:
                 for subscription in self._subscriptions[event.event_type].values():
                     if subscription.matches_event(event):
                         matching.append(subscription)
 
-            # Check wildcard subscriptions (if any)
-            if "*" in self._subscriptions:
-                for subscription in self._subscriptions["*"].values():
+            # Check for wildcard subscriptions
+            if '*' in self._subscriptions:
+                for subscription in self._subscriptions['*'].values():
                     if subscription.matches_event(event):
                         matching.append(subscription)
 
         return matching
 
     def _on_config_changed(self, key: str, value: Any) -> None:
-        """Handle configuration changes for the event bus.
+        """Handle configuration changes.
 
         Args:
-            key: The configuration key that changed.
-            value: The new value.
+            key: Configuration key
+            value: New configuration value
         """
-        if key == "event_bus.max_queue_size":
-            # Can't easily change queue size at runtime, log a warning
+        if key == 'event_bus.max_queue_size':
             self._logger.warning(
-                "Cannot change event queue size at runtime, restart required",
-                extra={"current_size": self._max_queue_size, "new_size": value},
+                'Cannot change event queue size at runtime, restart required',
+                extra={'current_size': self._max_queue_size, 'new_size': value}
             )
-
-        elif key == "event_bus.publish_timeout":
-            # Update publish timeout
+        elif key == 'event_bus.publish_timeout':
             self._publish_timeout = float(value)
-            self._logger.info(
-                f"Updated event publish timeout to {self._publish_timeout} seconds",
-            )
-
-        elif key == "event_bus.thread_pool_size":
-            # Can't easily change thread pool size at runtime, log a warning
+            self._logger.info(f'Updated event publish timeout to {self._publish_timeout} seconds')
+        elif key == 'event_bus.thread_pool_size':
             self._logger.warning(
-                "Cannot change thread pool size at runtime, restart required",
-                extra={"current_size": len(self._worker_threads), "new_size": value},
+                'Cannot change thread pool size at runtime, restart required',
+                extra={'current_size': len(self._worker_threads), 'new_size': value}
             )
 
     def shutdown(self) -> None:
-        """Shut down the Event Bus Manager.
-
-        Stops the event processing threads and cleans up resources.
+        """Shut down the event bus manager.
 
         Raises:
-            ManagerShutdownError: If shutdown fails.
+            ManagerShutdownError: If shutdown fails
         """
         if not self._initialized:
             return
 
         try:
-            self._logger.info("Shutting down Event Bus Manager")
+            self._logger.info('Shutting down Event Bus Manager')
 
-            # Signal threads to stop
+            # Stop event processing
             self._running = False
             self._stop_event.set()
 
-            # Wait for queue to be processed
+            # Wait for event queue to empty
             if self._event_queue is not None:
                 try:
                     self._event_queue.join(timeout=5.0)
-                except:
-                    # Continue with shutdown even if join times out
+                except Exception:
                     pass
 
             # Shut down thread pool
@@ -440,64 +394,56 @@ class EventBusManager(QorzenManager):
             with self._subscription_lock:
                 self._subscriptions.clear()
 
-            # Unregister config listener
-            self._config_manager.unregister_listener(
-                "event_bus", self._on_config_changed
-            )
+            # Unregister from configuration changes
+            self._config_manager.unregister_listener('event_bus', self._on_config_changed)
 
+            # Update state
             self._initialized = False
             self._healthy = False
 
-            self._logger.info("Event Bus Manager shut down successfully")
+            self._logger.info('Event Bus Manager shut down successfully')
 
         except Exception as e:
-            self._logger.error(f"Failed to shut down Event Bus Manager: {str(e)}")
+            self._logger.error(f'Failed to shut down Event Bus Manager: {str(e)}')
             raise ManagerShutdownError(
-                f"Failed to shut down EventBusManager: {str(e)}",
-                manager_name=self.name,
+                f'Failed to shut down EventBusManager: {str(e)}',
+                manager_name=self.name
             ) from e
 
     def status(self) -> Dict[str, Any]:
-        """Get the status of the Event Bus Manager.
+        """Get the status of the event bus manager.
 
         Returns:
-            Dict[str, Any]: Status information about the Event Bus Manager.
+            Dictionary with status information
         """
         status = super().status()
 
         if self._initialized:
             with self._subscription_lock:
-                # Count total subscriptions and unique subscribers
-                total_subscriptions = sum(
-                    len(subs) for subs in self._subscriptions.values()
-                )
+                total_subscriptions = sum((len(subs) for subs in self._subscriptions.values()))
                 unique_subscribers: Set[str] = set()
+
                 for subs in self._subscriptions.values():
                     unique_subscribers.update(subs.keys())
 
-            # Get queue size and worker thread status
             queue_size = self._event_queue.qsize() if self._event_queue else 0
-            queue_full = (
-                (queue_size >= self._max_queue_size) if self._event_queue else False
-            )
+            queue_full = queue_size >= self._max_queue_size if self._event_queue else False
 
-            status.update(
-                {
-                    "subscriptions": {
-                        "total": total_subscriptions,
-                        "unique_subscribers": len(unique_subscribers),
-                        "event_types": len(self._subscriptions),
-                    },
-                    "queue": {
-                        "size": queue_size,
-                        "capacity": self._max_queue_size,
-                        "full": queue_full,
-                    },
-                    "threads": {
-                        "worker_count": len(self._worker_threads),
-                        "running": self._running,
-                    },
+            status.update({
+                'subscriptions': {
+                    'total': total_subscriptions,
+                    'unique_subscribers': len(unique_subscribers),
+                    'event_types': len(self._subscriptions)
+                },
+                'queue': {
+                    'size': queue_size,
+                    'capacity': self._max_queue_size,
+                    'full': queue_full
+                },
+                'threads': {
+                    'worker_count': len(self._worker_threads),
+                    'running': self._running
                 }
-            )
+            })
 
         return status

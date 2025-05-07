@@ -484,19 +484,22 @@ class QorzenMainWindow(QMainWindow):
             # Get all plugins
             plugins = self._plugin_manager.get_all_plugins()
 
+            from qorzen.core.plugin_manager import PluginInfo
+
             # Add plugins to the tree
-            for plugin in plugins:
+            for name, info in plugins.items():
+                info: PluginInfo = info
                 item = QTreeWidgetItem(
                     [
-                        plugin["name"],
-                        plugin["version"],
-                        plugin["state"],
-                        plugin["description"],
+                        name,
+                        info.version,
+                        info.state,
+                        info.description,
                     ]
                 )
 
                 # Set icon based on state
-                state = plugin["state"]
+                state = info.state
                 if state == "active":
                     item.setIcon(2, self._get_status_icon(True))
                 elif state == "loaded":

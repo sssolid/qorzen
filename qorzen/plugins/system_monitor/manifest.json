@@ -1,0 +1,210 @@
+{
+  "name": "system_monitor",
+  "display_name": "System Monitor",
+  "version": "1.0.0",
+  "description": "Real-time system resource monitoring plugin",
+  "author": {
+    "name": "Qorzen Team",
+    "email": "developers@qorzen.com",
+    "url": "https://qorzen.com",
+    "organization": "Qorzen"
+  },
+  "license": "MIT",
+  "homepage": "https://qorzen.com/plugins/system_monitor",
+  "capabilities": [
+    "ui.extend",
+    "event.subscribe",
+    "event.publish",
+    "config.read",
+    "system.monitor"
+  ],
+  "dependencies": [
+    {
+      "name": "core",
+      "version": ">=0.1.0"
+    }
+  ],
+  "entry_point": "code/plugin.py",
+  "min_core_version": "0.1.0",
+  "tags": ["monitoring", "performance", "system", "resources"],
+  "extension_uses": [],
+  "lifecycle_hooks": {
+    "pre_install": "system_monitor.code.hooks.pre_install",
+    "post_install": "system_monitor.code.hooks.post_install",
+    "pre_uninstall": "system_monitor.code.hooks.pre_uninstall",
+    "post_uninstall": "system_monitor.code.hooks.post_uninstall",
+    "pre_update": "system_monitor.code.hooks.pre_update",
+    "post_update": "system_monitor.code.hooks.post_update",
+    "post_enable": "system_monitor.code.hooks.post_enable",
+    "post_disable": "system_monitor.code.hooks.post_disable"
+  },
+  "config_schema": {
+    "fields": [
+      {
+        "name": "update_interval",
+        "type": "float",
+        "label": "Update Interval (seconds)",
+        "description": "How frequently to update metrics",
+        "required": true,
+        "default_value": 5.0,
+        "order": 1,
+        "group": "monitoring",
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 1.0},
+            "error_message": "Update interval must be at least 1 second"
+          },
+          {
+            "rule_type": "max",
+            "parameters": {"value": 60.0},
+            "error_message": "Update interval cannot exceed 60 seconds"
+          }
+        ]
+      },
+      {
+        "name": "enable_logging",
+        "type": "boolean",
+        "label": "Enable Metric Logging",
+        "description": "Whether to log metrics to a history file",
+        "default_value": true,
+        "order": 2,
+        "group": "monitoring"
+      },
+      {
+        "name": "log_history",
+        "type": "boolean",
+        "label": "Keep Metric History",
+        "description": "Whether to store historical metrics data",
+        "default_value": true,
+        "order": 3,
+        "group": "monitoring"
+      },
+      {
+        "name": "history_retention_days",
+        "type": "integer",
+        "label": "History Retention (days)",
+        "description": "Number of days to keep historical metrics",
+        "default_value": 7,
+        "order": 4,
+        "group": "monitoring",
+        "conditional_display": {
+          "field": "log_history",
+          "value": true
+        },
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 1},
+            "error_message": "Retention must be at least 1 day"
+          },
+          {
+            "rule_type": "max",
+            "parameters": {"value": 365},
+            "error_message": "Retention cannot exceed 365 days"
+          }
+        ]
+      },
+      {
+        "name": "alert_thresholds.cpu",
+        "type": "integer",
+        "label": "CPU Alert Threshold (%)",
+        "description": "CPU usage percentage that triggers an alert",
+        "default_value": 90,
+        "order": 1,
+        "group": "alerts",
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 50},
+            "error_message": "Threshold must be at least 50%"
+          },
+          {
+            "rule_type": "max",
+            "parameters": {"value": 100},
+            "error_message": "Threshold cannot exceed 100%"
+          }
+        ]
+      },
+      {
+        "name": "alert_thresholds.memory",
+        "type": "integer",
+        "label": "Memory Alert Threshold (%)",
+        "description": "Memory usage percentage that triggers an alert",
+        "default_value": 85,
+        "order": 2,
+        "group": "alerts",
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 50},
+            "error_message": "Threshold must be at least 50%"
+          },
+          {
+            "rule_type": "max",
+            "parameters": {"value": 100},
+            "error_message": "Threshold cannot exceed 100%"
+          }
+        ]
+      },
+      {
+        "name": "alert_thresholds.disk",
+        "type": "integer",
+        "label": "Disk Alert Threshold (%)",
+        "description": "Disk usage percentage that triggers an alert",
+        "default_value": 95,
+        "order": 3,
+        "group": "alerts",
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 70},
+            "error_message": "Threshold must be at least 70%"
+          },
+          {
+            "rule_type": "max",
+            "parameters": {"value": 100},
+            "error_message": "Threshold cannot exceed 100%"
+          }
+        ]
+      },
+      {
+        "name": "alert_thresholds.network",
+        "type": "integer",
+        "label": "Network Alert Threshold (%)",
+        "description": "Network usage percentage that triggers an alert",
+        "default_value": 80,
+        "order": 4,
+        "group": "alerts",
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 50},
+            "error_message": "Threshold must be at least 50%"
+          },
+          {
+            "rule_type": "max",
+            "parameters": {"value": 100},
+            "error_message": "Threshold cannot exceed 100%"
+          }
+        ]
+      }
+    ],
+    "groups": [
+      {
+        "name": "monitoring",
+        "label": "Monitoring Settings",
+        "description": "Settings for the monitoring system",
+        "order": 1,
+        "collapsed": false
+      },
+      {
+        "name": "alerts",
+        "label": "Alert Thresholds",
+        "description": "Thresholds for generating alerts",
+        "order": 2,
+        "collapsed": false
+      }
+    ]
+  }
+}
