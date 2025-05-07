@@ -78,9 +78,14 @@ class BasePlugin(QObject):
         self._config = None
         self._file_manager = None
         self._thread_manager = None
+        self._database_manager = None
+        self._remote_service_manager = None
+        self._security_manager = None
+        self._api_manager = None
+        self._cloud_manager = None
 
     def initialize(self, event_bus: Any, logger_provider: Any, config_provider: Any,
-                   file_manager: Any, thread_manager: Any, **kwargs: Any) -> None:
+                   file_manager: Any, thread_manager: Any, database_manager: Any, remote_services_manager: Any, security_manager: Any, api_manager: Any, cloud_manager: Any) -> None:
         """Initialize the plugin with the provided managers.
 
         Args:
@@ -89,6 +94,11 @@ class BasePlugin(QObject):
             config_provider: Configuration provider for accessing application config
             file_manager: File manager for file operations
             thread_manager: Thread manager for background tasks
+            database_manager: Database manager for database operations
+            remote_services_manager: Remote services manager for remote service operations
+            security_manager: Security manager for security operations
+            api_manager: API manager for API operations
+            cloud_manager: Cloud manager for cloud operations
             **kwargs: Additional managers
         """
         self._event_bus = event_bus
@@ -96,6 +106,11 @@ class BasePlugin(QObject):
         self._config = config_provider
         self._file_manager = file_manager
         self._thread_manager = thread_manager
+        self._database_manager = database_manager
+        self._remote_service_manager = remote_services_manager
+        self._security_manager = security_manager
+        self._api_manager = api_manager
+        self._cloud_manager = cloud_manager
         self._initialized = True
 
     def on_ui_ready(self, ui_integration: UIIntegration) -> None:

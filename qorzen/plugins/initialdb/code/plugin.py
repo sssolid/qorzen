@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from qorzen.core import RemoteServicesManager, DatabaseManager, SecurityManager, APIManager, CloudManager
+
 """
 InitialDB Plugin for Qorzen framework.
 
@@ -176,94 +178,62 @@ class InitialDBPlugin(BasePlugin):
             thread_manager: Any,
             **kwargs: Any
     ) -> None:
-        """Initialize the plugin with the provided managers.
-
-        Args:
-            event_bus: Event bus for pub/sub
-            logger_provider: For creating loggers
-            config_provider: Access to configuration
-            file_manager: File system operations
-            thread_manager: Task scheduling
-            **kwargs: Additional dependencies
-        """
+        """Initialize the plugin with the provided managers."""
         self._event_bus = cast(EventBusManager, event_bus)
         self._logger = logger_provider.get_logger(self.name)
         self._config = cast(ConfigManager, config_provider)
         self._file_manager = cast(FileManager, file_manager)
         self._thread_manager = cast(ThreadManager, thread_manager)
-        self._db_manager = kwargs.get("database_manager")
-        self._api_manager = kwargs.get("api_manager")
+        self._db_manager = kwargs.get('database_manager')
+        self._api_manager = kwargs.get('api_manager')
 
         if not self._db_manager:
-            self._logger.error("Database manager not available - plugin cannot function")
+            self._logger.error('Database manager not available')
             return
 
-        if not self._api_manager:
-            self._logger.warning("API manager not available - API routes will not be registered")
+        self._logger.info(f'Initializing {self.name} v{self.version} plugin')
 
-        if self._file_manager:
-            try:
-                plugin_data_dir = self._file_manager.get_file_path(self.name, directory_type="plugin_data")
-                self._file_manager.ensure_directory(plugin_data_dir.as_posix())
-                self._logger.debug(f"Plugin data directory: {plugin_data_dir}")
-            except Exception as e:
-                self._logger.warning(f"Failed to create plugin data directory: {str(e)}")
+        # Create required directories
+        self._create_plugin_directories()
 
-        self._logger.info(f"Initializing {self.name} v{self.version} plugin")
+        # Initialize services
+        from .services.vehicle_service import VehicleService
+        from .services.export_service import ExportService
 
-        try:
-            self._load_settings()
-        except Exception as e:
-            self._logger.error(f"Error loading settings: {str(e)}")
+        plugin_config = self._config.get(f'plugins.{self.name}', {})
+        self._vehicle_service = VehicleService(
+            db_manager=self._db_manager,
+            logger=self._logger,
+            config=plugin_config
+        )
 
-        try:
-            from .services.vehicle_service import VehicleService
-            from .services.export_service import ExportService
+        self._export_service = ExportService(
+            file_manager=self._file_manager,
+            logger=self._logger,
+            vehicle_service=self._vehicle_service,
+            config=plugin_config
+        )
+
+        # Register API routes if API manager available
+        if self._api_manager:
             from .routes.api import register_api_routes
-
-            self._vehicle_service = VehicleService(
-                db_manager=self._db_manager,
-                logger=self._logger,
-                event_bus=self._event_bus,
-                thread_manager=self._thread_manager,
-                config=self._config
-            )
-
-            self._export_service = ExportService(
-                file_manager=self._file_manager,
-                logger=self._logger,
+            register_api_routes(
+                api_manager=self._api_manager,
                 vehicle_service=self._vehicle_service,
-                config=self._config
+                export_service=self._export_service,
+                logger=self._logger
             )
+            self._logger.info('API routes registered')
 
-            if self._api_manager:
-                register_api_routes(
-                    api_manager=self._api_manager,
-                    vehicle_service=self._vehicle_service,
-                    export_service=self._export_service,
-                    logger=self._logger
-                )
-                self._logger.info("API routes registered")
+        # Subscribe to core events
+        self._event_bus.subscribe(
+            event_type="system/started",
+            callback=self._on_system_started,
+            subscriber_id=f"{self.name}_system_started"
+        )
 
-            self._subscribe_to_events()
-
-            # Schedule periodic database validation
-            self._setup_periodic_tasks()
-
-            self._initialized = True
-            self._logger.info(f"{self.name} plugin initialized")
-
-            self._event_bus.publish(
-                event_type=EventType.PLUGIN_INITIALIZED.value,
-                source=self.name,
-                payload={
-                    "plugin_name": self.name,
-                    "version": self.version,
-                    "has_ui": True
-                }
-            )
-        except Exception as e:
-            self._logger.error(f"Failed to initialize plugin: {str(e)}", exc_info=True)
+        self._initialized = True
+        self._logger.info(f'{self.name} plugin initialized')
 
     def _load_settings(self) -> None:
         """Load plugin settings from configuration."""
@@ -347,42 +317,24 @@ class InitialDBPlugin(BasePlugin):
         try:
             result = self._vehicle_service.validate_database()
 
-            # Publish database status event
+            # Publish event with result
             if self._event_bus:
                 self._event_bus.publish(
                     event_type=f"{self.name}/database_status",
                     source=self.name,
-                    payload={"connected": result}
+                    payload={'connected': result}
                 )
 
-            # Update UI if available
+            # Update UI if tab exists
             if self._tab:
-                self._tab.update_database_status({"connected": result})
+                self._tab.update_database_status({'connected': result})
 
             if result:
-                self._logger.info("Database validation successful")
-                if self._event_bus:
-                    self._event_bus.publish(
-                        event_type=f"{self.name}/database_ready",
-                        source=self.name,
-                        payload={"status": "ready"}
-                    )
+                self._logger.info('Database validation successful')
             else:
-                self._logger.error("Database validation failed")
-                if self._event_bus:
-                    self._event_bus.publish(
-                        event_type=f"{self.name}/database_error",
-                        source=self.name,
-                        payload={"status": "error", "message": "Validation failed"}
-                    )
+                self._logger.error('Database validation failed')
         except Exception as e:
-            self._logger.error(f"Database validation error: {str(e)}", exc_info=True)
-            if self._event_bus:
-                self._event_bus.publish(
-                    event_type=f"{self.name}/database_error",
-                    source=self.name,
-                    payload={"status": "error", "message": str(e)}
-                )
+            self._logger.error(f'Database validation error: {str(e)}')
 
     def _on_config_changed(self, event: Event) -> None:
         """Handle configuration change event.
@@ -416,83 +368,51 @@ class InitialDBPlugin(BasePlugin):
             )
 
     def on_ui_ready(self, ui_integration: UIIntegration) -> None:
-        """Set up UI components.
-
-        Args:
-            ui_integration: Interface for adding UI components
-        """
+        """Set up UI components when UI is ready."""
         try:
-            self._logger.debug("Setting up UI components")
+            self._logger.debug('Setting up UI components')
 
-            # Create and add the tab
+            # Create main tab
             self._tab = InitialDBTab()
             self._tab_index = ui_integration.add_tab(
                 plugin_id=self.name,
                 tab=self._tab,
-                title="Vehicle Database"
+                title='Vehicle Database'
             )
 
-            # Add menu items
-            try:
-                self._tools_menu = ui_integration.find_menu("&Tools")
-                if not self._tools_menu:
-                    self._tools_menu = ui_integration.add_menu(
+            # Add plugin to Tools menu
+            tools_menu = ui_integration.find_menu('&Tools')
+            if tools_menu:
+                self._plugin_menu = ui_integration.add_menu(
+                    plugin_id=self.name,
+                    title='Vehicle Database',
+                    parent_menu=tools_menu
+                )
+
+                # Add primary actions
+                actions = [
+                    ("Refresh Database", self._validate_database),
+                    ("Export Data", self._show_export_dialog)
+                ]
+
+                for text, callback in actions:
+                    action = ui_integration.add_menu_action(
                         plugin_id=self.name,
-                        title="&Tools"
+                        menu=self._plugin_menu,
+                        text=text,
+                        callback=callback
                     )
+                    self._menu_items.append(action)
 
-                if self._tools_menu:
-                    self._plugin_menu = ui_integration.add_menu(
-                        plugin_id=self.name,
-                        title="Vehicle Database",
-                        parent_menu=self._tools_menu
-                    )
-
-                    if self._plugin_menu:
-                        action1 = ui_integration.add_menu_action(
-                            plugin_id=self.name,
-                            menu=self._plugin_menu,
-                            text="Refresh Database Connection",
-                            callback=self._refresh_database_connection
-                        )
-                        self._menu_items.append(action1)
-
-                        action2 = ui_integration.add_menu_action(
-                            plugin_id=self.name,
-                            menu=self._plugin_menu,
-                            text="Connection Settings",
-                            callback=self._show_connection_settings
-                        )
-                        self._menu_items.append(action2)
-
-                        action3 = ui_integration.add_menu_action(
-                            plugin_id=self.name,
-                            menu=self._plugin_menu,
-                            text="Export Data",
-                            callback=self._show_export_dialog
-                        )
-                        self._menu_items.append(action3)
-
-                        self._logger.debug("Added menu items to Tools menu")
-            except Exception as e:
-                self._logger.error(f"Error adding menu items: {str(e)}")
-
-            # Update initial database status
+            # Initial database check
             if self._initialized and self._vehicle_service:
                 self._thread_manager.submit_task(
                     func=self._validate_database,
                     name=f"{self.name}_initial_validate_db",
                     submitter=self.name
                 )
-
-            if self._event_bus:
-                self._event_bus.publish(
-                    event_type=f"{self.name}/ui_added",
-                    source=self.name,
-                    payload={"tab_index": self._tab_index}
-                )
         except Exception as e:
-            self._logger.error(f"Error setting up UI components: {str(e)}")
+            self._logger.error(f'Error setting up UI: {str(e)}')
 
     def _refresh_database_connection(self) -> None:
         """Refresh database connection."""
@@ -531,38 +451,34 @@ class InitialDBPlugin(BasePlugin):
             )
 
     def shutdown(self) -> None:
-        """Shut down the plugin.
-
-        Clean up resources when the plugin is being unloaded.
-        """
+        """Clean up resources when shutting down."""
         if not self._initialized:
             return
 
-        self._logger.info(f"Shutting down {self.name} plugin")
+        self._logger.info(f'Shutting down {self.name} plugin')
 
-        # Cancel background tasks
+        # Cancel scheduled tasks
         if self._thread_manager and self._db_connection_timer:
             self._thread_manager.cancel_task(self._db_connection_timer)
 
         # Unsubscribe from events
         if self._event_bus:
-            self._event_bus.unsubscribe(f"{self.name}_system_started")
-            self._event_bus.unsubscribe(f"{self.name}_config_changed")
+            self._event_bus.unsubscribe(f'{self.name}_system_started')
 
         # Shut down services
-        if self._vehicle_service:
+        if hasattr(self, '_vehicle_service') and self._vehicle_service:
             self._vehicle_service.shutdown()
 
-        if self._export_service:
+        if hasattr(self, '_export_service') and self._export_service:
             self._export_service.shutdown()
 
-        # Clean up UI resources
+        # Clean up UI references
         self._menu_items.clear()
         self._plugin_menu = None
         self._tools_menu = None
 
         self._initialized = False
-        self._logger.info(f"{self.name} plugin shut down successfully")
+        self._logger.info(f'{self.name} plugin shut down successfully')
 
     def get_vehicle_service(self) -> Optional[Any]:
         """Get the vehicle service.

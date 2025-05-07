@@ -21,7 +21,7 @@ from ..models.vehicle import (
     Base, BaseVehicle, DatabaseConnectionError, Make, Model,
     QueryExecutionError, Vehicle, Year
 )
-from ..query.builder import FilterParams, query_builder
+from ..query_builders.query_builder import FilterParams, query_builder
 
 
 class VehicleService:
@@ -32,34 +32,20 @@ class VehicleService:
     executing custom queries, and performing database validations.
     """
 
-    def __init__(self,
-                 db_manager: Any,
-                 logger: Any,
-                 event_bus: Any,
-                 thread_manager: Any,
-                 config: Any) -> None:
-        """
-        Initialize the vehicle service.
+    def __init__(self, db_manager: Any, logger: Any, config: Dict[str, Any]) -> None:
+        """Initialize the vehicle service.
 
         Args:
-            db_manager: Database manager for database access
-            logger: Logger for logging
-            event_bus: Event bus for publishing/subscribing to events
-            thread_manager: Thread manager for background tasks
-            config: Configuration provider
+            db_manager: Database manager for executing queries
+            logger: Logger for service
+            config: Plugin configuration
         """
         self._db_manager = db_manager
         self._logger = logger
-        self._event_bus = event_bus
-        self._thread_manager = thread_manager
         self._config = config
-
-        # Get plugin-specific configuration
-        self._plugin_config = self._config.get("plugins.initialdb", {})
-        self._default_limit = self._plugin_config.get("default_query_limit", 1000)
-        self._max_limit = self._plugin_config.get("max_query_limit", 10000)
-
-        self._logger.info("Vehicle service initialized")
+        self._default_limit = config.get('default_query_limit', 1000)
+        self._max_limit = config.get('max_query_limit', 10000)
+        self._logger.info('Vehicle service initialized')
 
     def update_config(self, config: Dict[str, Any]) -> None:
         """
@@ -74,125 +60,86 @@ class VehicleService:
         self._logger.debug(f"Configuration updated: default_limit={self._default_limit}, max_limit={self._max_limit}")
 
     def validate_database(self) -> bool:
-        """
-        Validate database connection and schema.
+        """Test database connection and validate schema.
 
         Returns:
-            True if validation successful, False otherwise
+            bool: True if validation passed, False otherwise
         """
         try:
             with self._db_manager.session() as session:
-                # Test basic connectivity
-                result = session.execute(text("SELECT 1 AS test"))
+                # Basic connection test
+                result = session.execute(text('SELECT 1 AS test'))
                 test_value = result.scalar()
                 if test_value != 1:
-                    self._logger.error("Basic connectivity test failed")
+                    self._logger.error('Basic connectivity test failed')
                     return False
 
                 # Test schema access
                 try:
-                    session.execute(text("SET search_path TO vcdb, public"))
-                    self._logger.debug("Search path set to vcdb, public")
+                    session.execute(text('SET search_path TO vcdb, public'))
                 except Exception as e:
-                    self._logger.error(f"Failed to set search path: {e}")
+                    self._logger.error(f'Failed to set search path: {e}')
                     return False
 
-                # Test key tables
-                core_tables = ["year", "make", "model", "vehicle"]
-                for table in core_tables:
+                # Test core tables
+                for table in ['year', 'make', 'model', 'vehicle']:
                     try:
-                        count = session.execute(text(f"SELECT COUNT(*) FROM vcdb.{table}")).scalar()
-                        self._logger.debug(f"Table {table} count: {count}")
+                        count = session.execute(text(f'SELECT COUNT(*) FROM vcdb.{table}')).scalar()
                         if count is None or count < 1:
-                            self._logger.warning(f"Table {table} appears to be empty")
+                            self._logger.warning(f'Table {table} appears to be empty')
                     except Exception as e:
-                        self._logger.error(f"Failed to query table {table}: {e}")
+                        self._logger.error(f'Failed to query table {table}: {e}')
                         return False
 
-                self._logger.info("Database validation successful")
                 return True
-
         except Exception as e:
-            self._logger.error(f"Database validation failed: {e}", exc_info=True)
+            self._logger.error(f'Database validation failed: {e}')
             return False
 
-    def get_vehicles(self,
-                     filters: FilterParams,
-                     limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """
-        Get vehicles based on filter criteria.
+    def get_vehicles(self, filters: FilterParams, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get vehicles based on filter criteria.
 
         Args:
             filters: Filter parameters
-            limit: Maximum number of results (defaults to configured default_limit)
+            limit: Maximum number of results (defaults to config value)
 
         Returns:
             List of vehicle dictionaries
-
-        Raises:
-            DatabaseConnectionError: If database connection fails
-            QueryExecutionError: If query execution fails
         """
         try:
-            # Apply limit constraints
             if limit is None:
                 limit = self._default_limit
             elif limit > self._max_limit:
                 limit = self._max_limit
 
-            # Build query
+            from ..query_builders.query_builder import query_builder
             query = query_builder.build_vehicle_query(filters, limit=limit)
 
-            # Execute query
             with self._db_manager.session() as session:
                 result = session.execute(query)
-                vehicles = result.scalars().all()
+                rows = result.all()
 
-                # Convert to dictionaries
-                return [vehicle.to_dict() for vehicle in vehicles]
+            # Convert rows to dictionaries
+            vehicles = []
+            for row in rows:
+                if hasattr(row, 'keys'):
+                    # Handle result rows that are mappings
+                    vehicles.append({key: value for key, value in row._mapping.items()})
+                elif hasattr(row, '_asdict'):
+                    # Handle result rows that are Row objects
+                    vehicles.append(row._asdict())
+                elif hasattr(row, 'to_dict'):
+                    # Handle SQLAlchemy models
+                    vehicles.append(row.to_dict())
+                else:
+                    # Use first column if it's a vehicle object
+                    if len(row) > 0 and hasattr(row[0], 'to_dict'):
+                        vehicles.append(row[0].to_dict())
 
+            return vehicles
         except Exception as e:
-            self._logger.error(f"Error getting vehicles: {e}", exc_info=True)
-            raise QueryExecutionError(f"Failed to execute vehicle query: {e}") from e
-
-    async def get_vehicles_async(self,
-                                 filters: FilterParams,
-                                 limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """
-        Get vehicles asynchronously based on filter criteria.
-
-        Args:
-            filters: Filter parameters
-            limit: Maximum number of results (defaults to configured default_limit)
-
-        Returns:
-            List of vehicle dictionaries
-
-        Raises:
-            DatabaseConnectionError: If database connection fails
-            QueryExecutionError: If query execution fails
-        """
-        try:
-            # Apply limit constraints
-            if limit is None:
-                limit = self._default_limit
-            elif limit > self._max_limit:
-                limit = self._max_limit
-
-            # Build query
-            query = query_builder.build_vehicle_query(filters, limit=limit)
-
-            # Execute query
-            async with await self._db_manager.async_session() as session:
-                result = await session.execute(query)
-                vehicles = result.scalars().all()
-
-                # Convert to dictionaries
-                return [vehicle.to_dict() for vehicle in vehicles]
-
-        except Exception as e:
-            self._logger.error(f"Error getting vehicles async: {e}", exc_info=True)
-            raise QueryExecutionError(f"Failed to execute async vehicle query: {e}") from e
+            self._logger.error(f'Error getting vehicles: {e}')
+            raise QueryExecutionError(f'Failed to execute vehicle query: {e}') from e
 
     def get_filter_values(self,
                           table_name: str,
@@ -237,50 +184,6 @@ class VehicleService:
         except Exception as e:
             self._logger.error(f"Error getting filter values: {e}", exc_info=True)
             raise QueryExecutionError(f"Failed to execute filter values query: {e}") from e
-
-    async def get_filter_values_async(self,
-                                      table_name: str,
-                                      id_column: str,
-                                      value_column: str,
-                                      filters: Optional[FilterParams] = None) -> List[Tuple[Any, str]]:
-        """
-        Get distinct values for a column asynchronously, optionally filtered.
-
-        This is used for populating filter dropdown values.
-
-        Args:
-            table_name: Name of the table
-            id_column: Name of the ID column
-            value_column: Name of the value column to display
-            filters: Optional filter parameters to apply
-
-        Returns:
-            List of (id, value) tuples
-
-        Raises:
-            DatabaseConnectionError: If database connection fails
-            QueryExecutionError: If query execution fails
-        """
-        try:
-            # Build query
-            query = query_builder.build_filter_values_query(
-                table_name=table_name,
-                id_column=id_column,
-                value_column=value_column,
-                filters=filters
-            )
-
-            # Execute query
-            async with await self._db_manager.async_session() as session:
-                result = await session.execute(query)
-                rows = result.all()
-
-                # Convert and return
-                return [(row[0], str(row[1])) for row in rows]
-
-        except Exception as e:
-            self._logger.error(f"Error getting filter values async: {e}", exc_info=True)
-            raise QueryExecutionError(f"Failed to execute async filter values query: {e}") from e
 
     def create_filter_params_from_dict(self, data: Dict[str, Any]) -> FilterParams:
         """
@@ -389,38 +292,6 @@ class VehicleService:
         except Exception as e:
             self._logger.error(f"Error executing custom query: {e}", exc_info=True)
             raise QueryExecutionError(f"Failed to execute custom query: {e}") from e
-
-    async def execute_custom_query_async(self, query_sql: str, params: Optional[Dict[str, Any]] = None) -> List[
-        Dict[str, Any]]:
-        """
-        Execute a custom SQL query asynchronously.
-
-        Args:
-            query_sql: SQL query string
-            params: Optional query parameters
-
-        Returns:
-            List of result dictionaries
-
-        Raises:
-            DatabaseConnectionError: If database connection fails
-            QueryExecutionError: If query execution fails
-        """
-        try:
-            # Execute query
-            async with await self._db_manager.async_session() as session:
-                result = await session.execute(text(query_sql), params or {})
-                rows = result.all()
-
-                # Get column names from result
-                column_names = result.keys()
-
-                # Convert to list of dictionaries
-                return [dict(zip(column_names, row)) for row in rows]
-
-        except Exception as e:
-            self._logger.error(f"Error executing custom query async: {e}", exc_info=True)
-            raise QueryExecutionError(f"Failed to execute async custom query: {e}") from e
 
     def shutdown(self) -> None:
         """Shutdown the service and release resources."""
