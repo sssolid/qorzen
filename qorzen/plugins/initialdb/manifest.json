@@ -16,7 +16,10 @@
     "event.subscribe",
     "event.publish",
     "config.read",
-    "database.read"
+    "config.write",
+    "database.read",
+    "file.read",
+    "file.write"
   ],
   "dependencies": [
     {
@@ -26,7 +29,8 @@
   ],
   "entry_point": "plugin.py",
   "min_core_version": "0.1.0",
-  "tags": ["database", "vehicle", "components"],
+  "tags": ["database", "vehicle", "components", "automotive"],
+  "extension_points": [],
   "extension_uses": [],
   "lifecycle_hooks": {
     "pre_install": "initialdb.code.hooks.pre_install",
@@ -46,9 +50,53 @@
         "label": "Database Connection String",
         "description": "Connection string for the vehicle components database",
         "required": true,
-        "default_value": "sqlite:///data/initialdb/vehicles.db",
+        "default_value": "postgresql+asyncpg://postgres:postgres@192.168.10.234/crown_nexus",
         "order": 1,
         "group": "database"
+      },
+      {
+        "name": "default_query_limit",
+        "type": "integer",
+        "label": "Default Query Limit",
+        "description": "Default maximum number of results to return in queries",
+        "required": true,
+        "default_value": 1000,
+        "order": 2,
+        "group": "database",
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 10},
+            "error_message": "Default query limit must be at least 10"
+          },
+          {
+            "rule_type": "max",
+            "parameters": {"value": 10000},
+            "error_message": "Default query limit cannot exceed 10000"
+          }
+        ]
+      },
+      {
+        "name": "max_query_limit",
+        "type": "integer",
+        "label": "Maximum Query Limit",
+        "description": "Maximum number of results to return in queries (hard limit)",
+        "required": true,
+        "default_value": 10000,
+        "order": 3,
+        "group": "database",
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 1000},
+            "error_message": "Maximum query limit must be at least 1000"
+          },
+          {
+            "rule_type": "max",
+            "parameters": {"value": 50000},
+            "error_message": "Maximum query limit cannot exceed 50000"
+          }
+        ]
       },
       {
         "name": "enable_caching",
@@ -56,7 +104,7 @@
         "label": "Enable Caching",
         "description": "Whether to cache database queries to improve performance",
         "default_value": true,
-        "order": 2,
+        "order": 4,
         "group": "database"
       },
       {
@@ -65,7 +113,7 @@
         "label": "Cache Timeout (seconds)",
         "description": "Time in seconds before cached data expires",
         "default_value": 300,
-        "order": 3,
+        "order": 5,
         "group": "database",
         "conditional_display": {
           "field": "enable_caching",
@@ -85,6 +133,45 @@
         ]
       },
       {
+        "name": "exports_dir",
+        "type": "string",
+        "label": "Exports Directory",
+        "description": "Directory for exported files",
+        "default_value": "exports",
+        "order": 1,
+        "group": "export"
+      },
+      {
+        "name": "templates_dir",
+        "type": "string",
+        "label": "Templates Directory",
+        "description": "Directory for export templates",
+        "default_value": "templates",
+        "order": 2,
+        "group": "export"
+      },
+      {
+        "name": "ui_refresh_interval_ms",
+        "type": "integer",
+        "label": "UI Refresh Interval (ms)",
+        "description": "How frequently to refresh the UI in milliseconds",
+        "default_value": 500,
+        "order": 1,
+        "group": "ui",
+        "validation_rules": [
+          {
+            "rule_type": "min",
+            "parameters": {"value": 100},
+            "error_message": "Refresh interval must be at least 100ms"
+          },
+          {
+            "rule_type": "max",
+            "parameters": {"value": 10000},
+            "error_message": "Refresh interval cannot exceed 10000ms (10 seconds)"
+          }
+        ]
+      },
+      {
         "name": "log_level",
         "type": "select",
         "label": "Log Level",
@@ -98,42 +185,35 @@
         ],
         "order": 1,
         "group": "advanced"
-      },
-      {
-        "name": "max_results",
-        "type": "integer",
-        "label": "Maximum Results",
-        "description": "Maximum number of results to return in queries",
-        "default_value": 100,
-        "order": 2,
-        "group": "advanced",
-        "validation_rules": [
-          {
-            "rule_type": "min",
-            "parameters": {"value": 10},
-            "error_message": "Minimum results must be at least 10"
-          },
-          {
-            "rule_type": "max",
-            "parameters": {"value": 1000},
-            "error_message": "Maximum results cannot exceed 1000"
-          }
-        ]
       }
     ],
     "groups": [
       {
         "name": "database",
         "label": "Database Settings",
-        "description": "Database connection and caching settings",
+        "description": "Database connection and query settings",
         "order": 1,
+        "collapsed": false
+      },
+      {
+        "name": "export",
+        "label": "Export Settings",
+        "description": "Settings for data exports",
+        "order": 2,
+        "collapsed": false
+      },
+      {
+        "name": "ui",
+        "label": "UI Settings",
+        "description": "User interface settings",
+        "order": 3,
         "collapsed": false
       },
       {
         "name": "advanced",
         "label": "Advanced Settings",
         "description": "Advanced configuration options",
-        "order": 2,
+        "order": 4,
         "collapsed": true
       }
     ]
