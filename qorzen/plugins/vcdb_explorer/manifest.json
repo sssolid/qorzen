@@ -117,7 +117,7 @@
         "type": "integer",
         "label": "Maximum Export Rows",
         "description": "Maximum number of rows allowed for export",
-        "default_value": 10000,
+        "default_value": 0,
         "required": true,
         "order": 1,
         "group": "export"

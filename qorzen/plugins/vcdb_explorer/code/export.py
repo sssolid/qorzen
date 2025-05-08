@@ -214,6 +214,7 @@ class DataExporter:
                 table_filters=table_filters
             )
 
+            # No maximum if set to 0
             if max_rows == 0:
                 max_rows = total_count
 

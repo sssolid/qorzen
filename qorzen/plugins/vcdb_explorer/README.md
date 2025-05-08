@@ -71,7 +71,7 @@ plugins:
       max_filter_panels: 5
       default_page_size: 100
     export:
-      max_rows: 10000
+      max_rows: 0
 ```
 
 ## Requirements
