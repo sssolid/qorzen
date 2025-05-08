@@ -260,7 +260,21 @@ class DatabaseHandler:
             f'columns={columns}, page={page}'
         )
 
-        self._thread_manager.submit_task(
+        # Local failure callback matching (str) -> None
+        def _on_failed(err_msg: str = '<thread error>') -> None:
+            self._event_bus.publish(
+                event_type=VCdbEventType.query_results(),
+                source='vcdb_explorer',
+                payload={
+                    'results': [],
+                    'total_count': 0,
+                    'error': err_msg,
+                    'callback_id': callback_id
+                },
+                synchronous=False
+            )
+
+        self._thread_manager.submit_qt_task(
             self._execute_query_thread,
             filter_panels,
             columns,
@@ -270,6 +284,8 @@ class DatabaseHandler:
             sort_desc,
             table_filters,
             callback_id,
+            on_completed=self._publish_query_results,  # already (Dict)->None
+            on_failed=_on_failed,                     # now ()->None or (str)->None
             name=f'query_execute_{time.time()}',
             submitter='vcdb_explorer'
         )
@@ -339,24 +355,13 @@ class DatabaseHandler:
             sort_desc: bool,
             table_filters: Dict[str, Any],
             callback_id: Optional[str]
-    ) -> None:
-        """Execute a query in a separate thread.
-
-        Args:
-            filter_panels: The filter panel configurations
-            columns: The columns to include in the results
-            page: The page number
-            page_size: The page size
-            sort_by: The column to sort by
-            sort_desc: Whether to sort in descending order
-            table_filters: Additional table filters
-            callback_id: The callback ID for the results
+    ) -> Dict[str, Any]:
+        """
+        Execute a query in a worker thread and return the results dict.
         """
         self._logger.debug(
-            f'Executing query in thread: panels={len(filter_panels)}, '
-            f'page={page}, page_size={page_size}'
+            f'Executing query in thread: panels={len(filter_panels)}, page={page}, page_size={page_size}'
         )
-
         with self._query_lock:
             try:
                 start_time = time.time()
@@ -364,36 +369,47 @@ class DatabaseHandler:
                     filter_panels, columns, page, page_size, sort_by, sort_desc, table_filters
                 )
                 duration = time.time() - start_time
-
                 self._logger.debug(
-                    f'Query executed in {duration:.3f}s: {len(results)} results of {total_count} total'
+                    f'Query executed in {duration:.3f}s: {len(results)} rows of {total_count} total'
                 )
-
-                # Publish query results
-                self._event_bus.publish(
-                    event_type=VCdbEventType.query_results(),
-                    source='vcdb_explorer',
-                    payload={
-                        'results': results,
-                        'total_count': total_count,
-                        'callback_id': callback_id
-                    }
-                )
+                return {
+                    'results': results,
+                    'total_count': total_count,
+                    'callback_id': callback_id
+                }
 
             except Exception as e:
-                self._logger.error(f'Error executing query: {str(e)}')
+                self._logger.error(f'Error executing query: {e}')
+                return {
+                    'results': [],
+                    'total_count': 0,
+                    'error': str(e),
+                    'callback_id': callback_id
+                }
 
-                # Publish error results
-                self._event_bus.publish(
-                    event_type=VCdbEventType.query_results(),
-                    source='vcdb_explorer',
-                    payload={
-                        'results': [],
-                        'total_count': 0,
-                        'error': str(e),
-                        'callback_id': callback_id
-                    }
-                )
+    def _publish_query_results(self, payload: Dict[str, Any]) -> None:
+        """Runs on the Qt thread: fire the query_results event."""
+        self._event_bus.publish(
+            event_type=VCdbEventType.query_results(),
+            source='vcdb_explorer',
+            payload=payload,
+            synchronous=False
+        )
+
+    def _publish_query_failed(self, err: Exception) -> None:
+        """Runs on the Qt thread if the thread errors."""
+        callback_id = getattr(err, 'callback_id', '<unknown>')
+        self._event_bus.publish(
+            event_type=VCdbEventType.query_results(),
+            source='vcdb_explorer',
+            payload={
+                'results': [],
+                'total_count': 0,
+                'error': str(err),
+                'callback_id': callback_id
+            },
+            synchronous=False
+        )
 
     def get_filter_values(
             self,

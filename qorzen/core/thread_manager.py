@@ -73,6 +73,8 @@ class ThreadManager(QorzenManager):
         self._qt_task_bridge = QtTaskBridge()
         self._qt_callbacks: Dict[str, Callable] = {}
         self._qt_callbacks_lock = threading.RLock()
+        self._qt_task_bridge.taskCompleted.connect(self._handle_qt_task_completed)
+        self._qt_task_bridge.taskFailed.connect(self._handle_qt_task_failed)
 
     def initialize(self) -> None:
         try:
@@ -196,9 +198,9 @@ class ThreadManager(QorzenManager):
     def submit_qt_task(
             self,
             func: Callable[..., T],
+            *args: Any,
             on_completed: Optional[Callable[[T], None]] = None,
             on_failed: Optional[Callable[[str], None]] = None,
-            *args: Any,
             name: Optional[str] = None,
             submitter: str = 'unknown',
             **kwargs: Any
@@ -228,12 +230,6 @@ class ThreadManager(QorzenManager):
         if on_completed or on_failed:
             with self._qt_callbacks_lock:
                 self._qt_callbacks[task_id] = (on_completed, on_failed)
-
-            # Connect signals if not already connected
-            if not self._qt_task_bridge.taskCompleted.receivers():
-                self._qt_task_bridge.taskCompleted.connect(self._handle_qt_task_completed)
-            if not self._qt_task_bridge.taskFailed.receivers():
-                self._qt_task_bridge.taskFailed.connect(self._handle_qt_task_failed)
 
         # Wrap the function to properly handle results/errors
         @functools.wraps(func)

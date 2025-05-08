@@ -693,6 +693,9 @@ class DataTableWidget(QWidget):
 
         self._layout.addWidget(toolbar)
 
+    def get_callback_id(self) -> str:
+        return self._callback_id
+
     def get_selected_columns(self) -> List[str]:
         """Get the selected columns.
 
@@ -757,15 +760,10 @@ class DataTableWidget(QWidget):
 
     @Slot(Any)
     def _on_query_results(self, event: Any) -> None:
-        """Handle query results event.
-
-        Args:
-            event: The event
-        """
         payload = event.payload
         callback_id = payload.get('callback_id')
+        self._logger.debug(f"_on_query_results called: callback_id={callback_id}, expected={self._callback_id}")
 
-        # Only process results intended for this instance
         if callback_id != self._callback_id:
             return
 
@@ -773,17 +771,18 @@ class DataTableWidget(QWidget):
         total_count = payload.get('total_count', 0)
         error = payload.get('error')
 
+        # Since we're already on the Qt thread, just call update_ui() directly:
         if error:
             self._logger.error(f'Query error: {error}')
             QMessageBox.critical(self, 'Query Error', f'Error executing query: {error}')
-            self._query_running = False
-            self.queryFinished.emit()
-            return
+        else:
+            self._logger.debug(f'Query results received: {len(results)} rows of {total_count} total')
+            self._model.set_data(results, total_count)
+            self._table_view.reset()
+            self._table_view.repaint()
+            self._total_count = total_count
+            self._update_pagination_ui()
 
-        self._logger.debug(f'Query results received: {len(results)} rows of {total_count} total')
-        self._model.set_data(results, total_count)
-        self._total_count = total_count
-        self._update_pagination_ui()
         self._query_running = False
         self.queryFinished.emit()
 

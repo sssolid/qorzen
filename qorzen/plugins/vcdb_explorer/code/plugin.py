@@ -179,6 +179,8 @@ class VCdbExplorerTab(QWidget):
             progress.setMinimumDuration(500)
             progress.setValue(0)
 
+            self._data_table.queryFinished.connect(progress.close)
+
             # Publish query execute event
             self._event_bus.publish(
                 event_type=VCdbEventType.query_execute(),
@@ -188,7 +190,7 @@ class VCdbExplorerTab(QWidget):
                     'columns': self._data_table.get_selected_columns(),
                     'page': 1,
                     'page_size': self._data_table.get_page_size(),
-                    'callback_id': 'main_query_result'
+                    'callback_id': self._data_table.get_callback_id()
                 }
             )
 
@@ -433,60 +435,6 @@ class VCdbExplorerPlugin:
             error_widget.setLayout(error_layout)
 
             ui_integration.add_tab(plugin_id=self.name, tab=error_widget, title='VCdb Explorer')
-
-    # def _retry_database_connection(self) -> None:
-    #     """Retry the database connection."""
-    #     progress = QProgressDialog('Retrying database connection...', 'Cancel', 0, 0, None)
-    #     progress.setWindowModality(Qt.WindowModal)
-    #     progress.setMinimumDuration(500)
-    #     progress.setValue(0)
-    #
-    #     # Start a new thread to retry the connection
-    #     if self._thread_manager:
-    #         self._thread_manager.submit_task(
-    #             self._perform_db_retry,
-    #             progress,
-    #             name='retry_db_connection',
-    #             submitter='vcdb_explorer'
-    #         )
-    #
-    # def _perform_db_retry(self, progress: QProgressDialog) -> None:
-    #     """Perform the database connection retry in a separate thread.
-    #
-    #     Args:
-    #         progress: The progress dialog
-    #     """
-    #     try:
-    #         if not self._database_handler:
-    #             QMessageBox.critical(None, 'Error', 'Database handler not available. Please restart the application.')
-    #             return
-    #
-    #         # Reinitialize the database handler
-    #         self._database_handler.retry
-    #
-    #         if getattr(self._database_handler, '_initialized', False):
-    #             QMessageBox.information(
-    #                 None,
-    #                 'Connection Successful',
-    #                 'Database connection established. Please restart the application to load VCdb Explorer.'
-    #             )
-    #         else:
-    #             QMessageBox.critical(
-    #                 None,
-    #                 'Connection Failed',
-    #                 'Failed to connect to the database. Please check your configuration.'
-    #             )
-    #     except Exception as e:
-    #         if self._logger:
-    #             self._logger.error(f'Error retrying database connection: {str(e)}')
-    #
-    #         QMessageBox.critical(
-    #             None,
-    #             'Connection Error',
-    #             f'An error occurred while connecting to the database: {str(e)}'
-    #         )
-    #     finally:
-    #         progress.cancel()
 
     def _retry_ui_setup(self, ui_integration: UIIntegration) -> None:
         """Retry UI setup.
