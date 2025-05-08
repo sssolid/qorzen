@@ -166,15 +166,18 @@ class VCdbExplorerTab(QWidget):
 
     @Slot()
     def _execute_query(self) -> None:
-        """Execute query with current filters."""
+        """Handle execution of the query when the user clicks the Run Query button."""
         try:
             self._logger.debug('Execute query triggered')
             self._run_query_btn.setEnabled(False)
 
+            # Get all filter panels data
             filter_panels = self._filter_panel_manager.get_all_filters()
+            self._logger.debug(f'Collected filter panels: {filter_panels}')
 
-            # Confirm if no filters are set
-            if not any(filter_panels):
+            # Check if any filters are set
+            if not any(panel for panel in filter_panels if panel):
+                # No filters set, confirm with user
                 if QMessageBox.question(
                         self,
                         'No Filters',
@@ -185,31 +188,10 @@ class VCdbExplorerTab(QWidget):
                     self._run_query_btn.setEnabled(True)
                     return
 
-            # Show progress dialog
-            progress = QProgressDialog('Executing query...', 'Cancel', 0, 0, self)
-            progress.setWindowModality(Qt.WindowModality.WindowModal)
-            progress.setAutoClose(True)
-            progress.setAutoReset(True)
-            progress.setMinimumDuration(500)
-            progress.setValue(0)
+            # Execute the query directly using the DataTableWidget's new method
+            self._data_table.execute_query(filter_panels)
 
-            # Connect signal to close progress dialog when query completes
-            self._data_table.queryFinished.connect(progress.close)
-
-            # Publish query execute event
-            self._event_bus.publish(
-                event_type=VCdbEventType.query_execute(),
-                source='vcdb_explorer_tab',
-                payload={
-                    'filter_panels': filter_panels,
-                    'columns': self._data_table.get_selected_columns(),
-                    'page': 1,
-                    'page_size': self._data_table.get_page_size(),
-                    'callback_id': self._data_table.get_callback_id()
-                }
-            )
-
-            # Re-enable query button after a delay
+            # Re-enable the button after a delay
             QTimer.singleShot(1000, lambda: self._run_query_btn.setEnabled(True))
 
         except Exception as e:
@@ -368,7 +350,7 @@ class VCdbExplorerPlugin(PluginInterface):
 
         # Export configuration
         self._export_config = {
-            'max_rows': self._config.get(f'plugins.{self.name}.export.max_rows', 10000)
+            'max_rows': self._config.get(f'plugins.{self.name}.export.max_rows', 0)
         }
 
         if self._logger:

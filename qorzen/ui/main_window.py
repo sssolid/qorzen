@@ -554,15 +554,17 @@ class QorzenMainWindow(QMainWindow):
         task = payload.get('taskName', '')
 
         self._log_table.setItem(row_position, 0, QTableWidgetItem(str(timestamp)))
-        level_color = None
-        if str(level).upper() == 'ERROR':
-            level_color = QColor('red')
-        elif str(level).upper() == 'WARNING':
-            level_color = QColor('orange')
-        elif str(level).upper() == 'INFO':
-            level_color = QColor('blue')
-        elif str(level).upper() == 'DEBUG':
-            level_color = QColor('gray')
+        level_str = str(level).upper()
+        if level_str == 'ERROR':
+            level_color = QColor(220, 53, 69)  # Bootstrap red (#dc3545)
+        elif level_str == 'WARNING':
+            level_color = QColor(255, 193, 7)  # Bootstrap yellow (#ffc107)
+        elif level_str == 'INFO':
+            level_color = QColor(23, 162, 184)  # Bootstrap cyan (#17a2b8)
+        elif level_str == 'DEBUG':
+            level_color = QColor(108, 117, 125)  # Bootstrap gray (#6c757d)
+        else:
+            level_color = QColor(33, 37, 41)  # Default dark (#212529)
         item = QTableWidgetItem(str(level))
         item.setForeground(QBrush(level_color))
         self._log_table.setItem(row_position, 1, item)

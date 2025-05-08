@@ -4,12 +4,13 @@ import csv
 import logging
 import os
 import tempfile
+import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
 
 from PySide6.QtCore import (
     QAbstractTableModel, QModelIndex, QRegularExpression, QSize,
-    QSortFilterProxyModel, Qt, Signal, Slot, QThread, QTimer, QPoint
+    QSortFilterProxyModel, Qt, Signal, Slot, QThread, QTimer, QPoint, QObject
 )
 from PySide6.QtGui import QAction, QClipboard, QIcon, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
@@ -35,6 +36,18 @@ from qorzen.core.event_model import Event, EventType
 from .database_handler import DatabaseHandler
 from .events import VCdbEventType
 from .export import DataExporter, ExportError
+
+
+# New signal class for thread-safe communication
+class QuerySignals(QObject):
+    # Signal when query starts
+    started = Signal()
+    # Signal when query completes with results
+    completed = Signal(object)
+    # Signal when query fails with error
+    failed = Signal(str)
+    # Signal when progress updates
+    progress = Signal(int, int)
 
 
 class ColumnSelectionDialog(QDialog):
@@ -604,6 +617,21 @@ class DataTableWidget(QWidget):
         """
         super().__init__(parent)
 
+        # Create signals object for thread-safe communication
+        self._signals = QuerySignals()
+
+        # Connect signals to slots with appropriate connection types
+        self._signals.started.connect(self._on_query_started, Qt.ConnectionType.QueuedConnection)
+        self._signals.completed.connect(self._on_query_completed, Qt.ConnectionType.QueuedConnection)
+        self._signals.failed.connect(self._on_query_failed, Qt.ConnectionType.QueuedConnection)
+        self._signals.progress.connect(self._on_query_progress, Qt.ConnectionType.QueuedConnection)
+
+        # Progress dialog reference - initialize to None
+        self._progress_dialog = None
+
+        # Thread reference - initialize to None
+        self._query_thread = None
+
         self._database_handler = database_handler
         self._event_bus = event_bus
         self._logger = logger
@@ -798,41 +826,156 @@ class DataTableWidget(QWidget):
         return self._page_size
 
     def execute_query(self, filter_panels: List[Dict[str, List[int]]]) -> None:
-        """Execute a query with the current settings.
+        """
+        Execute a query with the given filter panels.
+        All UI operations must happen on the main thread.
 
         Args:
-            filter_panels: List of filter panel dictionaries
+            filter_panels: List of filter criteria from filter panels
         """
         if self._query_running:
             self._logger.warning('Query already running, ignoring request')
             return
 
         self._query_running = True
-        self.queryStarted.emit()
+        self._current_filter_panels = filter_panels
 
+        # Emit the started signal - this will trigger UI updates on the main thread
+        self._signals.started.emit()
+
+        # Create a thread to run the actual query
+        self._query_thread = threading.Thread(
+            target=self._run_query_in_thread,
+            args=(filter_panels,),
+            daemon=True
+        )
+
+        # Start the thread
+        self._query_thread.start()
+
+    def _run_query_in_thread(self, filter_panels: List[Dict[str, List[int]]]) -> None:
+        """
+        Run the query in a background thread.
+        No UI operations should happen here.
+
+        Args:
+            filter_panels: List of filter criteria
+        """
         try:
-            self._logger.debug('Executing query')
-            self._current_filter_panels = filter_panels
+            # Log the operation
+            self._logger.debug(f"Running query in thread with {len(filter_panels)} filter panels")
 
-            self._event_bus.publish(
-                event_type=VCdbEventType.query_execute(),
-                source='data_table_widget',
-                payload={
-                    'filter_panels': filter_panels,
-                    'columns': self._selected_columns,
-                    'page': self._current_page,
-                    'page_size': self._page_size,
-                    'sort_by': self._sort_column,
-                    'sort_desc': self._sort_descending,
-                    'table_filters': self._table_filters,
-                    'callback_id': self._callback_id
-                }
+            # Call the database handler directly
+            results, total_count = self._database_handler.execute_query(
+                filter_panels=filter_panels,
+                columns=self._selected_columns,
+                page=self._current_page,
+                page_size=self._page_size,
+                sort_by=self._sort_column,
+                sort_desc=self._sort_descending,
+                table_filters=self._table_filters
             )
+
+            # Successfully got results, emit completed signal
+            self._signals.completed.emit({
+                'results': results,
+                'total_count': total_count
+            })
+
         except Exception as e:
-            self._logger.error(f'Query execution failed: {str(e)}')
-            self._query_running = False
-            self.queryFinished.emit()
-            QMessageBox.critical(self, 'Query Error', f'Error executing query: {str(e)}')
+            # Query failed, emit failed signal
+            self._logger.error(f"Query failed: {str(e)}")
+            self._signals.failed.emit(str(e))
+
+    @Slot()
+    def _on_query_started(self) -> None:
+        """
+        Handle query started event on the main thread.
+        Create and show the progress dialog.
+        """
+        # Create progress dialog on the main thread
+        self._progress_dialog = QProgressDialog('Executing query...', 'Cancel', 0, 0, self)
+        self._progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self._progress_dialog.setAutoClose(True)
+        self._progress_dialog.setMinimumDuration(500)
+        self._progress_dialog.setCancelButton(None)  # No cancel button to simplify
+        self._progress_dialog.setRange(0, 0)  # Indeterminate progress
+        self._progress_dialog.show()
+
+    @Slot(object)
+    def _on_query_completed(self, data: Dict[str, Any]) -> None:
+        """
+        Handle query completed event on the main thread.
+        Update the UI with the results.
+
+        Args:
+            data: Dictionary with query results
+        """
+        # Update the model with results
+        results = data.get('results', [])
+        total_count = data.get('total_count', 0)
+
+        # Update the model on the main thread
+        self._model.set_data(results, total_count)
+
+        # Reset the table view
+        self._table_view.reset()
+
+        # Store the total count
+        self._total_count = total_count
+
+        # Update pagination UI
+        self._update_pagination_ui()
+
+        # Close the progress dialog if it exists
+        if self._progress_dialog:
+            self._progress_dialog.close()
+            self._progress_dialog = None
+
+        # Reset query running state
+        self._query_running = False
+
+        # Log completion
+        self._logger.debug(f"Query completed: {len(results)} results of {total_count} total")
+
+    @Slot(str)
+    def _on_query_failed(self, error_message: str) -> None:
+        """
+        Handle query failed event on the main thread.
+        Show error message to user.
+
+        Args:
+            error_message: The error message to display
+        """
+        # Close the progress dialog if it exists
+        if self._progress_dialog:
+            self._progress_dialog.close()
+            self._progress_dialog = None
+
+        # Reset query running state
+        self._query_running = False
+
+        # Show error message
+        QMessageBox.critical(self, 'Query Error', f'Error executing query: {error_message}')
+
+        # Log the error
+        self._logger.error(f"Query failed: {error_message}")
+
+    @Slot(int, int)
+    def _on_query_progress(self, current: int, total: int) -> None:
+        """
+        Handle query progress event on the main thread.
+        Update the progress dialog.
+
+        Args:
+            current: Current progress value
+            total: Total expected progress
+        """
+        # Update progress dialog if it exists
+        if self._progress_dialog:
+            if self._progress_dialog.maximum() == 0 and total > 0:
+                self._progress_dialog.setRange(0, total)
+            self._progress_dialog.setValue(current)
 
     def _run_query(self) -> None:
         """Run the current query."""

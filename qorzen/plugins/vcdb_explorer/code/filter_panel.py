@@ -471,27 +471,30 @@ class FilterPanel(QGroupBox):
             self._logger.debug(f'Received filter refresh for panel {panel_id}')
             self.update_filter_values(filter_values)
 
-    @Slot(str, list)
     def _on_filter_value_changed(self, filter_type: str, values: List[int]) -> None:
-        """Handle filter value change.
+        """
+        Handle when a filter value changes, update internal state and publish events.
 
         Args:
-            filter_type: Type of filter
-            values: New filter values
+            filter_type: The type of filter that changed
+            values: The new filter values
         """
         self._logger.debug(f'Filter value changed: {filter_type} = {values}')
 
-        # Update current values
+        # Update internal filter state
         if not values:
             if filter_type in self._current_values:
                 del self._current_values[filter_type]
         else:
             self._current_values[filter_type] = values
 
-        # Emit signal
+        # Log the complete state after update
+        self._logger.debug(f'Updated filter state: {self._current_values}')
+
+        # Emit signal for local components
         self.filterChanged.emit(self._panel_id, filter_type, values)
 
-        # Publish event for auto-populate - IMPORTANT: always pass the current auto_populate state
+        # Publish event via event bus for other components
         self._logger.debug(f'Publishing filter changed event: auto_populate={self._auto_populate_filters}')
         self._event_bus.publish(
             event_type=VCdbEventType.filter_changed(),
@@ -500,35 +503,38 @@ class FilterPanel(QGroupBox):
                 'panel_id': self._panel_id,
                 'filter_type': filter_type,
                 'values': values,
-                'current_filters': self._current_values,
+                'current_filters': self._current_values.copy(),  # Use copy to avoid mutation issues
                 'auto_populate': self._auto_populate_filters
             }
         )
 
     @Slot(int)
     def _on_auto_populate_changed(self, state: int) -> None:
-        """Handle auto-populate checkbox state change.
+        """
+        Handle when the auto-populate checkbox state changes.
 
         Args:
-            state: New checkbox state
+            state: The new checkbox state (2=checked, 0=unchecked)
         """
-        # Get the actual boolean value from state
-        is_checked = state == Qt.CheckState.Checked
+        # Log the raw state for debugging
+        self._logger.debug(f'Auto-populate checkbox raw state: {state}')
 
-        # Log the state change clearly
-        self._logger.debug(f'Auto-populate checkbox changed to: {is_checked} (state={state})')
+        # In Qt, CheckState.Checked is 2, so we compare with 2 directly
+        is_checked = (state == 2)
 
-        # Only do something if the state has actually changed
+        self._logger.debug(f'Auto-populate checkbox interpreted as: {is_checked}')
+
+        # Only take action if the state is actually changing
         if is_checked != self._auto_populate_filters:
+            self._logger.debug(f'Auto-populate state changed from {self._auto_populate_filters} to {is_checked}')
             self._auto_populate_filters = is_checked
 
-            # If auto-populate was enabled, trigger refresh for current filters
             if self._auto_populate_filters:
                 self._logger.debug('Auto-populate ENABLED - triggering filter refresh')
-
-                # If we have any current values, refresh using them
                 if self._current_values:
+                    # Trigger a refresh for each filter type
                     for filter_type, values in self._current_values.items():
+                        self._logger.debug(f'Publishing filter changed event for {filter_type}: {values}')
                         self._event_bus.publish(
                             event_type=VCdbEventType.filter_changed(),
                             source='vcdb_explorer_filter_panel',
@@ -536,12 +542,13 @@ class FilterPanel(QGroupBox):
                                 'panel_id': self._panel_id,
                                 'filter_type': filter_type,
                                 'values': values,
-                                'current_filters': self._current_values,
-                                'auto_populate': True  # Explicitly set to True
+                                'current_filters': self._current_values.copy(),  # Pass a copy to avoid mutation
+                                'auto_populate': True
                             }
                         )
                 else:
-                    # Even with no values, we should publish an event to trigger initial filter load
+                    # No filters set, still trigger a refresh
+                    self._logger.debug('No current filter values, sending empty refresh')
                     self._event_bus.publish(
                         event_type=VCdbEventType.filter_changed(),
                         source='vcdb_explorer_filter_panel',
@@ -550,7 +557,7 @@ class FilterPanel(QGroupBox):
                             'filter_type': 'none',
                             'values': [],
                             'current_filters': {},
-                            'auto_populate': True  # Explicitly set to True
+                            'auto_populate': True
                         }
                     )
             else:
@@ -767,12 +774,15 @@ class FilterPanelManager(QWidget):
             self._panels[panel_id].update_filter_values(filter_values)
 
     def get_all_filters(self) -> List[Dict[str, List[int]]]:
-        """Get all filter values from all panels.
+        """
+        Get all active filter values from all panels.
 
         Returns:
             List of filter dictionaries, one per panel
         """
-        return [panel.get_current_values() for panel in self._panels.values()]
+        filters = [panel.get_current_values() for panel in self._panels.values()]
+        self._logger.debug(f'Collected filters from {len(self._panels)} panels: {filters}')
+        return filters
 
     def refresh_all_panels(self) -> None:
         """Refresh all panels."""

@@ -6,6 +6,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple, cast
 
+import sqlalchemy
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
@@ -235,10 +236,11 @@ class DatabaseHandler:
             )
 
     def _on_query_execute(self, event: Event) -> None:
-        """Handle query execute event.
+        """
+        Handle query execution events from the UI.
 
         Args:
-            event: The query execute event
+            event: The event containing query parameters
         """
         payload = event.payload
         filter_panels = payload.get('filter_panels', [])
@@ -252,12 +254,15 @@ class DatabaseHandler:
 
         self._logger.debug(f'Query execute event: panels={len(filter_panels)}, columns={columns}, page={page}')
 
-        def _on_failed(err_msg: str = '<thread error>') -> None:
-            """Handle query execution failure.
+        # Log each filter panel for debugging
+        for i, panel in enumerate(filter_panels):
+            if panel:
+                self._logger.debug(f'Filter panel {i}: {panel}')
+            else:
+                self._logger.debug(f'Filter panel {i}: Empty')
 
-            Args:
-                err_msg: Error message
-            """
+        def _on_failed(err_msg: str = '<thread error>') -> None:
+            """Callback for when the query execution fails."""
             self._event_bus.publish(
                 event_type=VCdbEventType.query_results(),
                 source='vcdb_explorer',
@@ -270,17 +275,10 @@ class DatabaseHandler:
                 synchronous=False
             )
 
-        # Use submit_qt_task as we need to publish results back to UI thread
+        # Submit the actual query execution to a background thread
         self._thread_manager.submit_qt_task(
             self._execute_query_thread,
-            filter_panels,
-            columns,
-            page,
-            page_size,
-            sort_by,
-            sort_desc,
-            table_filters,
-            callback_id,
+            filter_panels, columns, page, page_size, sort_by, sort_desc, table_filters, callback_id,
             on_completed=self._publish_query_results,
             on_failed=_on_failed,
             name=f'query_execute_{time.time()}',
@@ -344,44 +342,47 @@ class DatabaseHandler:
             }
         )
 
-    def _execute_query_thread(
-            self,
-            filter_panels: List[Dict[str, List[int]]],
-            columns: List[str],
-            page: int,
-            page_size: int,
-            sort_by: Optional[str],
-            sort_desc: bool,
-            table_filters: Dict[str, Any],
-            callback_id: Optional[str]
-    ) -> Dict[str, Any]:
-        """Execute query in a separate thread.
+    def _execute_query_thread(self, filter_panels: List[Dict[str, List[int]]], columns: List[str],
+                              page: int, page_size: int, sort_by: Optional[str],
+                              sort_desc: bool, table_filters: Dict[str, Any],
+                              callback_id: Optional[str]) -> Dict[str, Any]:
+        """
+        Execute a database query in a background thread.
 
         Args:
-            filter_panels: List of filter panel selections
+            filter_panels: List of filter conditions from each panel
             columns: Columns to include in results
-            page: Page number
-            page_size: Page size
+            page: Page number for pagination
+            page_size: Number of results per page
             sort_by: Column to sort by
-            sort_desc: Sort descending if True
-            table_filters: Additional table filters
-            callback_id: Callback ID for result identification
+            sort_desc: True if sorting in descending order
+            table_filters: Additional filters from the data table
+            callback_id: ID to use for the callback
 
         Returns:
-            Dict containing query results
+            Dictionary with query results
         """
         self._logger.debug(
             f'Executing query in thread: panels={len(filter_panels)}, page={page}, page_size={page_size}')
 
-        with self._query_lock:  # Prevent concurrent queries
+        # Make sure we have valid filter panels
+        valid_panels = [panel for panel in filter_panels if panel]
+        if not valid_panels:
+            self._logger.warning('No filter conditions found in any panel')
+
+        with self._query_lock:
             try:
                 start_time = time.time()
+
+                # Execute the query with the provided filters
                 results, total_count = self.execute_query(
                     filter_panels, columns, page, page_size, sort_by, sort_desc, table_filters
                 )
+
                 duration = time.time() - start_time
                 self._logger.debug(f'Query executed in {duration:.3f}s: {len(results)} rows of {total_count} total')
 
+                # Return the results
                 return {
                     'results': results,
                     'total_count': total_count,
@@ -604,111 +605,233 @@ class DatabaseHandler:
             self._logger.error(f'Error getting filter values for {filter_type}: {str(e)}')
             raise DatabaseHandlerError(f'Error getting filter values for {filter_type}: {str(e)}') from e
 
-    def _apply_filters(
-            self,
-            query: Select,
-            filters: Dict[str, List[int]],
-            exclude_filters: Set[str],
-            target_model: Any = None
-    ) -> Select:
-        """Apply filters to a query.
+    def _apply_filters(self, query: Select, filters: Dict[str, List[int]], exclude_filters: Set[str],
+                       target_model: Any = None) -> Select:
+        """
+        Apply filter conditions to a database query.
 
         Args:
-            query: Base query
-            filters: Filter values to apply
-            exclude_filters: Filter types to exclude
-            target_model: Target model if filtering for a specific model
+            query: The base SQLAlchemy query
+            filters: Dictionary of filter type -> filter values
+            exclude_filters: Set of filter types to exclude
+            target_model: Optional target model to check for
 
         Returns:
-            Modified query with filters applied
+            The query with filter conditions applied
         """
         if not filters:
+            self._logger.debug('No filters to apply')
             return query
 
         self._logger.debug(f'Applying filters: {filters}, excluding: {exclude_filters}')
 
+        # Track which joins we've already added to avoid duplicates
+        has_base_vehicle_join = False
+
+        # First check if we're already joined to BaseVehicle
+        for clause in query._from_obj:
+            if isinstance(clause, sqlalchemy.sql.elements.Join) and hasattr(clause,
+                                                                            'right') and clause.right == BaseVehicle.__table__:
+                has_base_vehicle_join = True
+                break
+
         # Process each filter
         for filter_type, values in filters.items():
-            # Skip empty filters or excluded filters
-            if not values or filter_type in exclude_filters:
+            # Skip empty values
+            if not values:
+                self._logger.debug(f'Skipping empty filter: {filter_type}')
                 continue
 
-            # Skip if filtering for target model
-            if (target_model and filter_type in self._filter_map and
-                    (self._filter_map[filter_type][0] == target_model)):
+            # Skip excluded filters
+            if filter_type in exclude_filters:
+                self._logger.debug(f'Skipping excluded filter: {filter_type}')
                 continue
 
-            # Apply filter based on filter type
-            if filter_type == 'year':
-                if len(values) == 2 and values[0] <= values[1]:
-                    # Year range filter
-                    query = query.filter(BaseVehicle.year_id.between(values[0], values[1]))
-                    self._logger.debug(f'Applied year range filter: {values[0]}-{values[1]}')
+            # Skip if target model matches
+            if target_model and filter_type in self._filter_map and self._filter_map[filter_type][0] == target_model:
+                self._logger.debug(f'Skipping filter for target model: {filter_type}')
+                continue
+
+            # Process different filter types
+            try:
+                if filter_type == 'year':
+                    # Make sure we have BaseVehicle joined
+                    if not has_base_vehicle_join:
+                        query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
+                        has_base_vehicle_join = True
+                        self._logger.debug('Added join to BaseVehicle for year filter')
+
+                    # Apply filter based on number of values
+                    if len(values) == 2 and values[0] <= values[1]:
+                        # Year range filter
+                        query = query.filter(BaseVehicle.year_id.between(values[0], values[1]))
+                        self._logger.debug(f'Applied year range filter: {values[0]}-{values[1]}')
+                    else:
+                        # Specific years filter
+                        query = query.filter(BaseVehicle.year_id.in_(values))
+                        self._logger.debug(f'Applied specific years filter: {values}')
+
+                elif filter_type == 'make':
+                    # Make sure we have BaseVehicle joined
+                    if not has_base_vehicle_join:
+                        query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
+                        has_base_vehicle_join = True
+                        self._logger.debug('Added join to BaseVehicle for make filter')
+
+                    # Apply make filter
+                    query = query.filter(BaseVehicle.make_id.in_(values))
+                    self._logger.debug(f'Applied make filter: {values}')
+
+                elif filter_type == 'model':
+                    # Make sure we have BaseVehicle joined
+                    if not has_base_vehicle_join:
+                        query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
+                        has_base_vehicle_join = True
+                        self._logger.debug('Added join to BaseVehicle for model filter')
+
+                    # Apply model filter
+                    query = query.filter(BaseVehicle.model_id.in_(values))
+                    self._logger.debug(f'Applied model filter: {values}')
+
+                elif filter_type == 'submodel':
+                    # Apply submodel filter directly on Vehicle
+                    query = query.filter(Vehicle.sub_model_id.in_(values))
+                    self._logger.debug(f'Applied submodel filter: {values}')
+
+                elif filter_type == 'region':
+                    # Apply region filter directly on Vehicle
+                    query = query.filter(Vehicle.region_id.in_(values))
+                    self._logger.debug(f'Applied region filter: {values}')
+
+                elif filter_type == 'drivetype':
+                    # Apply drive type filter with appropriate joins
+                    vtdt = aliased(VehicleToDriveType)
+                    dt = aliased(DriveType)
+
+                    query = query.join(vtdt, Vehicle.vehicle_id == vtdt.vehicle_id)
+                    query = query.join(dt, vtdt.drive_type_id == dt.drive_type_id)
+                    query = query.filter(dt.drive_type_id.in_(values))
+                    self._logger.debug(f'Applied drive type filter with joins: {values}')
+
+                elif filter_type == 'wheelbase':
+                    # Apply wheel base filter with appropriate joins
+                    vtwb = aliased(VehicleToWheelBase)
+                    wb = aliased(WheelBase)
+
+                    query = query.join(vtwb, Vehicle.vehicle_id == vtwb.vehicle_id)
+                    query = query.join(wb, vtwb.wheel_base_id == wb.wheel_base_id)
+                    query = query.filter(wb.wheel_base_id.in_(values))
+                    self._logger.debug(f'Applied wheel base filter with joins: {values}')
+
+                elif filter_type == 'bedtype':
+                    # Apply bed type filter with appropriate joins
+                    vtbc = aliased(VehicleToBedConfig)
+                    bc = aliased(BedConfig)
+                    bt = aliased(BedType)
+
+                    query = query.join(vtbc, Vehicle.vehicle_id == vtbc.vehicle_id)
+                    query = query.join(bc, vtbc.bed_config_id == bc.bed_config_id)
+                    query = query.join(bt, bc.bed_type_id == bt.bed_type_id)
+                    query = query.filter(bt.bed_type_id.in_(values))
+                    self._logger.debug(f'Applied bed type filter with joins: {values}')
+
+                elif filter_type == 'vehicletype':
+                    # Apply vehicle type filter with appropriate joins
+                    if not has_base_vehicle_join:
+                        query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
+                        has_base_vehicle_join = True
+
+                    query = query.join(Model, BaseVehicle.model_id == Model.model_id)
+                    query = query.join(VehicleType, Model.vehicle_type_id == VehicleType.vehicle_type_id)
+                    query = query.filter(VehicleType.vehicle_type_id.in_(values))
+                    self._logger.debug(f'Applied vehicle type filter with joins: {values}')
+
+                elif filter_type == 'engineblock':
+                    # Apply engine block filter with appropriate joins
+                    vtec = aliased(VehicleToEngineConfig)
+                    ec = aliased(EngineConfig2)
+                    eb = aliased(EngineBlock)
+
+                    query = query.join(vtec, Vehicle.vehicle_id == vtec.vehicle_id)
+                    query = query.join(ec, vtec.engine_config_id == ec.engine_config_id)
+                    query = query.join(eb, ec.engine_block_id == eb.engine_block_id)
+
+                    # Convert string values to int if needed
+                    engine_block_ids = [int(v) if isinstance(v, str) and v.isdigit() else v for v in values]
+                    query = query.filter(eb.engine_block_id.in_(engine_block_ids))
+                    self._logger.debug(f'Applied engine block filter with joins: {values}')
+
+                elif filter_type == 'fueltypename':
+                    # Apply fuel type filter with appropriate joins
+                    vtec = aliased(VehicleToEngineConfig)
+                    ec = aliased(EngineConfig2)
+                    ft = aliased(FuelType)
+
+                    query = query.join(vtec, Vehicle.vehicle_id == vtec.vehicle_id)
+                    query = query.join(ec, vtec.engine_config_id == ec.engine_config_id)
+                    query = query.join(ft, ec.fuel_type_id == ft.fuel_type_id)
+                    query = query.filter(ft.fuel_type_id.in_(values))
+                    self._logger.debug(f'Applied fuel type filter with joins: {values}')
+
                 else:
-                    # Specific years filter
-                    query = query.filter(BaseVehicle.year_id.in_(values))
-                    self._logger.debug(f'Applied year filter: {values}')
-            elif filter_type == 'make':
-                query = query.filter(BaseVehicle.make_id.in_(values))
-                self._logger.debug(f'Applied make filter: {values}')
-            elif filter_type == 'model':
-                query = query.filter(BaseVehicle.model_id.in_(values))
-                self._logger.debug(f'Applied model filter: {values}')
-            elif filter_type == 'submodel':
-                query = query.filter(Vehicle.sub_model_id.in_(values))
-                self._logger.debug(f'Applied submodel filter: {values}')
-            elif filter_type == 'region':
-                query = query.filter(Vehicle.region_id.in_(values))
-                self._logger.debug(f'Applied region filter: {values}')
-            elif filter_type == 'drivetype':
-                vtdt = aliased(VehicleToDriveType)
-                dt = aliased(DriveType)
-                # Ensure we don't create duplicate joins
-                query = query.join(
-                    vtdt, Vehicle.vehicle_id == vtdt.vehicle_id, isouter=True
-                ).join(
-                    dt, vtdt.drive_type_id == dt.drive_type_id, isouter=True
-                ).filter(dt.drive_type_id.in_(values))
-                self._logger.debug(f'Applied drive type filter: {values}')
-            elif filter_type == 'wheelbase':
-                vtwb = aliased(VehicleToWheelBase)
-                wb = aliased(WheelBase)
-                # Ensure we don't create duplicate joins
-                query = query.join(
-                    vtwb, Vehicle.vehicle_id == vtwb.vehicle_id, isouter=True
-                ).join(
-                    wb, vtwb.wheel_base_id == wb.wheel_base_id, isouter=True
-                ).filter(wb.wheel_base_id.in_(values))
-                self._logger.debug(f'Applied wheel base filter: {values}')
+                    # Check if we have this filter type in our mapping
+                    if filter_type in self._filter_map:
+                        model_class, attr_name = self._filter_map[filter_type]
+                        self._logger.debug(f'Using filter map for {filter_type}: {model_class.__name__}.{attr_name}')
 
+                        # Handle generic filter types from the filter map
+                        # This is a simplified approach - in practice you may need more specific join logic
+                        if model_class == Year:
+                            if not has_base_vehicle_join:
+                                query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
+                                has_base_vehicle_join = True
+                            query = query.join(Year, BaseVehicle.year_id == Year.year_id)
+                            query = query.filter(getattr(Year, attr_name).in_(values))
+                            self._logger.debug(f'Applied {filter_type} filter with year join: {values}')
+                        elif model_class == Make:
+                            if not has_base_vehicle_join:
+                                query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
+                                has_base_vehicle_join = True
+                            query = query.join(Make, BaseVehicle.make_id == Make.make_id)
+                            query = query.filter(getattr(Make, attr_name).in_(values))
+                            self._logger.debug(f'Applied {filter_type} filter with make join: {values}')
+                        elif model_class == Model:
+                            if not has_base_vehicle_join:
+                                query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
+                                has_base_vehicle_join = True
+                            query = query.join(Model, BaseVehicle.model_id == Model.model_id)
+                            query = query.filter(getattr(Model, attr_name).in_(values))
+                            self._logger.debug(f'Applied {filter_type} filter with model join: {values}')
+                        else:
+                            self._logger.warning(
+                                f'Unimplemented filter type in map: {filter_type} ({model_class.__name__}.{attr_name})')
+                    else:
+                        self._logger.warning(f'Unknown filter type: {filter_type}')
+
+            except Exception as e:
+                self._logger.error(f'Error applying filter {filter_type}: {str(e)}')
+
+        # Return the query with all filters applied
         return query
 
-    def execute_query(
-            self,
-            filter_panels: List[Dict[str, List[int]]],
-            columns: List[str],
-            page: int = 1,
-            page_size: int = 100,
-            sort_by: Optional[str] = None,
-            sort_desc: bool = False,
-            table_filters: Optional[Dict[str, Any]] = None
-    ) -> Tuple[List[Dict[str, Any]], int]:
-        """Execute a query with filtering and pagination.
+    def execute_query(self, filter_panels: List[Dict[str, List[int]]], columns: List[str],
+                      page: int = 1, page_size: int = 100, sort_by: Optional[str] = None,
+                      sort_desc: bool = False, table_filters: Optional[Dict[str, Any]] = None) -> Tuple[
+        List[Dict[str, Any]], int]:
+        """
+        Execute a query with the given filter panels.
 
         Args:
-            filter_panels: List of filter panel selections
-            columns: Columns to include in results
-            page: Page number (default: 1)
-            page_size: Page size (default: 100)
-            sort_by: Column to sort by (default: None)
-            sort_desc: Sort descending if True (default: False)
-            table_filters: Additional table filters (default: None)
+            filter_panels: List of filter criteria from filter panels
+            columns: List of columns to include in results
+            page: Page number for pagination
+            page_size: Number of results per page
+            sort_by: Column to sort by
+            sort_desc: True if sorting in descending order
+            table_filters: Additional filters from the data table
 
         Returns:
-            Tuple of (results, total_count)
-
-        Raises:
-            DatabaseHandlerError: If database error occurs
+            Tuple of (results list, total count)
         """
         if not self._initialized:
             raise DatabaseHandlerError('DatabaseHandler not initialized')
@@ -716,40 +839,35 @@ class DatabaseHandler:
         try:
             with self.session() as session:
                 self._logger.debug(
-                    f'Executing query: panels={len(filter_panels)}, '
-                    f'columns={columns}, page={page}, page_size={page_size}'
-                )
+                    f'Executing query: panels={len(filter_panels)}, columns={columns}, page={page}, page_size={page_size}')
 
                 # Start with base query for vehicle IDs
                 base_query = select(Vehicle.vehicle_id).select_from(Vehicle)
 
-                # Apply filter panels as OR conditions (vehicles matching any panel)
+                # Apply filter panels if there are any
                 if filter_panels:
                     panel_conditions = []
-
                     for panel in filter_panels:
                         if not panel:
                             continue
 
-                        # Create subquery for this panel's conditions
                         panel_query = select(Vehicle.vehicle_id).select_from(Vehicle)
                         panel_query = self._apply_filters(panel_query, panel, set())
                         panel_conditions.append(Vehicle.vehicle_id.in_(panel_query.scalar_subquery()))
 
-                    # Add panel conditions as OR
                     if panel_conditions:
                         base_query = base_query.filter(or_(*panel_conditions))
                         self._logger.debug(f'Applied {len(panel_conditions)} panel conditions')
 
-                # Get total count first
+                # Get total count
                 count_query = select(func.count()).select_from(base_query.alias())
                 total_count = session.execute(count_query).scalar() or 0
                 self._logger.debug(f'Total count: {total_count}')
 
-                # Build full query with selected columns
+                # Build query with requested columns
                 query = self._build_columns_query(base_query.scalar_subquery(), columns)
 
-                # Apply table filters
+                # Apply table filters if provided
                 if table_filters:
                     query = self._apply_table_filters(query, table_filters)
                     self._logger.debug(f'Applied table filters: {table_filters}')
@@ -764,12 +882,12 @@ class DatabaseHandler:
                     query = query.offset((page - 1) * page_size).limit(page_size)
                     self._logger.debug(f'Applied pagination: page={page}, page_size={page_size}')
 
+                # Execute final query
                 self._logger.debug('Executing final query')
-
-                # Execute query and format results
                 result_rows = session.execute(query).all()
-                results = []
 
+                # Convert results to dictionaries
+                results = []
                 for row in result_rows:
                     result = {}
                     for i, col in enumerate(query.columns):

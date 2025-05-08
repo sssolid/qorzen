@@ -175,7 +175,7 @@ class DataExporter:
             column_map: Dict[str, str],
             file_path: str,
             format_type: str,
-            max_rows: int = 10000,
+            max_rows: int = 0,
             table_filters: Optional[Dict[str, Any]] = None,
             sort_by: Optional[str] = None,
             sort_desc: bool = False,
@@ -213,6 +213,9 @@ class DataExporter:
                 sort_desc=sort_desc,
                 table_filters=table_filters
             )
+
+            if max_rows == 0:
+                max_rows = total_count
 
             total_to_export = min(total_count, max_rows)
 
