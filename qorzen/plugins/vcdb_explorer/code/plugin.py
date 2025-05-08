@@ -1,45 +1,46 @@
 from __future__ import annotations
 
 import logging
-import threading
-import time
-from typing import Any, Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
+from PySide6.QtCore import Qt, Slot, QTimer
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QFrame,
-    QMessageBox, QProgressDialog, QFileDialog, QComboBox
+    QGroupBox, QHBoxLayout, QLabel, QMessageBox,
+    QProgressDialog, QPushButton, QSplitter,
+    QVBoxLayout, QWidget
 )
-from PySide6.QtCore import Qt, Signal, Slot, QTimer, QEventLoop
 
-from qorzen.plugin_system.interface import BasePlugin
+from qorzen.core import RemoteServicesManager, SecurityManager, APIManager, CloudManager, LoggingManager, ConfigManager, \
+    DatabaseManager, EventBusManager, FileManager, ThreadManager
+from qorzen.plugin_system.interface import PluginInterface
 from qorzen.ui.integration import UIIntegration, TabComponent
 
 from .database_handler import DatabaseHandler
-from .filter_panel import FilterPanelManager
 from .data_table import DataTableWidget
-from .export import DataExporter, ExportError
+from .events import VCdbEventType
+from .export import DataExporter
+from .filter_panel import FilterPanelManager
 
 
 class VCdbExplorerTab(QWidget):
-    """Main tab widget for the VCdb Explorer."""
+    """Main tab for the VCdb Explorer plugin."""
 
     def __init__(
             self,
             database_handler: DatabaseHandler,
-            event_bus: Any,
+            event_bus: EventBusManager,
             logger: logging.Logger,
             export_settings: Dict[str, Any],
             parent: Optional[QWidget] = None
     ) -> None:
-        """
-        Initialize the VCdb Explorer tab.
+        """Initialize the VCdb Explorer tab.
 
         Args:
-            database_handler: Database handler for database operations
-            event_bus: Event bus for component communication
-            logger: Logger instance
+            database_handler: The database handler
+            event_bus: The event bus
+            logger: The logger
             export_settings: Export settings
-            parent: Parent widget
+            parent: The parent widget
         """
         super().__init__(parent)
 
@@ -58,29 +59,43 @@ class VCdbExplorerTab(QWidget):
 
         self._exporter = DataExporter(logger)
 
-        # Register event handlers
-        self._event_bus.register('vcdb_explorer:filters_refreshed', self._on_filters_refreshed)
+        # Subscribe to events
+        self._event_bus.subscribe(
+            event_type=VCdbEventType.filters_refreshed(),
+            callback=self._on_filters_refreshed,
+            subscriber_id='vcdb_explorer_tab'
+        )
 
         self._create_ui_components()
         self._connect_signals()
 
+    def __del__(self) -> None:
+        """Clean up resources when the tab is deleted."""
+        try:
+            self._event_bus.unsubscribe(subscriber_id='vcdb_explorer_tab')
+        except Exception:
+            pass
+
     def get_widget(self) -> QWidget:
-        """Get the widget to display in the tab."""
+        """Get the widget for this tab.
+
+        Returns:
+            The widget
+        """
         return self
 
     def on_tab_selected(self) -> None:
-        """Handle tab selection."""
+        """Handle tab selected event."""
         pass
 
     def on_tab_deselected(self) -> None:
-        """Handle tab deselection."""
+        """Handle tab deselected event."""
         pass
 
     def _create_ui_components(self) -> None:
         """Create the UI components."""
         self._main_splitter = QSplitter(Qt.Vertical)
 
-        # Filter panel section
         self._filter_panel_manager = FilterPanelManager(
             self._database_handler,
             self._event_bus,
@@ -103,17 +118,11 @@ class VCdbExplorerTab(QWidget):
 
         query_button_layout.addStretch()
         filter_layout.addLayout(query_button_layout)
+
         filter_section.setLayout(filter_layout)
 
-        # Data table section
-        self._data_table = DataTableWidget(
-            self._database_handler,
-            self._event_bus,
-            self._logger,
-            self
-        )
+        self._data_table = DataTableWidget(self._database_handler, self._event_bus, self._logger, self)
 
-        # Add components to splitter
         self._main_splitter.addWidget(filter_section)
         self._main_splitter.addWidget(self._data_table)
         self._main_splitter.setSizes([400, 600])
@@ -126,35 +135,32 @@ class VCdbExplorerTab(QWidget):
 
     @Slot()
     def _on_filters_changed(self) -> None:
-        """Handle filter changes."""
-        self._logger.debug("Filters changed in UI")
-        # This event is informational only - no action needed here
+        """Handle filters changed event."""
+        self._logger.debug('Filters changed in UI')
 
-    @Slot(str, dict)
-    def _on_filters_refreshed(self, panel_id: str, filter_values: Dict[str, List[Dict[str, Any]]]) -> None:
-        """
-        Handle filters refreshed event.
+    @Slot(Any)
+    def _on_filters_refreshed(self, event: Any) -> None:
+        """Handle filters refreshed event.
 
         Args:
-            panel_id: ID of the filter panel
-            filter_values: Dictionary of filter values by type
+            event: The event
         """
-        self._logger.debug(f"Filters refreshed event received for panel {panel_id}")
+        payload = event.payload
+        panel_id = payload.get('panel_id')
+        filter_values = payload.get('filter_values', {})
+
+        self._logger.debug(f'Filters refreshed event received for panel {panel_id}')
         self._filter_panel_manager.update_filter_values(panel_id, filter_values)
 
     @Slot()
     def _execute_query(self) -> None:
-        """Execute the query with current filters."""
+        """Execute a query with the current filters."""
         try:
-            self._logger.debug("Execute query triggered")
-
-            # Disable the button to prevent multiple clicks
+            self._logger.debug('Execute query triggered')
             self._run_query_btn.setEnabled(False)
 
-            # Get the current filter values
             filter_panels = self._filter_panel_manager.get_all_filters()
 
-            # Confirm if no filters are set
             if not any(filter_panels):
                 if QMessageBox.question(
                         self,
@@ -166,18 +172,26 @@ class VCdbExplorerTab(QWidget):
                     self._run_query_btn.setEnabled(True)
                     return
 
-            # Show a busy indicator
-            progress = QProgressDialog("Executing query...", "Cancel", 0, 0, self)
+            progress = QProgressDialog('Executing query...', 'Cancel', 0, 0, self)
             progress.setWindowModality(Qt.WindowModal)
             progress.setAutoClose(True)
             progress.setAutoReset(True)
-            progress.setMinimumDuration(500)  # Only show for queries taking more than 500ms
+            progress.setMinimumDuration(500)
             progress.setValue(0)
 
-            # Execute the query (this will happen in background through event_bus)
-            self._data_table.execute_query(filter_panels)
+            # Publish query execute event
+            self._event_bus.publish(
+                event_type=VCdbEventType.query_execute(),
+                source='vcdb_explorer_tab',
+                payload={
+                    'filter_panels': filter_panels,
+                    'columns': self._data_table.get_selected_columns(),
+                    'page': 1,
+                    'page_size': self._data_table.get_page_size(),
+                    'callback_id': 'main_query_result'
+                }
+            )
 
-            # Re-enable the button after a short delay
             QTimer.singleShot(1000, lambda: self._run_query_btn.setEnabled(True))
 
         except Exception as e:
@@ -186,8 +200,8 @@ class VCdbExplorerTab(QWidget):
             self._run_query_btn.setEnabled(True)
 
 
-class VCdbExplorerPlugin(BasePlugin):
-    """VCdb Explorer plugin for Qorzen."""
+class VCdbExplorerPlugin:
+    """VCdb Explorer plugin for the Qorzen framework."""
 
     name = 'vcdb_explorer'
     version = '1.0.0'
@@ -198,103 +212,103 @@ class VCdbExplorerPlugin(BasePlugin):
     def __init__(self) -> None:
         """Initialize the plugin."""
         super().__init__()
+
         self._tab: Optional[VCdbExplorerTab] = None
         self._database_handler: Optional[DatabaseHandler] = None
+        self._logger: Optional[logging.Logger] = None
+        self._event_bus: Optional[EventBusManager] = None
+        self._config: Optional[ConfigManager] = None
+        self._thread_manager: Optional[ThreadManager] = None
+        self._file_manager: Optional[FileManager] = None
+        self._database_manager: Optional[DatabaseManager] = None
+        self._remote_services_manager: Optional[RemoteServicesManager] = None
+        self._security_manager: Optional[SecurityManager] = None
+        self._api_manager: Optional[APIManager] = None
+        self._cloud_manager: Optional[CloudManager] = None
+        self._db_config: Dict[str, Any] = {}
+        self._ui_config: Dict[str, Any] = {}
+        self._export_config: Dict[str, Any] = {}
 
     def initialize(
             self,
-            event_bus: Any,
-            logger_provider: Any,
-            config_provider: Any,
-            file_manager: Any,
-            thread_manager: Any,
+            event_bus: EventBusManager,
+            logger_provider: LoggingManager,
+            config_provider: ConfigManager,
+            file_manager: FileManager,
+            thread_manager: ThreadManager,
+            database_manager: DatabaseManager,
+            remote_services_manager: RemoteServicesManager,
+            security_manager: SecurityManager,
+            api_manager: APIManager,
+            cloud_manager: CloudManager,
             **kwargs: Any
     ) -> None:
-        """
-        Initialize the plugin with enhanced core system integration.
+        """Initialize the plugin with the required dependencies.
 
         Args:
-            event_bus: Event bus for component communication
-            logger_provider: Logger provider for logging
-            config_provider: Configuration provider
-            file_manager: File manager
-            thread_manager: Thread manager
-            **kwargs: Additional arguments
+            event_bus: The event bus manager
+            logger_provider: The logger provider
+            config_provider: The configuration manager
+            file_manager: The file manager
+            thread_manager: The thread manager
+            database_manager: The database manager
+            remote_services_manager: The remote services manager
+            security_manager: The security manager
+            api_manager: The API manager
+            cloud_manager: The cloud manager
+            **kwargs: Additional dependencies
         """
-        super().initialize(
-            event_bus,
-            logger_provider,
-            config_provider,
-            file_manager,
-            thread_manager,
-            **kwargs
-        )
-
         self._logger = logger_provider.get_logger(self.name)
         self._logger.info(f'Initializing {self.name} plugin')
+        self._event_bus = event_bus
+        self._config = config_provider
+        self._file_manager = file_manager
+        self._thread_manager = thread_manager
+        self._database_manager = database_manager
+        self._remote_services_manager = remote_services_manager
+        self._security_manager = security_manager
+        self._api_manager = api_manager
+        self._cloud_manager = cloud_manager
 
-        # Load configuration
         self._load_config()
 
-        # Initialize critical subsystems with retry logic
-        max_retries = 3
-        retry_delay = 2  # seconds
+        if not self._database_manager:
+            self._logger.error("DatabaseManager is required but was not provided")
+            return
 
-        for attempt in range(1, max_retries + 1):
-            try:
-                # Get the database manager from kwargs or try to get from the application
-                database_manager = kwargs.get('database_manager')
-                if not database_manager and 'app' in kwargs:
-                    try:
-                        database_manager = kwargs['app'].get_manager('database_manager')
-                        self._logger.info("Found database_manager in application")
-                    except Exception as e:
-                        self._logger.warning(f"Could not get database_manager from application: {str(e)}")
+        self._database_handler = DatabaseHandler(
+            self._database_manager,
+            self._event_bus,
+            self._thread_manager,
+            self._logger
+        )
 
-                # Initialize the database handler
-                self._database_handler = DatabaseHandler(
-                    database_manager if database_manager else None,
-                    event_bus,
-                    thread_manager,
-                    self._logger
-                )
+        self._database_handler.configure(self._db_config.get('host'), self._db_config.get('port'),
+                                         self._db_config.get('database'), self._db_config.get('user'),
+                                         self._db_config.get('password'))
 
-                # Configure the database handler with connection parameters if needed
-                if not database_manager:
-                    self._logger.info("Using direct database connection")
-                    self._database_handler.configure(
-                        host=self._db_config['host'],
-                        port=self._db_config['port'],
-                        database=self._db_config['database'],
-                        user=self._db_config['user'],
-                        password=self._db_config['password']
-                    )
+        # Subscribe to plugin's log messages
+        self._event_bus.subscribe(
+            event_type='vcdb_explorer:log_message',
+            callback=self._on_log_message,
+            subscriber_id='vcdb_explorer_plugin'
+        )
 
-                # Register essential event handlers
-                event_bus.register('vcdb_explorer:log_message', self._on_log_message)
+        self._logger.info(f'{self.name} plugin initialized successfully')
 
-                # Setup completed successfully
-                self._logger.info(f'{self.name} plugin initialized successfully')
-                break
-
-            except Exception as e:
-                self._logger.error(f'Initialization attempt {attempt} failed: {str(e)}')
-
-                if attempt < max_retries:
-                    self._logger.info(f'Retrying in {retry_delay} seconds...')
-                    time.sleep(retry_delay)
-                else:
-                    self._logger.error(f'Failed to initialize after {max_retries} attempts')
-                    # We'll continue and show an error in the UI
-
-    def _on_log_message(self, level: str, message: str) -> None:
-        """
-        Handle log messages from components.
+    def _on_log_message(self, event: Any) -> None:
+        """Handle log message events.
 
         Args:
-            level: Log level
-            message: Log message
+            event: The event
         """
+        if not self._logger:
+            return
+
+        payload = event.payload
+        level = payload.get('level', 'info')
+        message = payload.get('message', '')
+
         if level == 'debug':
             self._logger.debug(message)
         elif level == 'info':
@@ -304,10 +318,13 @@ class VCdbExplorerPlugin(BasePlugin):
         elif level == 'error':
             self._logger.error(message)
         else:
-            self._logger.info(f"[{level}] {message}")
+            self._logger.info(f'[{level}] {message}')
 
     def _load_config(self) -> None:
         """Load configuration settings."""
+        if not self._config:
+            return
+
         self._db_config = {
             'host': self._config.get(f'plugins.{self.name}.database.host', 'localhost'),
             'port': self._config.get(f'plugins.{self.name}.database.port', 5432),
@@ -325,20 +342,19 @@ class VCdbExplorerPlugin(BasePlugin):
             'max_rows': self._config.get(f'plugins.{self.name}.export.max_rows', 10000)
         }
 
-        self._logger.debug('Configuration loaded')
+        if self._logger:
+            self._logger.debug('Configuration loaded')
 
-    def on_ui_ready(self, ui_integration: Any) -> None:
-        """
-        Handle UI ready event with enhanced error handling.
+    def on_ui_ready(self, ui_integration: UIIntegration) -> None:
+        """Set up UI components when the UI is ready.
 
         Args:
-            ui_integration: UI integration instance
+            ui_integration: The UI integration
         """
-        self._logger.info('Setting up UI components')
+        if self._logger:
+            self._logger.info('Setting up UI components')
 
-        # Check if database initialization was successful
         if not self._database_handler or not getattr(self._database_handler, '_initialized', False):
-            # Create error widget with retry button
             error_widget = QWidget()
             error_layout = QVBoxLayout()
 
@@ -347,16 +363,14 @@ class VCdbExplorerPlugin(BasePlugin):
             error_layout.addWidget(error_label)
 
             message = QLabel(
-                'Could not connect to the VCdb database. Check your configuration or database server status.'
-            )
+                'Could not connect to the VCdb database. Check your configuration or database server status.')
             error_layout.addWidget(message)
 
-            # Add buttons
             button_layout = QHBoxLayout()
 
-            retry_btn = QPushButton('Retry Connection')
-            retry_btn.clicked.connect(self._retry_database_connection)
-            button_layout.addWidget(retry_btn)
+            # retry_btn = QPushButton('Retry Connection')
+            # retry_btn.clicked.connect(self._retry_database_connection)
+            # button_layout.addWidget(retry_btn)
 
             config_btn = QPushButton('Open Configuration')
             config_btn.clicked.connect(self._open_configuration)
@@ -367,10 +381,12 @@ class VCdbExplorerPlugin(BasePlugin):
             error_widget.setLayout(error_layout)
 
             ui_integration.add_tab(plugin_id=self.name, tab=error_widget, title='VCdb Explorer')
-            self._logger.warning('Added error tab due to database connection failure')
+
+            if self._logger:
+                self._logger.warning('Added error tab due to database connection failure')
+
             return
 
-        # Create main tab with retry mechanism for component creation
         try:
             self._tab = VCdbExplorerTab(
                 self._database_handler,
@@ -382,7 +398,6 @@ class VCdbExplorerPlugin(BasePlugin):
 
             ui_integration.add_tab(plugin_id=self.name, tab=self._tab, title='VCdb Explorer')
 
-            # Add menu items
             tools_menu = ui_integration.find_menu('&Tools')
             if tools_menu:
                 menu = ui_integration.add_menu(plugin_id=self.name, title='VCdb Explorer', parent_menu=tools_menu)
@@ -393,12 +408,13 @@ class VCdbExplorerPlugin(BasePlugin):
                 ui_integration.add_menu_action(plugin_id=self.name, menu=menu, text='Refresh Filters',
                                                callback=self._refresh_filters)
 
-            self._logger.info('UI components set up successfully')
+            if self._logger:
+                self._logger.info('UI components set up successfully')
 
         except Exception as e:
-            self._logger.error(f'Failed to set up UI components: {str(e)}')
+            if self._logger:
+                self._logger.error(f'Failed to set up UI components: {str(e)}')
 
-            # Create error widget
             error_widget = QWidget()
             error_layout = QVBoxLayout()
 
@@ -418,96 +434,118 @@ class VCdbExplorerPlugin(BasePlugin):
 
             ui_integration.add_tab(plugin_id=self.name, tab=error_widget, title='VCdb Explorer')
 
-    def _retry_database_connection(self) -> None:
-        """Retry the database connection."""
-        progress = QProgressDialog("Retrying database connection...", "Cancel", 0, 0, None)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(500)
-        progress.setValue(0)
+    # def _retry_database_connection(self) -> None:
+    #     """Retry the database connection."""
+    #     progress = QProgressDialog('Retrying database connection...', 'Cancel', 0, 0, None)
+    #     progress.setWindowModality(Qt.WindowModal)
+    #     progress.setMinimumDuration(500)
+    #     progress.setValue(0)
+    #
+    #     # Start a new thread to retry the connection
+    #     if self._thread_manager:
+    #         self._thread_manager.submit_task(
+    #             self._perform_db_retry,
+    #             progress,
+    #             name='retry_db_connection',
+    #             submitter='vcdb_explorer'
+    #         )
+    #
+    # def _perform_db_retry(self, progress: QProgressDialog) -> None:
+    #     """Perform the database connection retry in a separate thread.
+    #
+    #     Args:
+    #         progress: The progress dialog
+    #     """
+    #     try:
+    #         if not self._database_handler:
+    #             QMessageBox.critical(None, 'Error', 'Database handler not available. Please restart the application.')
+    #             return
+    #
+    #         # Reinitialize the database handler
+    #         self._database_handler.retry
+    #
+    #         if getattr(self._database_handler, '_initialized', False):
+    #             QMessageBox.information(
+    #                 None,
+    #                 'Connection Successful',
+    #                 'Database connection established. Please restart the application to load VCdb Explorer.'
+    #             )
+    #         else:
+    #             QMessageBox.critical(
+    #                 None,
+    #                 'Connection Failed',
+    #                 'Failed to connect to the database. Please check your configuration.'
+    #             )
+    #     except Exception as e:
+    #         if self._logger:
+    #             self._logger.error(f'Error retrying database connection: {str(e)}')
+    #
+    #         QMessageBox.critical(
+    #             None,
+    #             'Connection Error',
+    #             f'An error occurred while connecting to the database: {str(e)}'
+    #         )
+    #     finally:
+    #         progress.cancel()
 
-        def perform_retry():
-            try:
-                # Re-configure the database handler
-                if self._database_handler:
-                    self._database_handler.configure(
-                        host=self._db_config['host'],
-                        port=self._db_config['port'],
-                        database=self._db_config['database'],
-                        user=self._db_config['user'],
-                        password=self._db_config['password']
-                    )
-
-                    # Test if the connection was successful
-                    if getattr(self._database_handler, '_initialized', False):
-                        QMessageBox.information(
-                            None,
-                            "Connection Successful",
-                            "Database connection established. Please restart the application to load VCdb Explorer."
-                        )
-                    else:
-                        QMessageBox.critical(
-                            None,
-                            "Connection Failed",
-                            "Failed to connect to the database. Please check your configuration."
-                        )
-                else:
-                    QMessageBox.critical(
-                        None,
-                        "Error",
-                        "Database handler not available. Please restart the application."
-                    )
-
-            except Exception as e:
-                self._logger.error(f"Error retrying database connection: {str(e)}")
-                QMessageBox.critical(
-                    None,
-                    "Connection Error",
-                    f"An error occurred while connecting to the database: {str(e)}"
-                )
-
-            finally:
-                progress.cancel()
-
-        # Run in a thread to keep UI responsive
-        threading.Thread(target=perform_retry, daemon=True).start()
-
-    def _retry_ui_setup(self, ui_integration: Any) -> None:
-        """
-        Retry setting up the UI components.
+    def _retry_ui_setup(self, ui_integration: UIIntegration) -> None:
+        """Retry UI setup.
 
         Args:
-            ui_integration: UI integration instance
+            ui_integration: The UI integration
         """
         self.on_ui_ready(ui_integration)
 
     def _refresh_filters(self) -> None:
-        """Refresh all filters in all panels."""
+        """Refresh all filters."""
         if self._tab and hasattr(self._tab, '_filter_panel_manager'):
             self._tab._filter_panel_manager.refresh_all_panels()
-            QMessageBox.information(None, "Filters Refreshed", "All filters have been refreshed.")
+            QMessageBox.information(None, 'Filters Refreshed', 'All filters have been refreshed.')
 
     def _run_query(self) -> None:
-        """Run the query (menu action callback)."""
+        """Run the current query."""
         if self._tab:
             self._tab._execute_query()
 
     def _open_documentation(self) -> None:
-        """Open documentation (menu action callback)."""
-        self._logger.info('Documentation requested')
-        # Implementation for opening documentation would go here
+        """Open the documentation."""
+        if self._logger:
+            self._logger.info('Documentation requested')
+
+        QMessageBox.information(
+            None,
+            'Documentation',
+            'The VCdb Explorer plugin provides an interface to query and explore the Vehicle Component Database.\n\n'
+            'For more information, please refer to the online documentation.'
+        )
+
+    def _open_configuration(self) -> None:
+        """Open the configuration dialog."""
+        QMessageBox.information(
+            None,
+            'Configuration',
+            'To configure the VCdb Explorer plugin, edit the configuration file and restart the application.'
+        )
 
     def shutdown(self) -> None:
         """Shut down the plugin."""
-        self._logger.info(f'Shutting down {self.name} plugin')
+        if self._logger:
+            self._logger.info(f'Shutting down {self.name} plugin')
 
+        # Unsubscribe from events
+        if self._event_bus:
+            self._event_bus.unsubscribe(subscriber_id='vcdb_explorer_plugin')
+
+        # Shut down the database handler
         if self._database_handler:
             try:
                 self._database_handler.shutdown()
             except Exception as e:
-                self._logger.error(f'Error shutting down database handler: {str(e)}')
+                if self._logger:
+                    self._logger.error(f'Error shutting down database handler: {str(e)}')
 
+        # Clean up UI resources
         self._tab = None
 
-        super().shutdown()
-
-        self._logger.info(f'{self.name} plugin shutdown complete')
+        if self._logger:
+            self._logger.info(f'{self.name} plugin shutdown complete')

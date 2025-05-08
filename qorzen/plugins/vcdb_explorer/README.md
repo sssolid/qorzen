@@ -1,114 +1,109 @@
 # VCdb Explorer Plugin
 
+A plugin for the Qorzen framework that provides a comprehensive interface for exploring and querying the Vehicle Component Database (VCdb).
+
 ## Overview
 
-VCdb Explorer is a Qorzen plugin that provides advanced query and exploration capabilities for the Vehicle Component Database (VCdb). The plugin allows users to:
+The VCdb Explorer plugin allows users to search, filter, and export vehicle data from the VCdb database using a user-friendly interface. It integrates with the Qorzen framework to leverage core services like database access, event handling, and threading.
 
-- Create complex filter queries with multiple filter groups
-- Build dynamic, cascading filters that update based on previous selections
-- View query results in a customizable data table
-- Sort and filter table data
-- Export results to CSV or Excel formats
+## Key Features
 
-## Features
-
-### Dynamic Filter Panels
-
-- Each filter panel represents a set of conditions combined with AND logic
-- Multiple filter panels are combined with OR logic
-- Filter values automatically update based on previously selected filters
-- Mandatory filters include Year, Year Range, Make, Model, and Submodel
-- Additional filters can be added as needed
-
-### Customizable Results Table
-
-- Configurable columns with drag-and-drop reordering
-- Sortable columns
-- Filterable data with text search capabilities
+- Multi-panel filtering system for complex vehicle queries
+- Configurable data table with column selection
+- CSV and Excel export capabilities
 - Pagination for large result sets
-- Export to CSV and Excel formats
+- Table-level filtering for further refinement
 
-### Database Integration
+## Architecture
 
-- Connects to PostgreSQL databases with the VCdb schema
-- Optimized queries for performance
-- Support for large data sets with efficient pagination
+The plugin follows a modular architecture that integrates with the Qorzen framework:
 
-## Installation
+### Core Components
 
-1. Ensure Qorzen core is installed
-2. Install the VCdb Explorer plugin:
-   ```
-   qorzen-plugin install vcdb_explorer-1.0.0.zip
-   ```
-3. Configure database connection in Qorzen settings
+1. **Plugin Entry Point** (`plugin.py`): Handles initialization, integration with the UI, and lifecycle management
+2. **Database Handler** (`database_handler.py`): Manages database operations through the core DatabaseManager
+3. **Events System** (`events.py`): Defines plugin-specific event types
+4. **UI Components**:
+   - **Filter Panel** (`filter_panel.py`): Manages query filter panels
+   - **Data Table** (`data_table.py`): Displays and manages query results
+   - **Export** (`export.py`): Handles data export functionality
 
-## Configuration
+### Data Flow
 
-The following configuration options are available:
+1. User configures filters in the Filter Panel
+2. Query is executed through the Database Handler
+3. Results are displayed in the Data Table
+4. Optional export of data to CSV or Excel
 
-### Database Connection
+## Integration with Qorzen Framework
 
-- `database.host`: PostgreSQL server hostname (default: "localhost")
-- `database.port`: PostgreSQL server port (default: 5432)
-- `database.name`: Database name (default: "vcdb")
-- `database.user`: Database username (default: "postgres")
-- `database.password`: Database password
+The plugin integrates with the following core Qorzen services:
 
-### User Interface
+- **DatabaseManager**: For database access and query execution
+- **EventBusManager**: For event-driven communication between components
+- **ThreadManager**: For executing long-running operations in background threads
+- **LoggerManager**: For structured logging
+- **ConfigManager**: For plugin configuration
 
-- `ui.max_filter_panels`: Maximum number of filter panels allowed (default: 5)
-- `ui.default_page_size`: Default number of rows per page (default: 100)
+## Plugin Events
 
-### Export Settings
+Custom events used by the plugin:
 
-- `export.max_rows`: Maximum number of rows allowed for export (default: 10000)
+- `filter_changed`: Emitted when a filter is changed
+- `filters_refreshed`: Emitted when filters are refreshed
+- `query_execute`: Emitted to request query execution
+- `query_results`: Emitted when query results are available
 
-## Usage
+## Configuration Options
 
-### Creating Filter Queries
+The plugin supports the following configuration options:
 
-1. Add or remove filter panels using the "Add Filter Group" and "Remove Group" buttons
-2. Each panel represents a set of conditions (AND logic)
-3. Multiple panels are combined with OR logic
-4. Add filters to each panel using the "Add Filter" button
-5. Select filter values from the dropdowns
-6. Click "Run Query" to execute the search
+```yaml
+plugins:
+  vcdb_explorer:
+    database:
+      host: localhost
+      port: 5432
+      name: vcdb
+      user: postgres
+      password: 
+    ui:
+      max_filter_panels: 5
+      default_page_size: 100
+    export:
+      max_rows: 10000
+```
 
-### Working with Results
-
-1. Results appear in the data table below the filter panels
-2. Click column headers to sort
-3. Use the "Select Columns" button to customize visible columns
-4. Filter table data using the "Add Filter" button in the table filters section
-5. Navigate between pages using the pagination controls
-6. Export data using the "Export CSV" or "Export Excel" buttons
-
-## Dependencies
+## Requirements
 
 - Python 3.11+
+- PySide6
 - SQLAlchemy
-- PySide6 (Qt)
 - openpyxl (optional, for Excel export)
 
-## Troubleshooting
+## Files Structure
 
-### Database Connection Issues
+```
+plugins/vcdb_explorer/
+├── __init__.py             # Plugin package initialization
+├── code/
+│   ├── __init__.py         # Code package initialization
+│   ├── database_handler.py # Database integration handler
+│   ├── data_table.py       # Data table UI component
+│   ├── events.py           # Plugin event definitions
+│   ├── export.py           # Data export functionality
+│   ├── filter_panel.py     # Filter panel UI component
+│   ├── models.py           # Database model definitions
+│   └── plugin.py           # Plugin main entry point
+└── manifest.json           # Plugin manifest
+```
 
-- Verify database credentials in the plugin configuration
-- Ensure the PostgreSQL server is running and accessible
-- Check that the database contains the VCdb schema
+## Development Guidelines
 
-### Performance Considerations
+When extending or modifying this plugin:
 
-- Large filter sets may take longer to execute
-- Consider using more specific filters to reduce result size
-- Exporting very large datasets may be slow; use filters to reduce size
-
-## License
-
-This plugin is released under the MIT License.
-
-## Support
-
-For issues, feature requests, or questions, please contact the Qorzen support team.
+1. Use proper type hints and follow PEP 8 standards
+2. Leverage the provided event system for component communication
+3. Utilize the core managers provided by the Qorzen framework
+4. Handle errors gracefully with appropriate user feedback
+5. Follow the established code organization pattern

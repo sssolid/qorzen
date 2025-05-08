@@ -22,7 +22,7 @@ class PluginInterface(Protocol):
     dependencies: List[str]
 
     def initialize(self, event_bus: Any, logger_provider: Any, config_provider: Any,
-                   file_manager: Any, thread_manager: Any, **kwargs: Any) -> None:
+                   file_manager: Any, thread_manager: Any, database_manager: Any, remote_services_manager: Any, security_manager: Any, api_manager: Any, cloud_manager: Any, **kwargs: Any) -> None:
         """Initialize the plugin with the provided managers.
 
         Args:
@@ -31,6 +31,11 @@ class PluginInterface(Protocol):
             config_provider: Configuration provider for accessing application config
             file_manager: File manager for file operations
             thread_manager: Thread manager for background tasks
+            database_manager: Database manager for database operations
+            remote_services_manager: Remote services manager for remote service operations
+            security_manager: Security manager for security operations
+            api_manager: API manager for API operations
+            cloud_manager: Cloud manager for cloud operations
             **kwargs: Additional managers
         """
         ...
