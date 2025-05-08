@@ -101,10 +101,10 @@ class ComboBoxFilter(FilterWidget):
         super().__init__(filter_type, filter_name, parent)
 
         self._combo = QComboBox()
-        self._combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._combo.setMinimumWidth(150)
         self._combo.currentIndexChanged.connect(self._on_selection_changed)
-        self._combo.setFocusPolicy(Qt.StrongFocus)
+        self._combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._combo.wheelEvent = lambda event: event.ignore()
         self._layout.insertWidget(1, self._combo)
 
@@ -117,7 +117,7 @@ class ComboBoxFilter(FilterWidget):
         if self._combo.currentIndex() <= 0:
             return []
 
-        value_id = self._combo.currentData(Qt.UserRole)
+        value_id = self._combo.currentData(Qt.ItemDataRole.UserRole)
         if value_id is not None:
             return [int(value_id)]
 
@@ -131,7 +131,7 @@ class ComboBoxFilter(FilterWidget):
         """
         current_id = None
         if self._combo.currentIndex() > 0:
-            current_id = self._combo.currentData(Qt.UserRole)
+            current_id = self._combo.currentData(Qt.ItemDataRole.UserRole)
 
         self._combo.blockSignals(True)
         self._combo.clear()
@@ -185,7 +185,7 @@ class YearRangeFilter(FilterWidget):
         self._start_year.setRange(1900, 2100)
         self._start_year.setValue(1900)
         self._start_year.valueChanged.connect(self._on_value_changed)
-        self._start_year.setFocusPolicy(Qt.StrongFocus)
+        self._start_year.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._start_year.wheelEvent = lambda event: event.ignore()
 
         self._end_label = QLabel('To:')
@@ -193,7 +193,7 @@ class YearRangeFilter(FilterWidget):
         self._end_year.setRange(1900, 2100)
         self._end_year.setValue(2100)
         self._end_year.valueChanged.connect(self._on_value_changed)
-        self._end_year.setFocusPolicy(Qt.StrongFocus)
+        self._end_year.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._end_year.wheelEvent = lambda event: event.ignore()
 
         self._layout.insertWidget(1, self._start_label)
@@ -346,8 +346,8 @@ class FilterPanel(QGroupBox):
         self._layout.addLayout(self._filters_layout)
 
         line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
         self._layout.addWidget(line)
 
         # Add mandatory filters
@@ -507,7 +507,7 @@ class FilterPanel(QGroupBox):
         Args:
             state: The new state
         """
-        self._auto_populate_filters = state == Qt.Checked
+        self._auto_populate_filters = state == Qt.CheckState.Checked
         self._logger.debug(f'Auto-populate changed to: {self._auto_populate_filters}')
 
         if self._auto_populate_filters and self._current_values:

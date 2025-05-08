@@ -69,17 +69,17 @@ class ColumnSelectionDialog(QDialog):
         layout.addWidget(instructions)
 
         self._list_widget = QListWidget()
-        self._list_widget.setDragDropMode(QAbstractItemView.InternalMove)
+        self._list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         layout.addWidget(self._list_widget)
 
         for col_id in self._column_map:
             item = QListWidgetItem(self._column_map[col_id])
-            item.setData(Qt.UserRole, col_id)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if col_id in selected_columns else Qt.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole, col_id)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if col_id in selected_columns else Qt.CheckState.Unchecked)
             self._list_widget.addItem(item)
 
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
@@ -93,8 +93,8 @@ class ColumnSelectionDialog(QDialog):
         result = []
         for i in range(self._list_widget.count()):
             item = self._list_widget.item(i)
-            if item.checkState() == Qt.Checked:
-                col_id = item.data(Qt.UserRole)
+            if item.checkState() == Qt.CheckState.Checked:
+                col_id = item.data(Qt.ItemDataRole.UserRole)
                 result.append(col_id)
         return result
 
@@ -123,7 +123,7 @@ class YearRangeTableFilter(QWidget):
         self._min_year.setValue(1900)
         self._min_year.setPrefix('From: ')
         self._min_year.valueChanged.connect(self._on_value_changed)
-        self._min_year.setFocusPolicy(Qt.StrongFocus)
+        self._min_year.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._min_year.wheelEvent = lambda event: event.ignore()
         layout.addWidget(self._min_year)
 
@@ -132,7 +132,7 @@ class YearRangeTableFilter(QWidget):
         self._max_year.setValue(2100)
         self._max_year.setPrefix('To: ')
         self._max_year.valueChanged.connect(self._on_value_changed)
-        self._max_year.setFocusPolicy(Qt.StrongFocus)
+        self._max_year.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._max_year.wheelEvent = lambda event: event.ignore()
         layout.addWidget(self._max_year)
 
@@ -232,7 +232,7 @@ class QueryResultModel(QAbstractTableModel):
 
         return len(self._columns)
 
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
         """Get the data for a cell.
 
         Args:
@@ -248,7 +248,7 @@ class QueryResultModel(QAbstractTableModel):
         row = index.row()
         col_id = self._columns[index.column()]
 
-        if role == Qt.DisplayRole or role == Qt.EditRole:
+        if role == Qt.ItemDataRole.DisplayRole or role == Qt.ItemDataRole.EditRole:
             return str(self._data[row].get(col_id, ''))
 
         return None
@@ -257,7 +257,7 @@ class QueryResultModel(QAbstractTableModel):
             self,
             section: int,
             orientation: Qt.Orientation,
-            role: int = Qt.DisplayRole
+            role: int = Qt.ItemDataRole.DisplayRole
     ) -> Any:
         """Get the header data.
 
@@ -269,10 +269,10 @@ class QueryResultModel(QAbstractTableModel):
         Returns:
             The header data
         """
-        if role != Qt.DisplayRole:
+        if role != Qt.ItemDataRole.DisplayRole:
             return None
 
-        if orientation == Qt.Horizontal and 0 <= section < len(self._columns):
+        if orientation == Qt.Orientation.Horizontal and 0 <= section < len(self._columns):
             col_id = self._columns[section]
             return self._column_map.get(col_id, col_id)
 
@@ -554,10 +554,10 @@ class DataTableWidget(QWidget):
         self._create_toolbar()
 
         self._table_view = QTableView()
-        self._table_view.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self._table_view.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._table_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table_view.setSortingEnabled(True)
-        self._table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self._table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self._table_view.horizontalHeader().setStretchLastSection(True)
         self._table_view.verticalHeader().setVisible(True)
 
@@ -790,7 +790,7 @@ class DataTableWidget(QWidget):
         """Show the column selection dialog."""
         dialog = ColumnSelectionDialog(self._available_columns, self._selected_columns, self)
 
-        if dialog.exec() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             new_columns = dialog.get_selected_columns()
 
             if new_columns != self._selected_columns:
@@ -808,7 +808,7 @@ class DataTableWidget(QWidget):
             export_type: The type of export ('csv' or 'excel')
         """
         file_dialog = QFileDialog(self)
-        file_dialog.setAcceptMode(QFileDialog.AcceptSave)
+        file_dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
 
         if export_type == 'csv':
             file_dialog.setNameFilter('CSV Files (*.csv)')
@@ -952,7 +952,7 @@ class DataTableWidget(QWidget):
         """
         if 0 <= logical_index < len(self._selected_columns):
             self._sort_column = self._selected_columns[logical_index]
-            self._sort_descending = order == Qt.DescendingOrder
+            self._sort_descending = order == Qt.SortOrder.DescendingOrder
             self._run_query()
 
     @Slot(dict)

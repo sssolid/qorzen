@@ -54,7 +54,7 @@ class VCdbExplorerTab(QWidget):
 
         title = QLabel('VCdb Explorer')
         title.setStyleSheet('font-weight: bold; font-size: 18px;')
-        title.setAlignment(Qt.AlignCenter)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._layout.addWidget(title)
 
         self._exporter = DataExporter(logger)
@@ -94,7 +94,7 @@ class VCdbExplorerTab(QWidget):
 
     def _create_ui_components(self) -> None:
         """Create the UI components."""
-        self._main_splitter = QSplitter(Qt.Vertical)
+        self._main_splitter = QSplitter(Qt.Orientation.Vertical)
 
         self._filter_panel_manager = FilterPanelManager(
             self._database_handler,
@@ -166,14 +166,14 @@ class VCdbExplorerTab(QWidget):
                         self,
                         'No Filters',
                         "You haven't set any filters. This could return a large number of results. Continue?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No
-                ) != QMessageBox.Yes:
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No
+                ) != QMessageBox.StandardButton.Yes:
                     self._run_query_btn.setEnabled(True)
                     return
 
             progress = QProgressDialog('Executing query...', 'Cancel', 0, 0, self)
-            progress.setWindowModality(Qt.WindowModal)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
             progress.setAutoClose(True)
             progress.setAutoReset(True)
             progress.setMinimumDuration(500)
