@@ -6,7 +6,7 @@ import sys
 import traceback
 from pathlib import Path
 import logging
-from typing import Any, Dict, List, Optional, Type, cast
+from typing import Any, Dict, List, Optional, Type, cast, Callable
 
 from qorzen.core.base import QorzenManager
 from qorzen.core.event_model import EventType
@@ -58,163 +58,191 @@ class ApplicationCore:
         self._main_window = None
         self._ui_integration = None
 
-    def initialize(self) -> None:
-        """Initialize the application.
+    def get_initialization_steps(self, progress_callback):
+        steps = []
+        total_steps = 14
+        index_ref = {'index': 1}  # Use mutable reference to avoid scoping issues
 
-        Initializes all managers and sets up signal handlers.
+        def wrap(step_fn, name):
+            def wrapped():
+                current_index = index_ref['index']
+                if progress_callback:
+                    progress_callback(f'Initializing {name} ({current_index}/{total_steps})',
+                                      int(current_index / total_steps * 100))
+                step_fn()
+                index_ref['index'] += 1
 
-        Raises:
-            ManagerInitializationError: If initialization fails
-        """
-        try:
-            # Initialize configuration manager
-            config_manager = ConfigManager(config_path=self._config_path)
-            config_manager.initialize()
-            self._managers['config'] = config_manager
+            return wrapped
 
-            # Initialize logging manager
-            logging_manager = LoggingManager(config_manager)
-            logging_manager.initialize()
-            self._managers['logging'] = logging_manager
-            self._logger = logging_manager.get_logger('app_core')
+        steps.append(wrap(lambda: self._init_config(), 'configuration manager'))
+        steps.append(wrap(lambda: self._init_logging(), 'logging manager'))
+        steps.append(wrap(lambda: self._init_event_bus(), 'event bus manager'))
+        steps.append(wrap(lambda: self._init_thread_manager(), 'thread manager'))
+        steps.append(wrap(lambda: self._init_file_manager(), 'file manager'))
+        steps.append(wrap(lambda: self._init_resource_manager(), 'resource manager'))
+        steps.append(wrap(lambda: self._init_database_manager(), 'database manager'))
+        steps.append(wrap(lambda: self._init_remote_services_manager(), 'remote services manager'))
+        steps.append(wrap(lambda: self._init_security_manager(), 'security manager'))
+        steps.append(wrap(lambda: self._init_api_manager(), 'API manager'))
+        steps.append(wrap(lambda: self._init_cloud_manager(), 'cloud manager'))
+        steps.append(wrap(lambda: self._init_plugin_components(), 'plugin system components'))
+        steps.append(wrap(lambda: self._configure_extension_registry(), 'extension registry'))
+        steps.append(wrap(lambda: self._init_plugin_manager(), 'plugin manager'))
 
-            self._logger.info('Starting Qorzen initialization')
+        return steps
 
-            # Initialize event bus manager
-            event_bus_manager = EventBusManager(config_manager, logging_manager)
-            event_bus_manager.initialize()
-            self._managers['event_bus'] = event_bus_manager
+    def finalize_initialization(self):
+        import atexit
+        import signal
 
-            logging_manager.set_event_bus_manager(event_bus_manager)
+        if sys.platform != 'win32':
+            signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
 
-            # Initialize thread manager
-            thread_manager = ThreadManager(config_manager, logging_manager)
-            thread_manager.initialize()
-            self._managers['thread_manager'] = thread_manager
+        atexit.register(self.shutdown)
+        self._initialized = True
 
-            # Initialize file manager
-            file_manager = FileManager(config_manager, logging_manager)
-            file_manager.initialize()
-            self._managers['file_manager'] = file_manager
-
-            # Initialize resource manager
-            resource_manager = ResourceMonitoringManager(
-                config_manager,
-                logging_manager,
-                event_bus_manager,
-                thread_manager
-            )
-            resource_manager.initialize()
-            self._managers['resource_manager'] = resource_manager
-
-            # Initialize database manager
-            database_manager = DatabaseManager(config_manager, logging_manager)
-            database_manager.initialize()
-            self._managers['database_manager'] = database_manager
-
-            # Initialize remote services manager
-            remote_services_manager = RemoteServicesManager(
-                config_manager,
-                logging_manager,
-                event_bus_manager,
-                thread_manager
-            )
-            remote_services_manager.initialize()
-            self._managers['remote_services_manager'] = remote_services_manager
-
-            # Initialize security manager
-            security_manager = SecurityManager(
-                config_manager,
-                logging_manager,
-                event_bus_manager,
-                database_manager
-            )
-            security_manager.initialize()
-            self._managers['security_manager'] = security_manager
-
-            # Initialize API manager
-            api_manager = APIManager(
-                config_manager,
-                logging_manager,
-                security_manager,
-                event_bus_manager,
-                thread_manager
-            )
-            api_manager.initialize()
-            self._managers['api_manager'] = api_manager
-
-            # Initialize cloud manager
-            cloud_manager = CloudManager(config_manager, logging_manager, file_manager)
-            cloud_manager.initialize()
-            self._managers['cloud_manager'] = cloud_manager
-
-            # Initialize plugin system components
-            repository_manager = self._initialize_plugin_repository(config_manager)
-            plugin_verifier = self._initialize_plugin_verifier(config_manager)
-            plugin_installer = self._initialize_plugin_installer(
-                config_manager,
-                repository_manager,
-                plugin_verifier
-            )
-
-            # Configure extension registry logger
-            extension_registry.logger = lambda msg, level: self._logger.log(
-                level.upper(),
-                msg
-            ) if self._logger else None
-
-            # Initialize plugin manager
-            plugin_manager = PluginManager(
-                application_core=self,
-                config_manager=config_manager,
-                logger_manager=logging_manager,
-                event_bus_manager=event_bus_manager,
-                file_manager=file_manager,
-                thread_manager=thread_manager,
-                database_manager=database_manager,
-                remote_service_manager=remote_services_manager,
-                security_manager=security_manager,
-                api_manager=api_manager,
-                cloud_manager=cloud_manager
-            )
-            plugin_manager.repository_manager = repository_manager
-            plugin_manager.plugin_installer = plugin_installer
-            plugin_manager.plugin_verifier = plugin_verifier
-            plugin_manager.initialize()
-            self._managers['plugin_manager'] = plugin_manager
-
-            # Set up signal handlers
-            self._setup_signal_handlers()
-
-            # Register shutdown handler
-            atexit.register(self.shutdown)
-
-            # Mark as initialized
-            self._initialized = True
-
+        if self._logger:
             self._logger.info('Qorzen initialization complete')
 
-            # Publish system started event
+        event_bus_manager = self.get_manager('event_bus')
+        if event_bus_manager:
             event_bus_manager.publish(
                 event_type=EventType.SYSTEM_STARTED,
                 source='app_core',
                 payload={'version': self._get_version()}
             )
 
-        except Exception as e:
-            if self._logger:
-                self._logger.error(f'Initialization failed: {str(e)}')
-                self._logger.debug(f'Initialization error details: {traceback.format_exc()}')
+    def _init_config(self):
+        config_manager = ConfigManager(config_path=self._config_path)
+        config_manager.initialize()
+        self._managers['config'] = config_manager
 
-            self.shutdown()
+    def _init_logging(self):
+        config = self._managers['config']
+        logging_manager = LoggingManager(config)
+        logging_manager.initialize()
+        self._managers['logging'] = logging_manager
+        self._logger = logging_manager.get_logger('app_core')
+        self._logger.info('Starting Qorzen initialization')
 
-            if isinstance(e, QorzenError):
-                raise
-            else:
-                raise ManagerInitializationError(
-                    f'Failed to initialize Qorzen: {str(e)}',
-                    manager_name='ApplicationCore'
-                ) from e
+    def _init_event_bus(self):
+        config = self._managers['config']
+        logging = self._managers['logging']
+        event_bus_manager = EventBusManager(config, logging)
+        event_bus_manager.initialize()
+        self._managers['event_bus'] = event_bus_manager
+        logging.set_event_bus_manager(event_bus_manager)
+
+    def _init_thread_manager(self):
+        config = self._managers['config']
+        logging = self._managers['logging']
+        thread_manager = ThreadManager(config, logging)
+        thread_manager.initialize()
+        self._managers['thread_manager'] = thread_manager
+
+    def _init_file_manager(self):
+        config = self._managers['config']
+        logging = self._managers['logging']
+        file_manager = FileManager(config, logging)
+        file_manager.initialize()
+        self._managers['file_manager'] = file_manager
+
+    def _init_resource_manager(self):
+        config = self._managers['config']
+        logging = self._managers['logging']
+        event_bus = self._managers['event_bus']
+        thread = self._managers['thread_manager']
+        resource_manager = ResourceMonitoringManager(config, logging, event_bus, thread)
+        resource_manager.initialize()
+        self._managers['resource_manager'] = resource_manager
+
+    def _init_database_manager(self):
+        config = self._managers['config']
+        logging = self._managers['logging']
+        database_manager = DatabaseManager(config, logging)
+        database_manager.initialize()
+        self._managers['database_manager'] = database_manager
+
+    def _init_remote_services_manager(self):
+        config = self._managers['config']
+        logging = self._managers['logging']
+        event_bus = self._managers['event_bus']
+        thread = self._managers['thread_manager']
+        remote_services_manager = RemoteServicesManager(config, logging, event_bus, thread)
+        remote_services_manager.initialize()
+        self._managers['remote_services_manager'] = remote_services_manager
+
+    def _init_security_manager(self):
+        config = self._managers['config']
+        logging = self._managers['logging']
+        event_bus = self._managers['event_bus']
+        database = self._managers['database_manager']
+        security_manager = SecurityManager(config, logging, event_bus, database)
+        security_manager.initialize()
+        self._managers['security_manager'] = security_manager
+
+    def _init_api_manager(self):
+        config = self._managers['config']
+        logging = self._managers['logging']
+        security = self._managers['security_manager']
+        event_bus = self._managers['event_bus']
+        thread = self._managers['thread_manager']
+        api_manager = APIManager(config, logging, security, event_bus, thread)
+        api_manager.initialize()
+        self._managers['api_manager'] = api_manager
+
+    def _init_cloud_manager(self):
+        config = self._managers['config']
+        logging = self._managers['logging']
+        file = self._managers['file_manager']
+        cloud_manager = CloudManager(config, logging, file)
+        cloud_manager.initialize()
+        self._managers['cloud_manager'] = cloud_manager
+
+    def _init_plugin_components(self):
+        config = self._managers['config']
+        repository_manager = self._initialize_plugin_repository(config)
+        plugin_verifier = self._initialize_plugin_verifier(config)
+        plugin_installer = self._initialize_plugin_installer(config, repository_manager, plugin_verifier)
+        self._plugin_repository = repository_manager
+        self._plugin_verifier = plugin_verifier
+        self._plugin_installer = plugin_installer
+
+    def _configure_extension_registry(self):
+        if self._logger:
+            extension_registry.logger = lambda msg, level: self._logger.log(level.upper(), msg)
+
+    def _init_plugin_manager(self):
+        config = self._managers['config']
+        logging = self._managers['logging']
+        event_bus = self._managers['event_bus']
+        file = self._managers['file_manager']
+        thread = self._managers['thread_manager']
+        database = self._managers['database_manager']
+        remote = self._managers['remote_services_manager']
+        security = self._managers['security_manager']
+        api = self._managers['api_manager']
+        cloud = self._managers['cloud_manager']
+
+        plugin_manager = PluginManager(
+            application_core=self,
+            config_manager=config,
+            logger_manager=logging,
+            event_bus_manager=event_bus,
+            file_manager=file,
+            thread_manager=thread,
+            database_manager=database,
+            remote_service_manager=remote,
+            security_manager=security,
+            api_manager=api,
+            cloud_manager=cloud
+        )
+        plugin_manager.repository_manager = self._plugin_repository
+        plugin_manager.plugin_installer = self._plugin_installer
+        plugin_manager.plugin_verifier = self._plugin_verifier
+        plugin_manager.initialize()
+        self._managers['plugin_manager'] = plugin_manager
 
     def _initialize_plugin_repository(self, config_manager: ConfigManager) -> PluginRepositoryManager:
         """Initialize the plugin repository manager.
