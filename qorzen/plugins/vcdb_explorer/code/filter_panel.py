@@ -7,13 +7,12 @@ from typing import Any, Callable, Dict, List, Optional, Set, cast
 from PySide6.QtCore import Qt, Signal, Slot, QSize
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel,
-    QMenu, QPushButton, QSizePolicy, QSpinBox, QTabWidget,
-    QToolButton, QVBoxLayout, QWidget
+    QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QMenu,
+    QPushButton, QSizePolicy, QSpinBox, QTabWidget, QToolButton, QVBoxLayout,
+    QWidget
 )
 
 from qorzen.core.event_bus_manager import EventBusManager
-
 from .database_handler import DatabaseHandler
 from .events import VCdbEventType
 
@@ -24,12 +23,12 @@ class FilterWidget(QWidget):
     valueChanged = Signal(str, list)
 
     def __init__(self, filter_type: str, filter_name: str, parent: Optional[QWidget] = None) -> None:
-        """Initialize a filter widget.
+        """Initialize the filter widget.
 
         Args:
-            filter_type: The type of filter
-            filter_name: The display name of the filter
-            parent: The parent widget
+            filter_type: Type of filter
+            filter_name: Display name of filter
+            parent: Parent widget
         """
         super().__init__(parent)
         self._filter_type = filter_type
@@ -53,31 +52,31 @@ class FilterWidget(QWidget):
         """Get the filter type.
 
         Returns:
-            The filter type
+            Filter type identifier
         """
         return self._filter_type
 
     def get_filter_name(self) -> str:
-        """Get the filter name.
+        """Get the filter display name.
 
         Returns:
-            The filter name
+            Filter display name
         """
         return self._filter_name
 
     def get_selected_values(self) -> List[int]:
-        """Get the selected values.
+        """Get selected filter values.
 
         Returns:
-            A list of selected value IDs
+            List of selected value IDs
         """
         return []
 
     def set_available_values(self, values: List[Dict[str, Any]]) -> None:
-        """Set the available values for the filter.
+        """Set available filter values.
 
         Args:
-            values: A list of value dictionaries with id, name, and count
+            values: List of available values with id, name, and count
         """
         pass
 
@@ -88,15 +87,15 @@ class FilterWidget(QWidget):
 
 
 class ComboBoxFilter(FilterWidget):
-    """A combo box filter widget."""
+    """Combo box filter widget."""
 
     def __init__(self, filter_type: str, filter_name: str, parent: Optional[QWidget] = None) -> None:
-        """Initialize a combo box filter.
+        """Initialize combo box filter.
 
         Args:
-            filter_type: The type of filter
-            filter_name: The display name of the filter
-            parent: The parent widget
+            filter_type: Type of filter
+            filter_name: Display name of filter
+            parent: Parent widget
         """
         super().__init__(filter_type, filter_name, parent)
 
@@ -105,14 +104,16 @@ class ComboBoxFilter(FilterWidget):
         self._combo.setMinimumWidth(150)
         self._combo.currentIndexChanged.connect(self._on_selection_changed)
         self._combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Disable mouse wheel to prevent accidental changes
         self._combo.wheelEvent = lambda event: event.ignore()
+
         self._layout.insertWidget(1, self._combo)
 
     def get_selected_values(self) -> List[int]:
-        """Get the selected values.
+        """Get selected filter values.
 
         Returns:
-            A list containing the selected value ID, or an empty list if none
+            List containing the selected value ID if any, otherwise empty
         """
         if self._combo.currentIndex() <= 0:
             return []
@@ -124,10 +125,10 @@ class ComboBoxFilter(FilterWidget):
         return []
 
     def set_available_values(self, values: List[Dict[str, Any]]) -> None:
-        """Set the available values for the filter.
+        """Set available filter values.
 
         Args:
-            values: A list of value dictionaries with id, name, and count
+            values: List of available values with id, name, and count
         """
         current_id = None
         if self._combo.currentIndex() > 0:
@@ -153,10 +154,10 @@ class ComboBoxFilter(FilterWidget):
 
     @Slot(int)
     def _on_selection_changed(self, index: int) -> None:
-        """Handle selection changed event.
+        """Handle selection change.
 
         Args:
-            index: The index of the selected item
+            index: New selection index
         """
         selected_values = self.get_selected_values()
         self.valueChanged.emit(self._filter_type, selected_values)
@@ -168,15 +169,15 @@ class ComboBoxFilter(FilterWidget):
 
 
 class YearRangeFilter(FilterWidget):
-    """A year range filter widget."""
+    """Year range filter widget."""
 
     def __init__(self, filter_type: str, filter_name: str, parent: Optional[QWidget] = None) -> None:
-        """Initialize a year range filter.
+        """Initialize year range filter.
 
         Args:
-            filter_type: The type of filter
-            filter_name: The display name of the filter
-            parent: The parent widget
+            filter_type: Type of filter
+            filter_name: Display name of filter
+            parent: Parent widget
         """
         super().__init__(filter_type, filter_name, parent)
 
@@ -186,6 +187,7 @@ class YearRangeFilter(FilterWidget):
         self._start_year.setValue(1900)
         self._start_year.valueChanged.connect(self._on_value_changed)
         self._start_year.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Disable mouse wheel to prevent accidental changes
         self._start_year.wheelEvent = lambda event: event.ignore()
 
         self._end_label = QLabel('To:')
@@ -194,6 +196,7 @@ class YearRangeFilter(FilterWidget):
         self._end_year.setValue(2100)
         self._end_year.valueChanged.connect(self._on_value_changed)
         self._end_year.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Disable mouse wheel to prevent accidental changes
         self._end_year.wheelEvent = lambda event: event.ignore()
 
         self._layout.insertWidget(1, self._start_label)
@@ -202,10 +205,10 @@ class YearRangeFilter(FilterWidget):
         self._layout.insertWidget(4, self._end_year)
 
     def get_selected_values(self) -> List[int]:
-        """Get the selected values.
+        """Get selected year range.
 
         Returns:
-            A list containing the start and end years, or an empty list if invalid
+            List containing start and end years if valid, otherwise empty
         """
         start_year = self._start_year.value()
         end_year = self._end_year.value()
@@ -216,10 +219,10 @@ class YearRangeFilter(FilterWidget):
         return [start_year, end_year]
 
     def set_available_values(self, values: List[Dict[str, Any]]) -> None:
-        """Set the available values for the filter.
+        """Set available year values.
 
         Args:
-            values: A list of value dictionaries with id, name, and count
+            values: List of available years with id, name, and count
         """
         if not values:
             return
@@ -248,10 +251,10 @@ class YearRangeFilter(FilterWidget):
 
     @Slot(int)
     def _on_value_changed(self, value: int) -> None:
-        """Handle value changed event.
+        """Handle value change.
 
         Args:
-            value: The new value
+            value: New value
         """
         selected_values = self.get_selected_values()
         self.valueChanged.emit(self._filter_type, selected_values)
@@ -264,7 +267,6 @@ class YearRangeFilter(FilterWidget):
 
         min_value = self._start_year.minimum()
         max_value = self._end_year.maximum()
-
         self._start_year.setValue(min_value)
         self._end_year.setValue(max_value)
 
@@ -275,7 +277,7 @@ class YearRangeFilter(FilterWidget):
 
 
 class FilterPanel(QGroupBox):
-    """A panel of filters."""
+    """Panel containing a group of filters."""
 
     filterChanged = Signal(str, str, list)
     removeRequested = Signal(str)
@@ -288,14 +290,14 @@ class FilterPanel(QGroupBox):
             logger: logging.Logger,
             parent: Optional[QWidget] = None
     ) -> None:
-        """Initialize a filter panel.
+        """Initialize filter panel.
 
         Args:
-            panel_id: The unique ID of the panel
-            database_handler: The database handler
-            event_bus: The event bus
-            logger: The logger
-            parent: The parent widget
+            panel_id: Unique panel identifier
+            database_handler: Database handler for filter values
+            event_bus: Event bus for communication
+            logger: Logger instance
+            parent: Parent widget
         """
         super().__init__(parent)
 
@@ -303,7 +305,6 @@ class FilterPanel(QGroupBox):
         self._database_handler = database_handler
         self._event_bus = event_bus
         self._logger = logger
-
         self._available_filters = database_handler.get_available_filters()
         self._filters: Dict[str, FilterWidget] = {}
         self._current_values: Dict[str, List[int]] = {}
@@ -313,9 +314,9 @@ class FilterPanel(QGroupBox):
         self._layout = QVBoxLayout()
         self.setLayout(self._layout)
 
+        # Setup header
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-
         self.setTitle(f'Filter Group {panel_id[-4:]}')
 
         self._add_filter_btn = QPushButton('Add Filter')
@@ -333,6 +334,7 @@ class FilterPanel(QGroupBox):
         header_layout.addStretch()
         self._layout.addLayout(header_layout)
 
+        # Auto-populate checkbox
         auto_populate_layout = QHBoxLayout()
         self._auto_populate_checkbox = QCheckBox('Auto-populate other filters')
         self._auto_populate_checkbox.setChecked(False)
@@ -341,10 +343,12 @@ class FilterPanel(QGroupBox):
         auto_populate_layout.addStretch()
         self._layout.addLayout(auto_populate_layout)
 
+        # Filters layout
         self._filters_layout = QVBoxLayout()
         self._filters_layout.setContentsMargins(0, 0, 0, 0)
         self._layout.addLayout(self._filters_layout)
 
+        # Separator line
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
@@ -355,7 +359,7 @@ class FilterPanel(QGroupBox):
             if filter_def.get('mandatory', False):
                 self._add_filter(filter_def['id'], filter_def['name'])
 
-        # Subscribe to filters refreshed event
+        # Subscribe to filter refresh events
         self._event_bus.subscribe(
             event_type=VCdbEventType.filters_refreshed(),
             callback=self._on_filters_refreshed,
@@ -363,34 +367,34 @@ class FilterPanel(QGroupBox):
         )
 
     def __del__(self) -> None:
-        """Clean up resources when the panel is deleted."""
+        """Clean up event subscriptions."""
         try:
             self._event_bus.unsubscribe(subscriber_id=f'filter_panel_{self._panel_id}')
         except Exception:
             pass
 
     def get_panel_id(self) -> str:
-        """Get the panel ID.
+        """Get panel ID.
 
         Returns:
-            The panel ID
+            Panel identifier
         """
         return self._panel_id
 
     def get_current_values(self) -> Dict[str, List[int]]:
-        """Get the current filter values.
+        """Get current filter values.
 
         Returns:
-            A dictionary of filter types and their selected values
+            Dictionary of filter types to selected values
         """
         return self._current_values.copy()
 
     def set_filter_values(self, filter_type: str, values: List[Dict[str, Any]]) -> None:
-        """Set the available values for a filter.
+        """Set available values for a filter.
 
         Args:
-            filter_type: The type of filter
-            values: A list of value dictionaries with id, name, and count
+            filter_type: Type of filter
+            values: List of available values with id, name, and count
         """
         if filter_type not in self._filters:
             return
@@ -402,12 +406,13 @@ class FilterPanel(QGroupBox):
         """Add a filter to the panel.
 
         Args:
-            filter_type: The type of filter
-            filter_name: The display name of the filter
+            filter_type: Type of filter
+            filter_name: Display name of filter
         """
         if filter_type in self._filters:
             return
 
+        # Create appropriate filter widget
         if filter_type == 'year_range':
             filter_widget = YearRangeFilter(filter_type, filter_name, self)
         else:
@@ -417,13 +422,14 @@ class FilterPanel(QGroupBox):
         self._filters_layout.addWidget(filter_widget)
         self._filters[filter_type] = filter_widget
 
+        # Refresh values for the new filter
         self._refresh_filter_values(filter_type)
 
     def _refresh_filter_values(self, filter_type: str) -> None:
-        """Refresh the values for a filter.
+        """Refresh values for a specific filter.
 
         Args:
-            filter_type: The type of filter
+            filter_type: Type of filter to refresh
         """
         if filter_type not in self._filters or self._is_refreshing:
             return
@@ -442,12 +448,11 @@ class FilterPanel(QGroupBox):
                 exclude_filters
             )
             self._filters[filter_type].set_available_values(values)
-
         except Exception as e:
             self._logger.error(f'Error refreshing filter values for {filter_type}: {str(e)}')
 
     def refresh_all_filters(self) -> None:
-        """Refresh all filters in the panel."""
+        """Refresh all filters."""
         self._logger.debug(f'Refreshing all filters, auto-populate: {self._auto_populate_filters}')
         for filter_type in self._filters:
             self._refresh_filter_values(filter_type)
@@ -456,7 +461,7 @@ class FilterPanel(QGroupBox):
         """Handle filters refreshed event.
 
         Args:
-            event: The event
+            event: Filters refreshed event
         """
         payload = event.payload
         panel_id = payload.get('panel_id')
@@ -468,66 +473,92 @@ class FilterPanel(QGroupBox):
 
     @Slot(str, list)
     def _on_filter_value_changed(self, filter_type: str, values: List[int]) -> None:
-        """Handle filter value changed event.
+        """Handle filter value change.
 
         Args:
-            filter_type: The type of filter
-            values: The selected values
+            filter_type: Type of filter
+            values: New filter values
         """
         self._logger.debug(f'Filter value changed: {filter_type} = {values}')
 
+        # Update current values
         if not values:
             if filter_type in self._current_values:
                 del self._current_values[filter_type]
         else:
             self._current_values[filter_type] = values
 
+        # Emit signal
         self.filterChanged.emit(self._panel_id, filter_type, values)
 
-        if self._auto_populate_filters:
-            self._logger.debug(f'Auto-populating other filters after {filter_type} change')
-
-            # Publish filter changed event
-            self._event_bus.publish(
-                event_type=VCdbEventType.filter_changed(),
-                source='vcdb_explorer_filter_panel',
-                payload={
-                    'panel_id': self._panel_id,
-                    'filter_type': filter_type,
-                    'values': values,
-                    'current_filters': self._current_values,
-                    'auto_populate': self._auto_populate_filters
-                }
-            )
+        # Publish event for auto-populate - IMPORTANT: always pass the current auto_populate state
+        self._logger.debug(f'Publishing filter changed event: auto_populate={self._auto_populate_filters}')
+        self._event_bus.publish(
+            event_type=VCdbEventType.filter_changed(),
+            source='vcdb_explorer_filter_panel',
+            payload={
+                'panel_id': self._panel_id,
+                'filter_type': filter_type,
+                'values': values,
+                'current_filters': self._current_values,
+                'auto_populate': self._auto_populate_filters
+            }
+        )
 
     @Slot(int)
     def _on_auto_populate_changed(self, state: int) -> None:
-        """Handle auto-populate checkbox state changed.
+        """Handle auto-populate checkbox state change.
 
         Args:
-            state: The new state
+            state: New checkbox state
         """
-        self._auto_populate_filters = state == Qt.CheckState.Checked
-        self._logger.debug(f'Auto-populate changed to: {self._auto_populate_filters}')
+        # Get the actual boolean value from state
+        is_checked = state == Qt.CheckState.Checked
 
-        if self._auto_populate_filters and self._current_values:
-            for filter_type, values in self._current_values.items():
-                # Publish filter changed event for each current filter
-                self._event_bus.publish(
-                    event_type=VCdbEventType.filter_changed(),
-                    source='vcdb_explorer_filter_panel',
-                    payload={
-                        'panel_id': self._panel_id,
-                        'filter_type': filter_type,
-                        'values': values,
-                        'current_filters': self._current_values,
-                        'auto_populate': self._auto_populate_filters
-                    }
-                )
+        # Log the state change clearly
+        self._logger.debug(f'Auto-populate checkbox changed to: {is_checked} (state={state})')
+
+        # Only do something if the state has actually changed
+        if is_checked != self._auto_populate_filters:
+            self._auto_populate_filters = is_checked
+
+            # If auto-populate was enabled, trigger refresh for current filters
+            if self._auto_populate_filters:
+                self._logger.debug('Auto-populate ENABLED - triggering filter refresh')
+
+                # If we have any current values, refresh using them
+                if self._current_values:
+                    for filter_type, values in self._current_values.items():
+                        self._event_bus.publish(
+                            event_type=VCdbEventType.filter_changed(),
+                            source='vcdb_explorer_filter_panel',
+                            payload={
+                                'panel_id': self._panel_id,
+                                'filter_type': filter_type,
+                                'values': values,
+                                'current_filters': self._current_values,
+                                'auto_populate': True  # Explicitly set to True
+                            }
+                        )
+                else:
+                    # Even with no values, we should publish an event to trigger initial filter load
+                    self._event_bus.publish(
+                        event_type=VCdbEventType.filter_changed(),
+                        source='vcdb_explorer_filter_panel',
+                        payload={
+                            'panel_id': self._panel_id,
+                            'filter_type': 'none',
+                            'values': [],
+                            'current_filters': {},
+                            'auto_populate': True  # Explicitly set to True
+                        }
+                    )
+            else:
+                self._logger.debug('Auto-populate DISABLED')
 
     @Slot()
     def _show_add_filter_menu(self) -> None:
-        """Show the add filter menu."""
+        """Show menu to add a new filter."""
         menu = QMenu(self)
 
         for filter_def in self._available_filters:
@@ -546,20 +577,20 @@ class FilterPanel(QGroupBox):
 
     @Slot()
     def _clear_all_filters(self) -> None:
-        """Clear all filters in the panel."""
+        """Clear all filters."""
         for filter_widget in self._filters.values():
             filter_widget.clear()
 
     @Slot()
     def _remove_panel(self) -> None:
-        """Request removal of the panel."""
+        """Request removal of this panel."""
         self.removeRequested.emit(self._panel_id)
 
     def update_filter_values(self, filter_values: Dict[str, List[Dict[str, Any]]]) -> None:
-        """Update the filter values.
+        """Update filter values from external source.
 
         Args:
-            filter_values: A dictionary of filter types and their available values
+            filter_values: Dictionary of filter types to available values
         """
         self._is_refreshing = True
         try:
@@ -571,7 +602,7 @@ class FilterPanel(QGroupBox):
 
 
 class FilterPanelManager(QWidget):
-    """Manager for filter panels."""
+    """Manager for multiple filter panels."""
 
     filtersChanged = Signal()
 
@@ -583,14 +614,14 @@ class FilterPanelManager(QWidget):
             max_panels: int = 5,
             parent: Optional[QWidget] = None
     ) -> None:
-        """Initialize a filter panel manager.
+        """Initialize the filter panel manager.
 
         Args:
-            database_handler: The database handler
-            event_bus: The event bus
-            logger: The logger
-            max_panels: The maximum number of panels
-            parent: The parent widget
+            database_handler: Database handler for filter values
+            event_bus: Event bus for communication
+            logger: Logger instance
+            max_panels: Maximum number of panels allowed
+            parent: Parent widget
         """
         super().__init__(parent)
 
@@ -604,12 +635,11 @@ class FilterPanelManager(QWidget):
         self._layout = QVBoxLayout()
         self.setLayout(self._layout)
 
+        # Header
         header_layout = QHBoxLayout()
-
         title = QLabel('Query Filters')
         title.setStyleSheet('font-weight: bold; font-size: 14px;')
         header_layout.addWidget(title)
-
         header_layout.addStretch()
 
         self._add_panel_btn = QPushButton('Add Filter Group')
@@ -618,6 +648,7 @@ class FilterPanelManager(QWidget):
 
         self._layout.addLayout(header_layout)
 
+        # Tab widget for panels
         self._tab_widget = QTabWidget()
         self._tab_widget.setDocumentMode(True)
         self._tab_widget.setTabsClosable(True)
@@ -625,7 +656,7 @@ class FilterPanelManager(QWidget):
         self._tab_widget.tabCloseRequested.connect(self._on_tab_close_requested)
         self._layout.addWidget(self._tab_widget)
 
-        # Subscribe to filters refreshed event
+        # Subscribe to filter refresh events
         self._event_bus.subscribe(
             event_type=VCdbEventType.filters_refreshed(),
             callback=self._on_filters_refreshed,
@@ -636,7 +667,7 @@ class FilterPanelManager(QWidget):
         self._add_panel()
 
     def __del__(self) -> None:
-        """Clean up resources when the manager is deleted."""
+        """Clean up event subscriptions."""
         try:
             self._event_bus.unsubscribe(subscriber_id='filter_panel_manager')
         except Exception:
@@ -649,37 +680,37 @@ class FilterPanelManager(QWidget):
             return
 
         panel_id = str(uuid.uuid4())
-
         panel = FilterPanel(
             panel_id,
             self._database_handler,
             self._event_bus,
             self._logger
         )
-
         panel.filterChanged.connect(self._on_filter_changed)
         panel.removeRequested.connect(self._remove_panel)
 
         tab_index = self._tab_widget.addTab(panel, f'Filter Group {len(self._panels) + 1}')
         self._tab_widget.setCurrentIndex(tab_index)
-
         self._panels[panel_id] = panel
+
         self._add_panel_btn.setEnabled(len(self._panels) < self._max_panels)
 
     def _remove_panel(self, panel_id: str) -> None:
         """Remove a filter panel.
 
         Args:
-            panel_id: The ID of the panel to remove
+            panel_id: ID of panel to remove
         """
         if panel_id not in self._panels:
             return
 
+        # Don't allow removing the last panel
         if len(self._panels) <= 1:
             return
 
         panel = self._panels[panel_id]
 
+        # Remove from tab widget
         for i in range(self._tab_widget.count()):
             if self._tab_widget.widget(i) == panel:
                 self._tab_widget.removeTab(i)
@@ -688,6 +719,7 @@ class FilterPanelManager(QWidget):
         panel.deleteLater()
         del self._panels[panel_id]
 
+        # Renumber tabs
         for i in range(self._tab_widget.count()):
             self._tab_widget.setTabText(i, f'Filter Group {i + 1}')
 
@@ -696,13 +728,12 @@ class FilterPanelManager(QWidget):
 
     @Slot(int)
     def _on_tab_close_requested(self, index: int) -> None:
-        """Handle tab close requested.
+        """Handle tab close request.
 
         Args:
-            index: The index of the tab to close
+            index: Tab index to close
         """
         widget = self._tab_widget.widget(index)
-
         for panel_id, panel in self._panels.items():
             if panel == widget:
                 self._remove_panel(panel_id)
@@ -710,12 +741,12 @@ class FilterPanelManager(QWidget):
 
     @Slot(str, str, list)
     def _on_filter_changed(self, panel_id: str, filter_type: str, values: List[int]) -> None:
-        """Handle filter changed.
+        """Handle filter change.
 
         Args:
-            panel_id: The ID of the panel containing the filter
-            filter_type: The type of filter
-            values: The selected values
+            panel_id: ID of panel where filter changed
+            filter_type: Type of filter
+            values: New filter values
         """
         self._logger.debug(f'Filter changed in panel {panel_id}: {filter_type} = {values}')
         self.filtersChanged.emit()
@@ -725,7 +756,7 @@ class FilterPanelManager(QWidget):
         """Handle filters refreshed event.
 
         Args:
-            event: The event
+            event: Filters refreshed event
         """
         payload = event.payload
         panel_id = payload.get('panel_id')
@@ -736,10 +767,10 @@ class FilterPanelManager(QWidget):
             self._panels[panel_id].update_filter_values(filter_values)
 
     def get_all_filters(self) -> List[Dict[str, List[int]]]:
-        """Get all filter configurations.
+        """Get all filter values from all panels.
 
         Returns:
-            A list of filter dictionaries
+            List of filter dictionaries, one per panel
         """
         return [panel.get_current_values() for panel in self._panels.values()]
 
@@ -750,11 +781,11 @@ class FilterPanelManager(QWidget):
             panel.refresh_all_filters()
 
     def update_filter_values(self, panel_id: str, filter_values: Dict[str, List[Dict[str, Any]]]) -> None:
-        """Update filter values for a panel.
+        """Update filter values for a specific panel.
 
         Args:
-            panel_id: The ID of the panel
-            filter_values: A dictionary of filter types and their available values
+            panel_id: ID of panel to update
+            filter_values: Filter values to set
         """
         if panel_id in self._panels:
             self._panels[panel_id].update_filter_values(filter_values)

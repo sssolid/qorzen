@@ -16,14 +16,14 @@ except ImportError:
 
 
 class ExportError(Exception):
-    """Exception raised for errors during data export operations."""
+    """Exception raised for errors during data export."""
 
     def __init__(self, message: str, details: Optional[Dict[str, Any]] = None) -> None:
-        """Initialize the exception.
+        """Initialize export error.
 
         Args:
-            message: The error message
-            details: Additional details about the error
+            message: Error message
+            details: Additional error details
         """
         self.message = message
         self.details = details or {}
@@ -31,13 +31,13 @@ class ExportError(Exception):
 
 
 class DataExporter:
-    """Handles exporting data to various file formats."""
+    """Handles exporting data to various formats."""
 
     def __init__(self, logger: logging.Logger) -> None:
-        """Initialize the data exporter.
+        """Initialize data exporter.
 
         Args:
-            logger: The logger to use
+            logger: Logger instance
         """
         self._logger = logger
 
@@ -48,16 +48,16 @@ class DataExporter:
             column_map: Dict[str, str],
             file_path: str
     ) -> None:
-        """Export data to a CSV file.
+        """Export data to CSV file.
 
         Args:
-            data: The data to export
-            columns: The columns to include
-            column_map: Mapping of column IDs to display names
-            file_path: The path to write the file to
+            data: List of row data dictionaries
+            columns: List of column IDs to export
+            column_map: Mapping from column IDs to display names
+            file_path: Target file path
 
         Raises:
-            ExportError: If there's an error exporting the data
+            ExportError: If export fails
         """
         try:
             with open(file_path, 'w', newline='', encoding='utf-8') as csv_file:
@@ -66,8 +66,7 @@ class DataExporter:
                     fieldnames=columns,
                     extrasaction='ignore'
                 )
-
-                # Write header with display names
+                # Write header row with display names
                 writer.writerow({col: column_map.get(col, col) for col in columns})
 
                 # Write data rows
@@ -79,7 +78,6 @@ class DataExporter:
                     writer.writerow(clean_row)
 
             self._logger.info(f'Exported {len(data)} rows to CSV: {file_path}')
-
         except Exception as e:
             self._logger.error(f'Failed to export CSV: {str(e)}')
             raise ExportError(f'Failed to export CSV: {str(e)}') from e
@@ -92,17 +90,17 @@ class DataExporter:
             file_path: str,
             sheet_name: Optional[str] = None
     ) -> None:
-        """Export data to an Excel file.
+        """Export data to Excel file.
 
         Args:
-            data: The data to export
-            columns: The columns to include
-            column_map: Mapping of column IDs to display names
-            file_path: The path to write the file to
-            sheet_name: The name of the worksheet
+            data: List of row data dictionaries
+            columns: List of column IDs to export
+            column_map: Mapping from column IDs to display names
+            file_path: Target file path
+            sheet_name: Name of the Excel sheet
 
         Raises:
-            ExportError: If there's an error exporting the data
+            ExportError: If export fails or Excel export is not available
         """
         if not EXCEL_AVAILABLE:
             raise ExportError('Excel export is not available. Please install openpyxl.')
@@ -113,7 +111,6 @@ class DataExporter:
 
             if not sheet_name:
                 sheet_name = 'VCdb Results'
-
             ws.title = sheet_name
 
             # Add timestamp
@@ -121,19 +118,27 @@ class DataExporter:
             ws.cell(row=1, column=1, value=f'Generated: {timestamp}')
             ws.cell(row=1, column=1).font = Font(italic=True)
 
-            # Style definitions
+            # Style for headers
             header_font = Font(bold=True)
-            header_fill = PatternFill(start_color='DDDDDD', end_color='DDDDDD', fill_type='solid')
+            header_fill = PatternFill(
+                start_color='DDDDDD',
+                end_color='DDDDDD',
+                fill_type='solid'
+            )
             header_alignment = Alignment(horizontal='center')
 
-            # Write header with styles
+            # Write headers
             for col_idx, col_id in enumerate(columns, 1):
-                cell = ws.cell(row=2, column=col_idx, value=column_map.get(col_id, col_id))
+                cell = ws.cell(
+                    row=2,
+                    column=col_idx,
+                    value=column_map.get(col_id, col_id)
+                )
                 cell.font = header_font
                 cell.fill = header_fill
                 cell.alignment = header_alignment
 
-            # Write data rows
+            # Write data
             for row_idx, row_data in enumerate(data, 3):
                 for col_idx, col_id in enumerate(columns, 1):
                     value = row_data.get(col_id, '')
@@ -155,11 +160,9 @@ class DataExporter:
             # Freeze header row
             ws.freeze_panes = 'A3'
 
-            # Save the file
+            # Save the workbook
             wb.save(file_path)
-
             self._logger.info(f'Exported {len(data)} rows to Excel: {file_path}')
-
         except Exception as e:
             self._logger.error(f'Failed to export Excel: {str(e)}')
             raise ExportError(f'Failed to export Excel: {str(e)}') from e
@@ -178,29 +181,29 @@ class DataExporter:
             sort_desc: bool = False,
             progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> int:
-        """Export all data meeting the specified filter criteria.
+        """Export all matching data to a file.
 
         Args:
-            database_callback: Function to call to retrieve data
-            filter_panels: The filter panels to apply
-            columns: The columns to include
-            column_map: Mapping of column IDs to display names
-            file_path: The path to write the file to
-            format_type: The format type ('csv' or 'excel')
-            max_rows: The maximum number of rows to export
+            database_callback: Function to execute database queries
+            filter_panels: List of filter panel selections
+            columns: List of column IDs to export
+            column_map: Mapping from column IDs to display names
+            file_path: Target file path
+            format_type: Export format ('csv' or 'excel')
+            max_rows: Maximum number of rows to export
             table_filters: Additional table filters
             sort_by: Column to sort by
-            sort_desc: Whether to sort in descending order
-            progress_callback: Callback for reporting progress
+            sort_desc: Sort descending if True
+            progress_callback: Callback for progress updates
 
         Returns:
-            The number of rows exported
+            Number of rows exported
 
         Raises:
-            ExportError: If there's an error exporting the data
+            ExportError: If export fails
         """
         try:
-            # Get total count
+            # Get total count first
             _, total_count = database_callback(
                 filter_panels=filter_panels,
                 columns=columns,
@@ -217,6 +220,7 @@ class DataExporter:
                 self._logger.warning('No data to export')
                 return 0
 
+            # Export to CSV
             if format_type == 'csv':
                 with open(file_path, 'w', newline='', encoding='utf-8') as csv_file:
                     writer = csv.DictWriter(
@@ -224,14 +228,19 @@ class DataExporter:
                         fieldnames=columns,
                         extrasaction='ignore'
                     )
-
-                    # Write header with display names
+                    # Write header row
                     writer.writerow({col: column_map.get(col, col) for col in columns})
 
+                    # Process in batches
                     batch_size = 1000
                     rows_exported = 0
 
                     for page in range(1, (total_to_export + batch_size - 1) // batch_size + 1):
+                        # Check if export was canceled
+                        if progress_callback and progress_callback(-1, total_to_export) is False:
+                            return rows_exported
+
+                        # Get batch of results
                         results, _ = database_callback(
                             filter_panels=filter_panels,
                             columns=columns,
@@ -242,6 +251,7 @@ class DataExporter:
                             table_filters=table_filters
                         )
 
+                        # Write each row
                         for row in results:
                             clean_row = {}
                             for col in columns:
@@ -260,6 +270,7 @@ class DataExporter:
                 self._logger.info(f'Exported {rows_exported} rows to CSV: {file_path}')
                 return rows_exported
 
+            # Export to Excel
             elif format_type == 'excel' and EXCEL_AVAILABLE:
                 wb = openpyxl.Workbook()
                 ws = wb.active
@@ -270,23 +281,37 @@ class DataExporter:
                 ws.cell(row=1, column=1, value=f'Generated: {timestamp}')
                 ws.cell(row=1, column=1).font = Font(italic=True)
 
-                # Style definitions
+                # Style for headers
                 header_font = Font(bold=True)
-                header_fill = PatternFill(start_color='DDDDDD', end_color='DDDDDD', fill_type='solid')
+                header_fill = PatternFill(
+                    start_color='DDDDDD',
+                    end_color='DDDDDD',
+                    fill_type='solid'
+                )
                 header_alignment = Alignment(horizontal='center')
 
-                # Write header with styles
+                # Write headers
                 for col_idx, col_id in enumerate(columns, 1):
-                    cell = ws.cell(row=2, column=col_idx, value=column_map.get(col_id, col_id))
+                    cell = ws.cell(
+                        row=2,
+                        column=col_idx,
+                        value=column_map.get(col_id, col_id)
+                    )
                     cell.font = header_font
                     cell.fill = header_fill
                     cell.alignment = header_alignment
 
+                # Process in batches
                 batch_size = 1000
                 rows_exported = 0
                 excel_row = 3
 
                 for page in range(1, (total_to_export + batch_size - 1) // batch_size + 1):
+                    # Check if export was canceled
+                    if progress_callback and progress_callback(-1, total_to_export) is False:
+                        return rows_exported
+
+                    # Get batch of results
                     results, _ = database_callback(
                         filter_panels=filter_panels,
                         columns=columns,
@@ -297,6 +322,7 @@ class DataExporter:
                         table_filters=table_filters
                     )
 
+                    # Write each row
                     for row_data in results:
                         for col_idx, col_id in enumerate(columns, 1):
                             value = row_data.get(col_id, '')
@@ -311,12 +337,12 @@ class DataExporter:
                         if rows_exported >= total_to_export:
                             break
 
-                # Auto-adjust column widths
+                # Auto-adjust column widths (only for a sample of rows for performance)
                 for col_idx, _ in enumerate(columns, 1):
                     col_letter = openpyxl.utils.get_column_letter(col_idx)
                     max_length = 0
 
-                    # Only check a subset of rows for performance
+                    # Only check a sample of rows for performance
                     for row_idx in range(2, min(excel_row, 102)):
                         cell = ws.cell(row=row_idx, column=col_idx)
                         if cell.value:
@@ -328,9 +354,8 @@ class DataExporter:
                 # Freeze header row
                 ws.freeze_panes = 'A3'
 
-                # Save the file
+                # Save the workbook
                 wb.save(file_path)
-
                 self._logger.info(f'Exported {rows_exported} rows to Excel: {file_path}')
                 return rows_exported
 
