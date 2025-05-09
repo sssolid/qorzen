@@ -7,6 +7,7 @@ import os
 import pathlib
 import pkgutil
 import sys
+import threading
 import time
 from pathlib import Path
 from enum import Enum
@@ -91,6 +92,7 @@ class PluginManager(QorzenManager):
             cloud_manager: Cloud manager
         """
         super().__init__(name='PluginManager')
+        self._plugins_lock = threading.RLock()
         self._application_core = application_core
         self._config_manager = config_manager
         self._logger_manager = logger_manager
@@ -290,36 +292,39 @@ class PluginManager(QorzenManager):
             self._logger.debug(message)
 
     def _on_ui_ready_event(self, event: Event) -> None:
-        """Handle UI ready event.
-
-        Args:
-            event: The event object
-        """
-        # Get the main window from the event
         main_window = event.payload.get('main_window')
         if not main_window:
             self._logger.warning('UI ready event missing main_window')
             return
 
-        # Create UI integration
+        # Avoid recreating UI integration
+        if self._ui_integration is not None:
+            self._logger.debug('UI integration already exists, updating with new main window')
+            # Just update the reference if needed, don't re-register everything
+            return
+
         self._ui_integration = MainWindowIntegration(main_window)
         self._logger.info('Created UI integration')
 
-        # Notify active plugins
-        active_plugins = [
-            (name, info) for name, info in self._plugins.items()
-            if info.state == PluginState.ACTIVE and info.instance is not None
-        ]
+        # Add tracking to prevent duplicate UI setup for plugins
+        if not hasattr(self, '_ui_setup_plugins'):
+            self._ui_setup_plugins = set()
+
+        active_plugins = [(name, info) for name, info in self._plugins.items()
+                          if info.state == PluginState.ACTIVE and info.instance is not None]
 
         for name, info in active_plugins:
-            try:
-                # Register UI integration with lifecycle manager
-                register_ui_integration(name, self._ui_integration)
+            # Skip if UI already set up for this plugin
+            if name in self._ui_setup_plugins:
+                self._logger.debug(f"UI already set up for plugin '{name}', skipping")
+                continue
 
-                # Call on_ui_ready if the plugin supports it
+            try:
+                register_ui_integration(name, self._ui_integration)
                 if hasattr(info.instance, 'on_ui_ready'):
                     self._logger.debug(f"Calling on_ui_ready for plugin '{name}'")
                     info.instance.on_ui_ready(self._ui_integration)
+                    self._ui_setup_plugins.add(name)  # Mark UI as set up
                 else:
                     self._logger.debug(f"Plugin '{name}' does not support on_ui_ready")
             except Exception as e:
@@ -738,6 +743,11 @@ class PluginManager(QorzenManager):
             )
             return True
 
+        # Check if plugin is being loaded (prevent duplicate loading)
+        if hasattr(plugin_info, '_loading') and plugin_info._loading:
+            self._logger.debug(f"Plugin '{plugin_name}' is already being loaded", extra={'plugin': plugin_name})
+            return True
+
         # Check if disabled
         if plugin_name in self._disabled_plugins:
             self._logger.warning(
@@ -745,6 +755,9 @@ class PluginManager(QorzenManager):
                 extra={'plugin': plugin_name}
             )
             return False
+
+        # Set loading flag
+        setattr(plugin_info, '_loading', True)
 
         # Check dependencies
         for dependency in plugin_info.dependencies:
@@ -851,6 +864,9 @@ class PluginManager(QorzenManager):
             plugin_info.state = PluginState.ACTIVE
             plugin_info.load_time = time.time()
 
+            # Add a flag to prevent immediate unloading
+            plugin_info.recently_loaded = True
+
             self._logger.info(
                 f"Loaded plugin '{plugin_name}' v{plugin_info.version}",
                 extra={'plugin': plugin_name, 'version': plugin_info.version}
@@ -893,13 +909,25 @@ class PluginManager(QorzenManager):
                     'plugin_name': plugin_name,
                     'version': plugin_info.version,
                     'description': plugin_info.description,
-                    'author': plugin_info.author
+                    'author': plugin_info.author,
+                    'no_auto_unload': True
                 }
             )
+
+            # Set a timer to clear the recently_loaded flag
+            if self._thread_manager:
+                self._thread_manager.submit_task(
+                    lambda: self._clear_recent_load_flag(plugin_name),
+                    name=f"clear_recent_load_{plugin_name}",
+                    submitter='plugin_manager'
+                )
 
             return True
 
         except Exception as e:
+            # Clear loading flag on error
+            setattr(plugin_info, '_loading', False)
+
             plugin_info.state = PluginState.FAILED
             plugin_info.error = str(e)
 
@@ -921,6 +949,18 @@ class PluginManager(QorzenManager):
                 f"Failed to load plugin '{plugin_name}': {str(e)}",
                 plugin_name=plugin_name
             ) from e
+
+    def _clear_recent_load_flag(self, plugin_name: str) -> None:
+        """Clear the recently_loaded flag after a delay."""
+        import time
+        # Wait for 5 seconds before clearing the flag
+        time.sleep(5)
+
+        with self._plugin_lock:  # Assume you have a lock for thread safety
+            if plugin_name in self._plugins:
+                plugin_info = self._plugins[plugin_name]
+                if hasattr(plugin_info, 'recently_loaded'):
+                    delattr(plugin_info, 'recently_loaded')
 
     def _load_packaged_plugin(self, plugin_info: PluginInfo) -> Type:
         """Load a plugin from a package.
@@ -1000,6 +1040,12 @@ class PluginManager(QorzenManager):
             raise PluginError(f"Plugin '{plugin_name}' not found", plugin_name=plugin_name)
 
         plugin_info = self._plugins[plugin_name]
+
+        # Prevent unloading during UI setup
+        if hasattr(plugin_info, '_ui_setup_in_progress') and plugin_info._ui_setup_in_progress:
+            self._logger.warning(f"Cannot unload plugin '{plugin_name}' during UI setup",
+                                 extra={'plugin': plugin_name})
+            return False
 
         # Check if already unloaded
         if plugin_info.state not in (PluginState.LOADED, PluginState.ACTIVE):

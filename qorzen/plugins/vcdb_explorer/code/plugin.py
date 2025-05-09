@@ -303,19 +303,23 @@ class VCdbExplorerPlugin(BasePlugin):
                 self._icon_path = icon_path
                 self._logger.debug(f'Found plugin icon at: {icon_path}')
 
+        # Gracefully handle database initialization
         if not database_manager:
             self._logger.error('DatabaseManager is required but was not provided')
-            return
-
-        # Only initialize database connection in the main thread
-        if self._thread_manager.is_main_thread():
-            self._init_database_connection(database_manager)
+            self._database_handler = None
+            self._connection_registered = False
         else:
-            # Execute database connection initialization on the main thread
-            self._thread_manager.execute_on_main_thread_sync(
-                self._init_database_connection,
-                database_manager
-            )
+            try:
+                if self._thread_manager.is_main_thread():
+                    self._init_database_connection(database_manager)
+                else:
+                    self._thread_manager.execute_on_main_thread_sync(self._init_database_connection,
+                                                                     database_manager)
+            except Exception as e:
+                self._logger.error(f'Failed to initialize database connection: {str(e)}')
+                # Don't let the exception propagate, handle it here
+                self._database_handler = None
+                self._connection_registered = False
 
         self._event_bus.subscribe(
             event_type='vcdb_explorer:log_message',
@@ -346,31 +350,34 @@ class VCdbExplorerPlugin(BasePlugin):
         Args:
             database_manager: The database manager instance
         """
-        self._database_handler = DatabaseHandler(
-            database_manager,
-            self._event_bus,
-            self._thread_manager,
-            self._logger
-        )
+        try:
+            self._database_handler = DatabaseHandler(database_manager, self._event_bus, self._thread_manager,
+                                                     self._logger)
 
-        existing_connections = database_manager.get_connection_names()
-        if DatabaseHandler.CONNECTION_NAME not in existing_connections:
-            try:
-                self._database_handler.configure(
-                    self._db_config.get('host', 'localhost'),
-                    self._db_config.get('port', 5432),
-                    self._db_config.get('database', 'vcdb'),
-                    self._db_config.get('user', 'postgres'),
-                    self._db_config.get('password', '')
-                )
+            existing_connections = database_manager.get_connection_names()
+            if DatabaseHandler.CONNECTION_NAME not in existing_connections:
+                try:
+                    self._database_handler.configure(
+                        self._db_config.get('host', 'localhost'),
+                        self._db_config.get('port', 5432),
+                        self._db_config.get('database', 'vcdb'),
+                        self._db_config.get('user', 'postgres'),
+                        self._db_config.get('password', '')
+                    )
+                    self._connection_registered = True
+                except Exception as e:
+                    self._logger.error(f'Failed to configure database connection: {str(e)}')
+                    # Don't let the exception propagate
+                    self._connection_registered = False
+            else:
+                self._logger.warning(
+                    f'Connection "{DatabaseHandler.CONNECTION_NAME}" already exists, reusing existing connection')
                 self._connection_registered = True
-            except Exception as e:
-                self._logger.error(f'Failed to configure database connection: {str(e)}')
-        else:
-            self._logger.warning(
-                f'Connection "{DatabaseHandler.CONNECTION_NAME}" already exists, reusing existing connection'
-            )
-            self._connection_registered = True
+        except Exception as e:
+            self._logger.error(f'Failed to initialize database handler: {str(e)}')
+            # Don't let the exception propagate
+            self._database_handler = None
+            self._connection_registered = False
 
     def _load_config(self) -> None:
         """Load plugin configuration from the config provider."""
@@ -407,51 +414,75 @@ class VCdbExplorerPlugin(BasePlugin):
         if self._logger:
             self._logger.info('Setting up UI components')
 
-        # Ensure we're on the main thread
-        if not self._thread_manager.is_main_thread():
-            self._logger.warning("on_ui_ready called from non-main thread, delegating to main thread")
-            self._thread_manager.execute_on_main_thread_sync(
-                self.on_ui_ready,
-                ui_integration
-            )
+            # Set flag to prevent concurrent UI setup
+        if hasattr(self, '_ui_setup_in_progress') and self._ui_setup_in_progress:
+            self._logger.warning('UI setup already in progress, skipping duplicate call')
             return
 
-        # Add menu items to the Plugins menu
-        plugins_menu = ui_integration.find_menu('Plugins')
-        if not plugins_menu:
-            plugins_menu = ui_integration.add_menu(self.name, 'Plugins')
+            # Set up in progress flag
+        self._ui_setup_in_progress = True
 
-        vcdb_menu = ui_integration.add_menu(self.name, 'VCdb Explorer', plugins_menu)
-        ui_integration.add_menu_action(self.name, vcdb_menu, 'Run Query',
-                                       lambda: self._thread_manager.run_on_main_thread(self._run_query))
-        ui_integration.add_menu_action(self.name, vcdb_menu, 'Refresh Filters',
-                                       lambda: self._thread_manager.run_on_main_thread(self._refresh_filters))
-        ui_integration.add_menu_action(self.name, vcdb_menu, 'Documentation',
-                                       lambda: self._thread_manager.run_on_main_thread(self._open_documentation))
-        ui_integration.add_menu_action(self.name, vcdb_menu, 'Configuration',
-                                       lambda: self._thread_manager.run_on_main_thread(self._open_configuration))
-
-        # Check if database connection is properly set up
-        if not self._database_handler or not getattr(self._database_handler, '_initialized', False):
-            self._main_widget = self._create_error_widget()
-            self._logger.warning('Added error widget due to database connection failure')
-        else:
-            # Create the main widget (which should happen on the main thread since we're in on_ui_ready)
-            try:
-                self._main_widget = VCdbExplorerWidget(
-                    self._database_handler,
-                    self._event_bus,
-                    self._thread_manager,
-                    self._logger,
-                    self._export_config,
-                    None  # Parent will be set by the panel system
+        try:
+            # Ensure we're on the main thread
+            if not self._thread_manager.is_main_thread():
+                self._logger.warning("on_ui_ready called from non-main thread, delegating to main thread")
+                self._thread_manager.execute_on_main_thread_sync(
+                    self.on_ui_ready,
+                    ui_integration
                 )
-                if self._logger:
-                    self._logger.info('UI components set up successfully')
-            except Exception as e:
-                if self._logger:
-                    self._logger.error(f'Failed to set up UI components: {str(e)}')
-                self._main_widget = self._create_error_widget(str(e))
+                return
+
+            # Prevent duplicate UI component creation
+            if hasattr(self, '_ui_components_created') and self._ui_components_created:
+                self._logger.warning('UI components already created, skipping duplicate creation')
+                return
+
+            # Add menu items to the Plugins menu
+            plugins_menu = ui_integration.find_menu('Plugins')
+            if not plugins_menu:
+                plugins_menu = ui_integration.add_menu(self.name, 'Plugins')
+
+            vcdb_menu = None
+            for action in plugins_menu.actions():
+                if action.text() == 'VCdb Explorer' and action.menu():
+                    vcdb_menu = action.menu()
+                    self._logger.debug('Found existing VCdb Explorer menu')
+                    break
+
+            if not vcdb_menu:
+                vcdb_menu = ui_integration.add_menu(self.name, 'VCdb Explorer', plugins_menu)
+
+            # TODO: Add menu action checking
+            ui_integration.add_menu_action(self.name, vcdb_menu, 'Run Query',
+                                           lambda: self._thread_manager.run_on_main_thread(self._run_query))
+            ui_integration.add_menu_action(self.name, vcdb_menu, 'Refresh Filters',
+                                           lambda: self._thread_manager.run_on_main_thread(self._refresh_filters))
+            ui_integration.add_menu_action(self.name, vcdb_menu, 'Documentation',
+                                           lambda: self._thread_manager.run_on_main_thread(self._open_documentation))
+            ui_integration.add_menu_action(self.name, vcdb_menu, 'Configuration',
+                                           lambda: self._thread_manager.run_on_main_thread(self._open_configuration))
+
+            if not self._database_handler or not getattr(self._database_handler, '_initialized', False):
+                self._main_widget = self._create_error_widget()
+                self._logger.warning('Added error widget due to database connection failure')
+            else:
+                try:
+                    if not self._main_widget:  # Only create if not already created
+                        self._main_widget = VCdbExplorerWidget(self._database_handler,
+                                                               self._event_bus,
+                                                               self._thread_manager,
+                                                               self._logger,
+                                                               self._export_config,
+                                                               None)
+                    if self._logger:
+                        self._logger.info('UI components set up successfully')
+                except Exception as e:
+                    if self._logger:
+                        self._logger.error(f'Failed to set up UI components: {str(e)}')
+                    self._main_widget = self._create_error_widget(str(e))
+            self._ui_components_created = True
+        finally:
+            self._ui_setup_in_progress = False
 
     def _create_error_widget(self, error_message: Optional[str] = None) -> QWidget:
         """

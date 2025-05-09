@@ -437,6 +437,11 @@ class MainWindowIntegration(UIIntegration):
         Returns:
             The created menu.
         """
+        # Check if menu already exists
+        for menu in self._menu_components.get_by_type(plugin_id, 'menus'):
+            if menu.title() == title:
+                return menu
+
         menu_bar = self.main_window.menuBar()
         parent = None
 
@@ -502,6 +507,10 @@ class MainWindowIntegration(UIIntegration):
                 target_menu = self.add_menu(plugin_id, menu)
         else:
             target_menu = menu
+
+        for action, parent_menu in self._action_components.get_by_type(plugin_id, 'actions'):
+            if action.text() == text and parent_menu == target_menu:
+                return action
 
         # Create the action
         action = QAction(text, self.main_window)

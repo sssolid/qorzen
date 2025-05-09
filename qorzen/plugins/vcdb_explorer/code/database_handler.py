@@ -205,7 +205,15 @@ class DatabaseHandler:
         if not self._initialized:
             return
 
+            # Add protection against shutdown during initialization
+        if hasattr(self, '_shutting_down') and self._shutting_down:
+            self._logger.debug('Shutdown already in progress, skipping duplicate call')
+            return
+
+        self._shutting_down = True
+
         try:
+            # Original shutdown code...
             self._event_bus.unsubscribe(subscriber_id='vcdb_explorer_handler')
 
             if self._db_manager and self._db_manager.has_connection(self.CONNECTION_NAME):
@@ -217,9 +225,8 @@ class DatabaseHandler:
 
             self._initialized = False
             self._logger.info('VCdb Database Handler shut down successfully')
-
-        except Exception as e:
-            self._logger.error(f'Error shutting down VCdb Database Handler: {str(e)}')
+        finally:
+            self._shutting_down = False
 
     def _on_filter_changed(self, event: Event) -> None:
         """

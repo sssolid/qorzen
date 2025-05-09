@@ -103,13 +103,14 @@ class LifecycleManager:
             ui_integration: The UI integration to register.
             main_window: The main window reference, if available.
         """
-        self._ui_integrations[plugin_name] = ui_integration
+        lifecycle_manager = get_lifecycle_manager()
 
-        # If the main window is provided, store a reference to it
-        if main_window is not None:
-            self._main_window_ref = main_window
+        # Check if already registered for this plugin
+        if plugin_name in lifecycle_manager._ui_integrations:
+            lifecycle_manager.log(f"UI integration already registered for plugin '{plugin_name}'", 'debug')
+            return
 
-        self.log(f"Registered UI integration for plugin '{plugin_name}'", 'debug')
+        lifecycle_manager.register_ui_integration(plugin_name, ui_integration, main_window)
 
     def get_ui_integration(self, plugin_name: str) -> Optional[UIIntegration]:
         """Get the UI integration for a plugin.

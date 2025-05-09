@@ -361,19 +361,17 @@ class MainWindow(QMainWindow):
     def _on_plugin_state_change(self, plugin_name: str, enable: bool) -> None:
         if not self._plugin_manager:
             return
-
         try:
             if enable:
-                success = self._plugin_manager.enable_plugin(plugin_name)
-                if success:
-                    self._plugin_manager.load_plugin(plugin_name)
+                # Only call enable_plugin, remove direct call to load_plugin
+                # The event handler will take care of loading
+                self._plugin_manager.enable_plugin(plugin_name)
+                # Remove: self._plugin_manager.load_plugin(plugin_name)
             elif self._plugin_manager.unload_plugin(plugin_name):
                 self._plugin_manager.disable_plugin(plugin_name)
         except Exception as e:
-            self._logger.error(
-                f'Error changing plugin state: {str(e)}',
-                extra={'plugin_name': plugin_name, 'enable': enable}
-            )
+            self._logger.error(f'Error changing plugin state: {str(e)}',
+                               extra={'plugin_name': plugin_name, 'enable': enable})
 
     def _on_plugin_reload(self, plugin_name: str) -> None:
         if not self._plugin_manager:
@@ -433,6 +431,13 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            # Check if page already exists
+            page_name = f'plugin_{plugin_name}'
+            existing_page = self.panel_layout.content_area.get_page_by_name(page_name)
+            if existing_page:
+                self._logger.debug(f"UI components for plugin '{plugin_name}' already exist")
+                return
+
             widget = instance.get_main_widget()
 
             if not widget:
