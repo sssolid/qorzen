@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union, cast
 
 from qorzen.core.base import QorzenManager
@@ -48,12 +48,12 @@ class PluginInfo:
     description: str
     author: str
     state: PluginState = PluginState.DISCOVERED
-    dependencies: List[str] = None
+    dependencies: List[str] = field(default_factory=list)
     path: Optional[str] = None
     instance: Optional[Any] = None
     error: Optional[str] = None
     load_time: Optional[float] = None
-    metadata: Dict[str, Any] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
     manifest: Optional[PluginManifest] = None
     config_schema: Optional[ConfigSchema] = None
 

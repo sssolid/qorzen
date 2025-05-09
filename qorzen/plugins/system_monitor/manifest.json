@@ -9,6 +9,7 @@
     "url": "https://qorzen.com",
     "organization": "Qorzen"
   },
+  "logo_path": "",
   "license": "MIT",
   "homepage": "https://qorzen.com/plugins/system_monitor",
   "capabilities": [

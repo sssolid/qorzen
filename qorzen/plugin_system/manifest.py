@@ -158,6 +158,7 @@ class PluginManifest(pydantic.BaseModel):
     version: str
     description: str
     author: PluginAuthor
+    logo_path: str
     license: str
     homepage: Optional[str] = None
     capabilities: List[PluginCapability] = Field(default_factory=list)

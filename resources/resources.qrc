@@ -1,0 +1,10 @@
+<!-- D:\qorzen> pyside6-rcc D:\qorzen\resources\resources.qrc -o D:\qorzen\qorzen\resources_rc.py -->
+<RCC>
+    <qresource prefix="/ui_icons">
+        <file alias="dashboard.svg">ui_icons/dashboard.svg</file>
+        <file alias="database.svg">ui_icons/database.svg</file>
+        <file alias="database-search.svg">ui_icons/database-search.svg</file>
+        <file alias="library-books.svg">ui_icons/library-books.svg</file>
+        <file alias="extension.svg">ui_icons/extension.svg</file>
+    </qresource>
+</RCC>

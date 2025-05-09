@@ -19,6 +19,7 @@ from tenacity import (
 )
 
 from qorzen.core.base import QorzenManager
+from qorzen.core.thread_manager import TaskProgressReporter
 from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownError
 
 
@@ -1093,7 +1094,7 @@ class RemoteServicesManager(QorzenManager):
 
         return result
 
-    def _health_check_task(self) -> None:
+    def _health_check_task(self, progress_reporter: TaskProgressReporter) -> None:
         """Periodic task to check the health of all services."""
         if not self._initialized:
             return

@@ -101,3 +101,4 @@ tmp/
 !resources/logos/qorzen.ico
 !resources/logos/qorzen.png
 !resources/logos/qorzen_256x256.png
+/qorzen/plugins_old/
