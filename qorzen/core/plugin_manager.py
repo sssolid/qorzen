@@ -91,8 +91,6 @@ class PluginManager(QorzenManager):
             cloud_manager: Cloud manager
         """
         super().__init__(name='PluginManager')
-
-        # Store core components
         self._application_core = application_core
         self._config_manager = config_manager
         self._logger_manager = logger_manager
@@ -105,25 +103,19 @@ class PluginManager(QorzenManager):
         self._security_manager = security_manager
         self._api_manager = api_manager
         self._cloud_manager = cloud_manager
-
-        # Plugin state
         self._plugins: Dict[str, PluginInfo] = {}
         self._plugin_dir: Optional[pathlib.Path] = None
         self._entry_point_group = 'qorzen.plugins'
         self._auto_load = True
         self._enabled_plugins: List[str] = []
         self._disabled_plugins: List[str] = []
-
-        # Packaging system
         self._repository_config_path: Optional[Path] = None
         self.plugin_installer: Optional[Any] = None
         self.plugin_verifier: Optional[Any] = None
         self.repository_manager: Optional[Any] = None
-
-        # UI integration
         self._ui_integration: Optional[UIIntegration] = None
-
-        # Set up lifecycle manager logger
+        # Add flag to track configuration updates
+        self._is_updating_config = False
         get_lifecycle_manager().set_logger(self._logger)
 
     def initialize(self) -> None:
@@ -628,18 +620,20 @@ class PluginManager(QorzenManager):
         author = getattr(plugin_class, 'author', 'Unknown')
         dependencies = getattr(plugin_class, 'dependencies', [])
 
+        # Make sure state is properly stored in the PluginInfo object, not just in metadata
         metadata = {
             'class': plugin_class.__name__,
             'module': plugin_class.__module__,
             'entry_point': entry_point_name
         }
 
+        # Create PluginInfo with the correct state
         plugin_info = PluginInfo(
             name=name,
             version=version,
             description=description,
             author=author,
-            state=PluginState.DISCOVERED,
+            state=PluginState.DISCOVERED,  # Explicitly set state here
             dependencies=dependencies,
             path=path,
             metadata=metadata,
@@ -1200,37 +1194,33 @@ class PluginManager(QorzenManager):
         """
         if not self._initialized:
             raise PluginError('Plugin Manager not initialized', plugin_name=plugin_name)
-
         if plugin_name not in self._plugins:
             raise PluginError(f"Plugin '{plugin_name}' not found", plugin_name=plugin_name)
 
-        # Update packaging system
+            # Prevent duplicate enabling
+        if plugin_name in self._enabled_plugins:
+            self._logger.debug(f"Plugin '{plugin_name}' is already enabled", extra={'plugin': plugin_name})
+            return True
+
+            # Rest of the method remains the same
         if self.plugin_installer and self.plugin_installer.is_plugin_installed(plugin_name):
             self.plugin_installer.enable_plugin(plugin_name)
-
-        # Update enabled/disabled lists
         if plugin_name in self._disabled_plugins:
             self._disabled_plugins.remove(plugin_name)
-
         if plugin_name not in self._enabled_plugins:
             self._enabled_plugins.append(plugin_name)
 
-        # Update configuration
-        self._config_manager.set('plugins.enabled', self._enabled_plugins)
-        self._config_manager.set('plugins.disabled', self._disabled_plugins)
+            # Use a flag to prevent recursive event handling
+        self._is_updating_config = True
+        try:
+            self._config_manager.set('plugins.enabled', self._enabled_plugins)
+            self._config_manager.set('plugins.disabled', self._disabled_plugins)
+        finally:
+            self._is_updating_config = False
 
-        self._logger.info(
-            f"Enabled plugin '{plugin_name}'",
-            extra={'plugin': plugin_name}
-        )
-
-        # Publish event
-        self._event_bus.publish(
-            event_type=EventType.PLUGIN_ENABLED,
-            source='plugin_manager',
-            payload={'plugin_name': plugin_name}
-        )
-
+        self._logger.info(f"Enabled plugin '{plugin_name}'", extra={'plugin': plugin_name})
+        self._event_bus.publish(event_type=EventType.PLUGIN_ENABLED, source='plugin_manager',
+                                payload={'plugin_name': plugin_name})
         return True
 
     def disable_plugin(self, plugin_name: str) -> bool:
@@ -1247,50 +1237,42 @@ class PluginManager(QorzenManager):
         """
         if not self._initialized:
             raise PluginError('Plugin Manager not initialized', plugin_name=plugin_name)
-
         if plugin_name not in self._plugins:
             raise PluginError(f"Plugin '{plugin_name}' not found", plugin_name=plugin_name)
 
-        plugin_info = self._plugins[plugin_name]
+            # Check if already disabled to prevent circular calls
+        if plugin_name in self._disabled_plugins:
+            self._logger.debug(f"Plugin '{plugin_name}' is already disabled", extra={'plugin': plugin_name})
+            return True
 
-        # Unload if active
+        plugin_info = self._plugins[plugin_name]
         if plugin_info.state in (PluginState.LOADED, PluginState.ACTIVE):
             if not self.unload_plugin(plugin_name):
-                raise PluginError(
-                    f"Cannot disable plugin '{plugin_name}': Failed to unload it",
-                    plugin_name=plugin_name
-                )
+                raise PluginError(f"Cannot disable plugin '{plugin_name}': Failed to unload it",
+                                  plugin_name=plugin_name)
 
-        # Update packaging system
         if self.plugin_installer and self.plugin_installer.is_plugin_installed(plugin_name):
             self.plugin_installer.disable_plugin(plugin_name)
 
-        # Update enabled/disabled lists
         if plugin_name in self._enabled_plugins:
             self._enabled_plugins.remove(plugin_name)
 
         if plugin_name not in self._disabled_plugins:
             self._disabled_plugins.append(plugin_name)
 
-        # Update plugin state
         plugin_info.state = PluginState.DISABLED
 
-        # Update configuration
-        self._config_manager.set('plugins.enabled', self._enabled_plugins)
-        self._config_manager.set('plugins.disabled', self._disabled_plugins)
+        # Use a flag to prevent recursive event handling
+        self._is_updating_config = True
+        try:
+            self._config_manager.set('plugins.enabled', self._enabled_plugins)
+            self._config_manager.set('plugins.disabled', self._disabled_plugins)
+        finally:
+            self._is_updating_config = False
 
-        self._logger.info(
-            f"Disabled plugin '{plugin_name}'",
-            extra={'plugin': plugin_name}
-        )
-
-        # Publish event
-        self._event_bus.publish(
-            event_type=EventType.PLUGIN_DISABLED,
-            source='plugin_manager',
-            payload={'plugin_name': plugin_name}
-        )
-
+        self._logger.info(f"Disabled plugin '{plugin_name}'", extra={'plugin': plugin_name})
+        self._event_bus.publish(event_type=EventType.PLUGIN_DISABLED, source='plugin_manager',
+                                payload={'plugin_name': plugin_name})
         return True
 
     def install_plugin(self, package_path: Union[str, Path], force: bool = False,
@@ -1767,33 +1749,32 @@ class PluginManager(QorzenManager):
             )
 
     def _on_plugin_enable_event(self, event: Event) -> None:
-        """Handle plugin enable event.
-
-        Args:
-            event: The event object
-        """
         payload = event.payload
         plugin_name = payload.get('plugin_name')
-
         if not plugin_name:
-            self._logger.error(
-                'Invalid plugin enable event: Missing plugin_name',
-                extra={'event_id': event.event_id}
-            )
+            self._logger.error('Invalid plugin enable event: Missing plugin_name', extra={'event_id': event.event_id})
             return
 
-        try:
-            # Enable the plugin
-            success = self.enable_plugin(plugin_name)
+        # Check if plugin is already enabled to avoid infinite loop
+        if plugin_name in self._enabled_plugins:
+            # Plugin is already in enabled list, just load it if not loaded
+            try:
+                plugin_info = self._plugins[plugin_name]
+                if plugin_info.state not in (PluginState.LOADED, PluginState.ACTIVE):
+                    self.load_plugin(plugin_name)
+            except Exception as e:
+                self._logger.error(f"Failed to load already enabled plugin '{plugin_name}': {str(e)}",
+                                   extra={'plugin': plugin_name, 'error': str(e)})
+            return
 
-            # Load the plugin if enabled
+        # Normal flow for newly enabled plugins
+        try:
+            success = self.enable_plugin(plugin_name)
             if success:
                 self.load_plugin(plugin_name)
         except Exception as e:
-            self._logger.error(
-                f"Failed to enable plugin '{plugin_name}': {str(e)}",
-                extra={'plugin': plugin_name, 'error': str(e)}
-            )
+            self._logger.error(f"Failed to enable plugin '{plugin_name}': {str(e)}",
+                               extra={'plugin': plugin_name, 'error': str(e)})
 
     def _on_plugin_disable_event(self, event: Event) -> None:
         """Handle plugin disable event.
@@ -1803,22 +1784,21 @@ class PluginManager(QorzenManager):
         """
         payload = event.payload
         plugin_name = payload.get('plugin_name')
-
         if not plugin_name:
-            self._logger.error(
-                'Invalid plugin disable event: Missing plugin_name',
-                extra={'event_id': event.event_id}
-            )
+            self._logger.error('Invalid plugin disable event: Missing plugin_name', extra={'event_id': event.event_id})
             return
 
+        # Check if plugin is already disabled to avoid infinite loop
+        if plugin_name in self._disabled_plugins:
+            self._logger.debug(f"Plugin '{plugin_name}' is already disabled", extra={'plugin': plugin_name})
+            return
+
+        # Only proceed with disabling if not already disabled
         try:
-            # Disable the plugin
             self.disable_plugin(plugin_name)
         except Exception as e:
-            self._logger.error(
-                f"Failed to disable plugin '{plugin_name}': {str(e)}",
-                extra={'plugin': plugin_name, 'error': str(e)}
-            )
+            self._logger.error(f"Failed to disable plugin '{plugin_name}': {str(e)}",
+                               extra={'plugin': plugin_name, 'error': str(e)})
 
     def _on_plugin_update_event(self, event: Event) -> None:
         """Handle plugin update event.
@@ -1862,20 +1842,24 @@ class PluginManager(QorzenManager):
             key: Configuration key
             value: Configuration value
         """
+        if hasattr(self, '_is_updating_config') and self._is_updating_config:
+            return
+
         if key == 'plugins.autoload':
             self._auto_load = value
             self._logger.info(f'Plugin autoload set to {value}', extra={'autoload': value})
         elif key == 'plugins.enabled':
+            # Prevent recursive calls by checking what's changing
+            added = [p for p in value if p not in self._enabled_plugins]
             self._enabled_plugins = value
             self._logger.info(f'Updated enabled plugins list: {value}', extra={'enabled': value})
+            # Don't trigger enable events from config changes to prevent loops
         elif key == 'plugins.disabled':
             self._disabled_plugins = value
             self._logger.info(f'Updated disabled plugins list: {value}', extra={'disabled': value})
         elif key == 'plugins.directory':
-            self._logger.warning(
-                'Changing plugin directory requires restart to take effect',
-                extra={'directory': value}
-            )
+            self._logger.warning('Changing plugin directory requires restart to take effect',
+                                 extra={'directory': value})
 
     def get_all_plugins(self) -> Dict[str, PluginInfo]:
         """Get all plugins."""
