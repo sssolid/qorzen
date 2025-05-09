@@ -12,7 +12,7 @@ import psutil
 from prometheus_client import Counter, Gauge, Histogram, Summary, start_http_server
 
 from qorzen.core.base import QorzenManager
-from qorzen.core.thread_manager import TaskProgressReporter
+from qorzen.core.thread_manager import TaskProgressReporter, ThreadExecutionContext
 from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownError
 
 
@@ -213,15 +213,17 @@ class ResourceMonitoringManager(QorzenManager):
         system_metrics_task_id = self._thread_manager.schedule_periodic_task(
             interval=self._metrics_interval_seconds,
             func=self._collect_system_metrics,
-            task_id="system_metrics_collection",
+            task_id='system_metrics_collection',
+            execution_context=ThreadExecutionContext.MAIN_THREAD  # Add this parameter
         )
-        self._collection_tasks["system_metrics"] = system_metrics_task_id
+        self._collection_tasks['system_metrics'] = system_metrics_task_id
 
         # Uptime metrics collection
         uptime_task_id = self._thread_manager.schedule_periodic_task(
             interval=60,  # Every minute
             func=self._collect_uptime_metrics,
             task_id="uptime_metrics_collection",
+            execution_context=ThreadExecutionContext.MAIN_THREAD
         )
         self._collection_tasks["uptime"] = uptime_task_id
 
@@ -231,39 +233,38 @@ class ResourceMonitoringManager(QorzenManager):
             # CPU usage
             cpu_percent = psutil.cpu_percent(interval=1)
             if self._cpu_percent_gauge:
-                self._cpu_percent_gauge.set(cpu_percent)
+                def update_cpu_gauge():
+                    self._cpu_percent_gauge.set(cpu_percent)
+
+                self._thread_manager.run_on_main_thread(update_cpu_gauge)
 
             # Memory usage
             memory = psutil.virtual_memory()
             memory_percent = memory.percent
             if self._memory_percent_gauge:
-                self._memory_percent_gauge.set(memory_percent)
+                def update_memory_gauge():
+                    self._memory_percent_gauge.set(memory_percent)
+                self._thread_manager.run_on_main_thread(update_memory_gauge)
 
             # Disk usage (for the root/system partition)
             disk = psutil.disk_usage("/")
             disk_percent = disk.percent
             if self._disk_percent_gauge:
-                self._disk_percent_gauge.set(disk_percent)
+                def update_disk_gauge():
+                    self._disk_percent_gauge.set(disk_percent)
+                self._thread_manager.run_on_main_thread(update_disk_gauge)
 
             # Check for threshold violations
-            self._check_threshold("cpu_percent", cpu_percent)
-            self._check_threshold("memory_percent", memory_percent)
-            self._check_threshold("disk_percent", disk_percent)
+            self._check_threshold('cpu_percent', cpu_percent)
+            self._check_threshold('memory_percent', memory_percent)
+            self._check_threshold('disk_percent', disk_percent)
 
-            # Publish metrics event
-            self._event_bus.publish(
-                event_type="monitoring/metrics",
-                source="monitoring_manager",
-                payload={
-                    "cpu_percent": cpu_percent,
-                    "memory_percent": memory_percent,
-                    "disk_percent": disk_percent,
-                    "timestamp": time.time(),
-                },
-            )
-
+            # Publish the event
+            self._event_bus.publish(event_type='monitoring/metrics', source='monitoring_manager',
+                                    payload={'cpu_percent': cpu_percent, 'memory_percent': memory_percent,
+                                             'disk_percent': disk_percent, 'timestamp': time.time()})
         except Exception as e:
-            self._logger.error(f"Error collecting system metrics: {str(e)}")
+            self._logger.error(f'Error collecting system metrics: {str(e)}')
 
     def _collect_uptime_metrics(self, progress_reporter: TaskProgressReporter) -> None:
         """Collect application uptime metrics."""

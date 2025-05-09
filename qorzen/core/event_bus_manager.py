@@ -17,7 +17,7 @@ class EventBusManager(QorzenManager):
     to communicate via a pub/sub pattern.
     """
 
-    def __init__(self, config_manager: Any, logger_manager: Any) -> None:
+    def __init__(self, config_manager: Any, logger_manager: Any, thread_manager: Any) -> None:
         """Initialize the event bus manager.
 
         Args:
@@ -28,6 +28,7 @@ class EventBusManager(QorzenManager):
         self._config_manager = config_manager
         self._logger_manager = logger_manager
         self._logger = logger_manager.get_logger('event_bus')
+        self._thread_manager = thread_manager
 
         # Threading and queuing
         self._thread_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
@@ -89,24 +90,30 @@ class EventBusManager(QorzenManager):
                 manager_name=self.name
             ) from e
 
+    # In event_bus_manager.py
     def _event_worker(self) -> None:
-        """Event processing worker thread."""
         while self._running and (not self._stop_event.is_set()):
             try:
                 event, subscriptions = self._event_queue.get(timeout=0.1)
                 try:
+                    # Check if this event needs main thread handling
+                    needs_main_thread = EventType.requires_main_thread(event.event_type)
+
                     for subscription in subscriptions:
                         try:
-                            subscription.callback(event)
+                            # Process UI-related events on the main thread
+                            if needs_main_thread and self._thread_manager:
+                                self._thread_manager.run_on_main_thread(
+                                    lambda s=subscription, e=event: s.callback(e)
+                                )
+                            else:
+                                # Process other events normally
+                                subscription.callback(event)
                         except Exception as e:
-                            self._logger.error(
-                                f'Error in event handler for {event.event_type}: {str(e)}',
-                                extra={
-                                    'event_id': event.event_id,
-                                    'subscription_id': subscription.subscriber_id,
-                                    'error': str(e)
-                                }
-                            )
+                            self._logger.error(f'Error in event handler for {event.event_type}: {str(e)}',
+                                               extra={'event_id': event.event_id,
+                                                      'subscription_id': subscription.subscriber_id,
+                                                      'error': str(e)})
                 finally:
                     self._event_queue.task_done()
             except queue.Empty:

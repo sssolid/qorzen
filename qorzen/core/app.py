@@ -76,8 +76,8 @@ class ApplicationCore:
 
         steps.append(wrap(lambda: self._init_config(), 'configuration manager'))
         steps.append(wrap(lambda: self._init_logging(), 'logging manager'))
-        steps.append(wrap(lambda: self._init_event_bus(), 'event bus manager'))
         steps.append(wrap(lambda: self._init_thread_manager(), 'thread manager'))
+        steps.append(wrap(lambda: self._init_event_bus(), 'event bus manager'))
         steps.append(wrap(lambda: self._init_file_manager(), 'file manager'))
         steps.append(wrap(lambda: self._init_resource_manager(), 'resource manager'))
         steps.append(wrap(lambda: self._init_database_manager(), 'database manager'))
@@ -126,20 +126,21 @@ class ApplicationCore:
         self._logger = logging_manager.get_logger('app_core')
         self._logger.info('Starting Qorzen initialization')
 
-    def _init_event_bus(self):
-        config = self._managers['config']
-        logging = self._managers['logging']
-        event_bus_manager = EventBusManager(config, logging)
-        event_bus_manager.initialize()
-        self._managers['event_bus'] = event_bus_manager
-        logging.set_event_bus_manager(event_bus_manager)
-
     def _init_thread_manager(self):
         config = self._managers['config']
         logging = self._managers['logging']
         thread_manager = ThreadManager(config, logging)
         thread_manager.initialize()
         self._managers['thread_manager'] = thread_manager
+
+    def _init_event_bus(self):
+        config = self._managers['config']
+        logging = self._managers['logging']
+        thread_manager = self._managers['thread_manager']
+        event_bus_manager = EventBusManager(config, logging, thread_manager)
+        event_bus_manager.initialize()
+        self._managers['event_bus'] = event_bus_manager
+        logging.set_event_bus_manager(event_bus_manager)
 
     def _init_file_manager(self):
         config = self._managers['config']

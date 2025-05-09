@@ -600,6 +600,8 @@ class MainWindow(QMainWindow):
         Args:
             event: The event
         """
+        from qorzen.core.plugin_manager import PluginInfo
+
         # Get plugin information
         payload = event.payload
         plugin_name = payload.get('plugin_name', '')
@@ -612,13 +614,13 @@ class MainWindow(QMainWindow):
             return
 
         plugins = self._plugin_manager.get_all_plugins()
-        plugin_info = plugins.get(plugin_name)
+        plugin_info: PluginInfo = plugins.get(plugin_name)
 
         if not plugin_info:
             return
 
         # Check if plugin has UI components
-        instance = plugin_info.get('instance')
+        instance = plugin_info.metadata.get('instance')
 
         if not instance:
             return

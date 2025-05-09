@@ -14,6 +14,8 @@ class EventType(str, enum.Enum):
 
     # UI events
     UI_READY = "ui/ready"
+    UI_UPDATE = "ui/update"
+    UI_COMPONENT_ADDED = "ui/component/added"
 
     # Log events
     LOG_MESSAGE = "log/message"
@@ -47,6 +49,27 @@ class EventType(str, enum.Enum):
 
     # Custom events - for backward compatibility
     CUSTOM = "custom"
+
+    @classmethod
+    def requires_main_thread(cls, event_type: str) -> bool:
+        """Determine if an event type should be handled on the main thread."""
+        # UI events need main thread
+        if event_type.startswith("ui/"):
+            return True
+
+        # Log events that might update UI
+        if event_type.startswith("log/"):
+            return True
+
+        # Other specific events that need main thread
+        main_thread_events = {
+            "monitoring/alert",
+            "plugin/error",
+            "plugin/loaded",  # Could trigger UI updates
+            "plugin/unloaded"  # Could trigger UI updates
+        }
+
+        return event_type in main_thread_events
 
     @classmethod
     def plugin_specific(cls, plugin_name: str, event_name: str) -> str:

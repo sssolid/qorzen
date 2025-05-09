@@ -389,7 +389,7 @@ class VCdbExplorerPlugin(PluginInterface):
 
             error_widget.setLayout(error_layout)
 
-            ui_integration.add_tab(plugin_id=self.name, tab=error_widget, title='VCdb Explorer')
+            # ui_integration.add_tab(plugin_id=self.name, tab=error_widget, title='VCdb Explorer')
 
             if self._logger:
                 self._logger.warning('Added error tab due to database connection failure')
@@ -406,37 +406,37 @@ class VCdbExplorerPlugin(PluginInterface):
                 None
             )
 
-            ui_integration.add_tab(plugin_id=self.name, tab=self._tab, title='VCdb Explorer')
+            # ui_integration.add_tab(plugin_id=self.name, tab=self._tab, title='VCdb Explorer')
 
             # Add menu items
-            tools_menu = ui_integration.find_menu('&Tools')
-            if tools_menu:
-                menu = ui_integration.add_menu(
-                    plugin_id=self.name,
-                    title='VCdb Explorer',
-                    parent_menu=tools_menu
-                )
-
-                ui_integration.add_menu_action(
-                    plugin_id=self.name,
-                    menu=menu,
-                    text='Run Query',
-                    callback=self._run_query
-                )
-
-                ui_integration.add_menu_action(
-                    plugin_id=self.name,
-                    menu=menu,
-                    text='Open Documentation',
-                    callback=self._open_documentation
-                )
-
-                ui_integration.add_menu_action(
-                    plugin_id=self.name,
-                    menu=menu,
-                    text='Refresh Filters',
-                    callback=self._refresh_filters
-                )
+            # tools_menu = ui_integration.find_menu('&Tools')
+            # if tools_menu:
+            #     menu = ui_integration.add_menu(
+            #         plugin_id=self.name,
+            #         title='VCdb Explorer',
+            #         parent_menu=tools_menu
+            #     )
+            #
+            #     ui_integration.add_menu_action(
+            #         plugin_id=self.name,
+            #         menu=menu,
+            #         text='Run Query',
+            #         callback=self._run_query
+            #     )
+            #
+            #     ui_integration.add_menu_action(
+            #         plugin_id=self.name,
+            #         menu=menu,
+            #         text='Open Documentation',
+            #         callback=self._open_documentation
+            #     )
+            #
+            #     ui_integration.add_menu_action(
+            #         plugin_id=self.name,
+            #         menu=menu,
+            #         text='Refresh Filters',
+            #         callback=self._refresh_filters
+            #     )
 
             if self._logger:
                 self._logger.info('UI components set up successfully')

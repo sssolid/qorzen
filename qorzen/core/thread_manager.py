@@ -108,7 +108,7 @@ class QtTaskBridge(QObject):
         # Use DirectConnection to ensure immediate execution in the thread of the receiver
         self.executeOnMainThread.connect(
             self._execute_on_main_thread,
-            Qt.ConnectionType.DirectConnection
+            Qt.ConnectionType.QueuedConnection
         )
 
     @Slot(object, tuple, dict, object)
@@ -163,13 +163,11 @@ class TaskProgressReporter:
             percent: The progress percentage (0-100)
             message: Optional status message
         """
-        if self.execution_context == ThreadExecutionContext.MAIN_THREAD:
+        if self.thread_manager.is_main_thread():
             self.task_bridge.taskProgress.emit(self.task_id, percent, message)
         else:
-            # Need to queue this to happen on the main thread
             self.thread_manager.run_on_main_thread(
-                lambda: self.task_bridge.taskProgress.emit(self.task_id, percent, message)
-            )
+                lambda: self.task_bridge.taskProgress.emit(self.task_id, percent, message))
 
 
 class ThreadManager(QorzenManager):

@@ -176,7 +176,7 @@ class PluginCard(QFrame):
             True if the plugin is enabled, False otherwise
         """
         state = self.plugin_info.metadata.get("state", "").lower()
-        return state in ("active", "loaded") or self.plugin_info.metadata.get("metadata", {}).get("enabled", False)
+        return state in ("active", "loaded") or self.plugin_info.metadata.get("enabled", False)
 
     def _update_state(self, state: str) -> None:
         """Update the UI based on the plugin state.
