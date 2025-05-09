@@ -351,6 +351,27 @@ class DatabaseManager(QorzenManager):
             self._logger.info(f'Unregistered database connection: {name}')
             return True
 
+    def has_connection(self, name: str) -> bool:
+        """Check if a connection exists.
+    
+        Args:
+            name: The name of the connection to check
+    
+        Returns:
+            True if the connection exists, False otherwise
+        """
+        with self._connections_lock:
+            return name in self._connections
+
+    def get_connection_names(self) -> List[str]:
+        """Get the names of all registered connections.
+    
+        Returns:
+            A list of connection names
+        """
+        with self._connections_lock:
+            return list(self._connections.keys())
+
     def _get_connection(self, connection_name: Optional[str] = None) -> DatabaseConnection:
         """Get a database connection.
 
