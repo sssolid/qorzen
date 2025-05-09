@@ -1,0 +1,81 @@
+from __future__ import annotations
+import abc
+import threading
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable, TypeVar, Generic, TYPE_CHECKING
+from PySide6.QtCore import QObject, Signal
+if TYPE_CHECKING:
+    from qorzen.ui.integration import UIIntegration
+    from qorzen.core import RemoteServicesManager, SecurityManager, APIManager, CloudManager, LoggingManager, ConfigManager, DatabaseManager, EventBusManager, FileManager, ThreadManager
+@runtime_checkable
+class PluginInterface(Protocol):
+    name: str
+    version: str
+    description: str
+    author: str
+    dependencies: List[str]
+    def initialize(self, event_bus: 'EventBusManager', logger_provider: 'LoggingManager', config_provider: 'ConfigManager', file_manager: 'FileManager', thread_manager: 'ThreadManager', database_manager: 'DatabaseManager', remote_services_manager: 'RemoteServicesManager', security_manager: 'SecurityManager', api_manager: 'APIManager', cloud_manager: 'CloudManager', **kwargs: Any) -> None:
+        ...
+    def on_ui_ready(self, ui_integration: 'UIIntegration') -> None:
+        ...
+    def shutdown(self) -> None:
+        ...
+class BasePlugin(QObject):
+    name: str = 'base_plugin'
+    version: str = '0.0.0'
+    description: str = 'Base plugin'
+    author: str = 'Unknown'
+    display_name: Optional[str] = None
+    dependencies: List[str] = []
+    initialized = Signal()
+    ui_ready = Signal()
+    shutdown_started = Signal()
+    shutdown_completed = Signal()
+    def __init__(self) -> None:
+        super().__init__()
+        self._initialized = False
+        self._ui_initialized = False
+        self._shutdown = False
+        self._lock = threading.RLock()
+        self._event_bus: Optional['EventBusManager'] = None
+        self._logger: Optional[Any] = None
+        self._config: Optional['ConfigManager'] = None
+        self._file_manager: Optional['FileManager'] = None
+        self._thread_manager: Optional['ThreadManager'] = None
+        self._database_manager: Optional['DatabaseManager'] = None
+        self._remote_service_manager: Optional['RemoteServicesManager'] = None
+        self._security_manager: Optional['SecurityManager'] = None
+        self._api_manager: Optional['APIManager'] = None
+        self._cloud_manager: Optional['CloudManager'] = None
+    def initialize(self, event_bus: 'EventBusManager', logger_provider: 'LoggingManager', config_provider: 'ConfigManager', file_manager: 'FileManager', thread_manager: 'ThreadManager', database_manager: 'DatabaseManager', remote_services_manager: 'RemoteServicesManager', security_manager: 'SecurityManager', api_manager: 'APIManager', cloud_manager: 'CloudManager', **kwargs: Any) -> None:
+        with self._lock:
+            if self._initialized:
+                return
+            self._event_bus = event_bus
+            if logger_provider:
+                self._logger = logger_provider.get_logger(self.name)
+            self._config = config_provider
+            self._file_manager = file_manager
+            self._thread_manager = thread_manager
+            self._database_manager = database_manager
+            self._remote_service_manager = remote_services_manager
+            self._security_manager = security_manager
+            self._api_manager = api_manager
+            self._cloud_manager = cloud_manager
+            self._initialized = True
+        self.initialized.emit()
+    def on_ui_ready(self, ui_integration: 'UIIntegration') -> None:
+        with self._lock:
+            self._ui_initialized = True
+        self.ui_ready.emit()
+    def shutdown(self) -> None:
+        with self._lock:
+            if self._shutdown:
+                return
+            self._shutdown = True
+            self.shutdown_started.emit()
+            self._initialized = False
+            self._ui_initialized = False
+        self.shutdown_completed.emit()
+    def status(self) -> Dict[str, Any]:
+        with self._lock:
+            return {'name': self.name, 'version': self.version, 'description': self.description, 'initialized': self._initialized, 'ui_initialized': self._ui_initialized, 'shutdown': self._shutdown}
