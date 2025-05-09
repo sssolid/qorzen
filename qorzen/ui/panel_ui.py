@@ -34,7 +34,8 @@ class SidebarButton(QPushButton):
             checkable: Whether the button is checkable
         """
         super().__init__(parent)
-        self.setText(text)
+        self.text = text
+        self.setText(self.text)
         self.setIcon(icon)
         self.setIconSize(QSize(24, 24))
         self.setCheckable(checkable)
@@ -218,7 +219,7 @@ class Sidebar(QFrame):
             # Hide text on buttons
             for button in self._buttons:
                 button.setText("")
-                button.setToolTip(button.text())
+                button.setToolTip(button.text)
         else:
             # Expand
             self.setMinimumWidth(200)
@@ -227,7 +228,7 @@ class Sidebar(QFrame):
 
             # Show text on buttons
             for button in self._buttons:
-                button.setText(button.toolTip())
+                button.setText(button.text)
 
     def select_page(self, page_index: int) -> None:
         """Select a page by index.
