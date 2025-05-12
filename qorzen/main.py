@@ -67,46 +67,39 @@ def run_steps(steps: List[Callable[[], None]], on_complete: Callable[[], None],
 
 
 def start_ui(args: argparse.Namespace) -> int:
-    """Start the application UI.
+    """
+    Start the application UI.
 
     Args:
-        args: The command line arguments
+        args: Command line arguments
 
     Returns:
-        The application exit code
+        Exit code
     """
-    # Import after environment setup
     from qorzen.ui.panel_ui import MainWindow
     from qorzen.core.app import ApplicationCore
+    from qorzen.utils.qt_thread_debug import install_qt_thread_debug, uninstall_qt_thread_debug
+
+    # Install Qt threading debug if debugging is enabled
+    if args.debug:
+        install_qt_thread_debug(enable_logging=True)
+        print("Installed Qt threading debug - threading issues will be logged")
 
     app = QApplication.instance() or QApplication(sys.argv)
-    QIcon.setThemeName("breeze")
+    QIcon.setThemeName('breeze')
 
-    # Show splash screen
     splash_path = Path('resources/logos/qorzen.png').resolve().as_posix()
     splash = QSplashScreen(QPixmap(splash_path), Qt.WindowStaysOnTopHint)
     splash.show()
     app.processEvents()
 
-    # Create application core
     app_core = ApplicationCore(config_path=args.config)
 
     def update_progress(message: str, percent: int) -> None:
-        """Update splash screen with progress information.
-
-        Args:
-            message: The progress message
-            percent: The progress percentage
-        """
-        splash.showMessage(
-            f'{message} ({percent}%)',
-            Qt.AlignBottom | Qt.AlignCenter,
-            Qt.white
-        )
+        splash.showMessage(f'{message} ({percent}%)', Qt.AlignBottom | Qt.AlignCenter, Qt.white)
         app.processEvents()
 
     def on_complete() -> None:
-        """Handle successful initialization."""
         try:
             app_core.finalize_initialization()
         except Exception as e:
@@ -116,34 +109,31 @@ def start_ui(args: argparse.Namespace) -> int:
             app.exit(1)
             return
 
-        # Set application icon
         icon_path = Path('resources/logos/qorzen.ico').resolve().as_posix()
         app.setWindowIcon(QIcon(icon_path))
 
-        # Create and show main window
         main_window = MainWindow(app_core)
         app_core.set_main_window(main_window)
         main_window.show()
-
-        # Close splash screen
         splash.finish(main_window)
 
     def on_error(err: str) -> None:
-        """Handle initialization error.
-
-        Args:
-            err: The error message
-        """
         print(f'Initialization failed: {err}')
         traceback.print_exc()
         splash.close()
         app.exit(1)
 
-    # Get initialization steps and run them
     steps = app_core.get_initialization_steps(update_progress)
     QTimer.singleShot(0, lambda: run_steps(steps, on_complete, on_error))
 
-    return app.exec()
+    # Run the app and clean up debugging when done
+    exit_code = app.exec()
+
+    # Clean up Qt threading debug
+    if args.debug:
+        uninstall_qt_thread_debug()
+
+    return exit_code
 
 
 def handle_build_command(args: argparse.Namespace) -> int:

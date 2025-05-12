@@ -1,83 +1,57 @@
 from __future__ import annotations
+
 import abc
 import threading
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable, TypeVar, Generic, TYPE_CHECKING, Set, \
     Callable
+
 from PySide6.QtCore import QObject, Signal
+
+from qorzen.core.service_locator import ServiceLocator, ManagerType, inject
 
 if TYPE_CHECKING:
     from qorzen.ui.integration import UIIntegration
-    from qorzen.core import (
-        TaskManager, RemoteServicesManager, SecurityManager, APIManager, CloudManager,
-        LoggingManager, ConfigManager, DatabaseManager, EventBusManager,
-        FileManager, ThreadManager
-    )
+    from qorzen.core import TaskManager, RemoteServicesManager, SecurityManager, APIManager, CloudManager, \
+        LoggingManager, ConfigManager, DatabaseManager, EventBusManager, FileManager, ThreadManager
 
 
 @runtime_checkable
 class PluginInterface(Protocol):
-    """Interface that all plugins must implement.
+    """Protocol defining the interface that all plugins must implement."""
 
-    This protocol defines the required attributes and methods
-    that a plugin must have to be properly loaded by the PluginManager.
-    """
     name: str
     version: str
     description: str
     author: str
     dependencies: List[str]
 
-    def initialize(self,
-                   event_bus: 'EventBusManager',
-                   logger_provider: 'LoggingManager',
-                   config_provider: 'ConfigManager',
-                   file_manager: 'FileManager',
-                   thread_manager: 'ThreadManager',
-                   database_manager: 'DatabaseManager',
-                   remote_services_manager: 'RemoteServicesManager',
-                   security_manager: 'SecurityManager',
-                   api_manager: 'APIManager',
-                   cloud_manager: 'CloudManager',
-                   task_manager: 'TaskManager',
-                   **kwargs: Any) -> None:
-        """Initialize the plugin with core services.
+    def initialize(self, service_locator: ServiceLocator, **kwargs: Any) -> None:
+        """
+        Initialize the plugin with the service locator.
 
         Args:
-            event_bus: The event bus manager for publishing/subscribing to events.
-            logger_provider: The logging manager for creating loggers.
-            config_provider: The configuration manager for accessing configuration.
-            file_manager: The file manager for file operations.
-            thread_manager: The thread manager for thread operations.
-            database_manager: The database manager for database operations.
-            remote_services_manager: The remote services manager for remote services.
-            security_manager: The security manager for security operations.
-            api_manager: The API manager for API operations.
-            cloud_manager: The cloud manager for cloud operations.
-            task_manager: The task manager for managing background tasks.
-            **kwargs: Additional keyword arguments.
+            service_locator: Provides access to all system services
+            **kwargs: Additional initialization parameters
         """
         ...
 
     def on_ui_ready(self, ui_integration: 'UIIntegration') -> None:
-        """Called when the UI is ready and the plugin can add UI components.
+        """
+        Called when the UI is ready for plugin integration.
 
         Args:
-            ui_integration: The UI integration object for adding UI components.
+            ui_integration: UI integration interface for the plugin
         """
         ...
 
     def shutdown(self) -> None:
-        """Called when the plugin is being unloaded."""
+        """Perform cleanup operations before plugin is unloaded."""
         ...
 
 
 class BasePlugin(QObject):
-    """Base class for all plugins.
+    """Base class for Qorzen plugins with common functionality."""
 
-    Implements the PluginInterface protocol and provides
-    common functionality for all plugins.
-    """
-    # Plugin metadata
     name: str = 'base_plugin'
     version: str = '0.0.0'
     description: str = 'Base plugin'
@@ -85,21 +59,22 @@ class BasePlugin(QObject):
     display_name: Optional[str] = None
     dependencies: List[str] = []
 
-    # Signals for plugin events
+    # Signals
     initialized = Signal()
     ui_ready = Signal()
     shutdown_started = Signal()
     shutdown_completed = Signal()
 
     def __init__(self) -> None:
-        """Initialize the plugin."""
+        """Initialize the plugin base."""
         super().__init__()
         self._initialized = False
         self._ui_initialized = False
         self._shutdown = False
         self._lock = threading.RLock()
 
-        # Core services
+        # Services - will be initialized later
+        self._service_locator: Optional[ServiceLocator] = None
         self._event_bus: Optional['EventBusManager'] = None
         self._logger: Optional[Any] = None
         self._config: Optional['ConfigManager'] = None
@@ -115,151 +90,118 @@ class BasePlugin(QObject):
         self._registered_tasks: Set[str] = set()
         self._ui_registry = None
 
-    def initialize(self,
-                   application_core: Any,
-                   event_bus: 'EventBusManager',
-                   logger_provider: 'LoggingManager',
-                   config_provider: 'ConfigManager',
-                   file_manager: 'FileManager',
-                   thread_manager: 'ThreadManager',
-                   database_manager: 'DatabaseManager',
-                   remote_services_manager: 'RemoteServicesManager',
-                   security_manager: 'SecurityManager',
-                   api_manager: 'APIManager',
-                   cloud_manager: 'CloudManager',
-                   task_manager: 'TaskManager',
-                   **kwargs: Any) -> None:
-        """Initialize the plugin with core services.
+    def initialize(self, service_locator: ServiceLocator, **kwargs: Any) -> None:
+        """
+        Initialize the plugin with services from the service locator.
 
         Args:
-            application_core: The application core object for accessing core services.
-            event_bus: The event bus manager for publishing/subscribing to events.
-            logger_provider: The logging manager for creating loggers.
-            config_provider: The configuration manager for accessing configuration.
-            file_manager: The file manager for file operations.
-            thread_manager: The thread manager for thread operations.
-            database_manager: The database manager for database operations.
-            remote_services_manager: The remote services manager for remote services.
-            security_manager: The security manager for security operations.
-            api_manager: The API manager for API operations.
-            cloud_manager: The cloud manager for cloud operations.
-            task_manager: The task manager for managing background tasks.
-            **kwargs: Additional keyword arguments.
+            service_locator: Service locator containing all system services
+            **kwargs: Additional initialization parameters
         """
         with self._lock:
-            # Check if already initialized
             if self._initialized:
                 return
 
-            # Store core services
-            self._event_bus = event_bus
+            self._service_locator = service_locator
 
-            if logger_provider:
-                self._logger = logger_provider.get_logger(self.name)
+            # Get essential services
+            try:
+                self._event_bus = service_locator.get(ManagerType.EVENT_BUS)
 
-            self._application_core = application_core
-            self._config = config_provider
-            self._file_manager = file_manager
-            self._thread_manager = thread_manager
-            self._database_manager = database_manager
-            self._remote_service_manager = remote_services_manager
-            self._security_manager = security_manager
-            self._api_manager = api_manager
-            self._cloud_manager = cloud_manager
-            self._task_manager = task_manager
+                logger_provider = service_locator.get(ManagerType.LOGGING)
+                if logger_provider:
+                    self._logger = logger_provider.get_logger(self.name)
 
-            # Create UI registry
+                self._config = service_locator.get(ManagerType.CONFIG)
+                self._file_manager = service_locator.get(ManagerType.FILE)
+                self._thread_manager = service_locator.get(ManagerType.THREAD)
+                self._database_manager = service_locator.get(ManagerType.DATABASE)
+                self._remote_service_manager = service_locator.get(ManagerType.REMOTE_SERVICES)
+                self._security_manager = service_locator.get(ManagerType.SECURITY)
+                self._api_manager = service_locator.get(ManagerType.API)
+                self._cloud_manager = service_locator.get(ManagerType.CLOUD)
+                self._task_manager = service_locator.get(ManagerType.TASK)
+
+            except KeyError as e:
+                if self._logger:
+                    self._logger.warning(f"Could not find required service: {e}")
+
+            # Get application core from kwargs
+            self._application_core = kwargs.get('application_core')
+
+            # Initialize UI registry with thread manager
             from qorzen.plugin_system.ui_registry import UIComponentRegistry
-            self._ui_registry = UIComponentRegistry(
-                self.name,
-                thread_manager=self._thread_manager,
-            )
+            self._ui_registry = UIComponentRegistry(self.name, thread_manager=self._thread_manager)
 
-            # Mark as initialized
             self._initialized = True
 
-        # Emit signal
         self.initialized.emit()
 
     def on_ui_ready(self, ui_integration: 'UIIntegration') -> None:
-        """Called when the UI is ready and the plugin can add UI components.
+        """
+        Called when the UI is ready for plugin integration.
 
         Args:
-            ui_integration: The UI integration object for adding UI components.
+            ui_integration: UI integration interface for the plugin
         """
         with self._lock:
-            # Track UI initialization
             self._ui_initialized = True
-
-        # Emit signal
         self.ui_ready.emit()
 
     def register_task(self, task_name: str, function: Callable, **properties: Any) -> None:
         """
-        Register a plugin task with the task manager.
+        Register a task with the task manager.
 
         Args:
             task_name: Name of the task
             function: Function to execute
-            **properties: Task properties including:
-                - long_running: If True, runs on worker thread
-                - needs_progress: If True, provides progress reporting
-                - priority: Task priority (LOW, NORMAL, HIGH, CRITICAL)
-                - description: Human-readable description
+            **properties: Task properties
         """
         if not self._task_manager:
             if self._logger:
-                self._logger.warning(
-                    f"Task manager not available, can't register task {task_name}"
-                )
+                self._logger.warning(f"Task manager not available, can't register task {task_name}")
             return
 
-        self._task_manager.register_task(
-            self.name, task_name, function, **properties
-        )
+        self._task_manager.register_task(self.name, task_name, function, **properties)
         self._registered_tasks.add(task_name)
 
         if self._logger:
-            self._logger.debug(f"Registered task: {task_name}")
+            self._logger.debug(f'Registered task: {task_name}')
 
     def execute_task(self, task_name: str, *args: Any, **kwargs: Any) -> Optional[str]:
         """
         Execute a registered task.
 
         Args:
-            task_name: Name of the registered task to execute
-            *args: Task arguments
-            **kwargs: Task keyword arguments
+            task_name: Name of the task to execute
+            *args: Arguments for the task
+            **kwargs: Keyword arguments for the task
 
         Returns:
-            str: Task ID if execution started, None otherwise
+            Task ID if successful, None otherwise
         """
         if not self._task_manager:
             if self._logger:
-                self._logger.warning(
-                    f"Task manager not available, can't execute task {task_name}"
-                )
+                self._logger.warning(f"Task manager not available, can't execute task {task_name}")
             return None
 
         if task_name not in self._registered_tasks:
             if self._logger:
-                self._logger.warning(f"Task not registered: {task_name}")
+                self._logger.warning(f'Task not registered: {task_name}')
             return None
 
-        return self._task_manager.execute_task(
-            self.name, task_name, *args, **kwargs
-        )
+        return self._task_manager.execute_task(self.name, task_name, *args, **kwargs)
 
-    def register_ui_component(self, component: Any, component_type: str = "widget") -> Any:
+    def register_ui_component(self, component: Any, component_type: str = 'widget') -> Any:
         """
-        Register a UI component for automatic cleanup.
+        Register a UI component with the UI registry.
 
         Args:
             component: UI component to register
-            component_type: Type of component (widget, menu, action, dock, dialog)
+            component_type: Type of component
 
         Returns:
-            The registered component (for chaining)
+            Registered component
         """
         if self._ui_registry:
             return self._ui_registry.register(component, component_type)
@@ -267,43 +209,37 @@ class BasePlugin(QObject):
 
     def get_registered_tasks(self) -> Set[str]:
         """
-        Get names of all registered tasks.
+        Get the set of registered task names.
 
         Returns:
-            set: Set of task names
+            Set of registered task names
         """
         return self._registered_tasks.copy()
 
     def shutdown(self) -> None:
-        """Called when the plugin is being unloaded."""
+        """Perform cleanup operations before plugin is unloaded."""
         with self._lock:
-            # Check if already shut down
             if self._shutdown:
                 return
 
-            # Mark as shutting down
             self._shutdown = True
-
-            # Emit signal
             self.shutdown_started.emit()
 
             if self._ui_registry:
-                self._ui_registry.shutdown()
+                self._ui_registry.cleanup()
 
             self._registered_tasks.clear()
-
-            # Reset initialized state
             self._initialized = False
             self._ui_initialized = False
 
-        # Emit completion signal
         self.shutdown_completed.emit()
 
     def status(self) -> Dict[str, Any]:
-        """Get the status of the plugin.
+        """
+        Get the current status of the plugin.
 
         Returns:
-            A dictionary with plugin status information.
+            Dictionary with plugin status information
         """
         with self._lock:
             return {

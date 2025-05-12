@@ -111,6 +111,19 @@ class Sidebar(QFrame):
 
         return button
 
+    def remove_button(self, button_index: int) -> None:
+        """
+        Remove a button from the sidebar.
+
+        Args:
+            button_index: Index of the button to remove
+        """
+        if 0 <= button_index < len(self._buttons):
+            button = self._buttons[button_index]
+            self.buttons_layout.removeWidget(button)
+            button.deleteLater()
+            self._buttons.pop(button_index)
+
     def add_separator(self) -> None:
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
@@ -202,6 +215,24 @@ class PanelLayout(QWidget):
         self._pages[name] = widget
         self._page_names.append(name)
         return index
+
+    def remove_page(self, page_name: str) -> None:
+        """
+        Remove a page and its sidebar button.
+
+        Args:
+            page_name: Name of the page to remove
+        """
+        if page_name in self._page_names:
+            index = self._page_names.index(page_name)
+            self._page_names.remove(page_name)
+
+            # Remove the sidebar button
+            self.sidebar.remove_button(index)
+
+            # Remove from the pages dictionary
+            if page_name in self._pages:
+                del self._pages[page_name]
 
     def add_separator(self) -> None:
         self.sidebar.add_separator()
@@ -477,16 +508,28 @@ class MainWindow(QMainWindow):
             )
 
     def _remove_plugin_ui_components(self, plugin_name: str) -> None:
-        page_name = f'plugin_{plugin_name}'
-        self.panel_layout.select_page('dashboard')
+        """
+        Remove UI components for a plugin.
 
+        Args:
+            plugin_name: Name of the plugin to remove components for
+        """
+        # First find and remove the panel page
+        page_name = f"plugin_{plugin_name}"
+        self.panel_layout.select_page("dashboard")  # Select default page
+
+        # Remove the page
         page = self.panel_layout.content_area.get_page_by_name(page_name)
         if page:
             index = self.panel_layout.content_area.indexOf(page)
             if index >= 0:
                 self.panel_layout.content_area.removeWidget(page)
                 page.deleteLater()
-                self._logger.info(f'Removed UI components for plugin: {plugin_name}')
+
+                # Also remove the button from sidebar
+                self.panel_layout.remove_page(page_name)
+
+                self._logger.info(f"Removed UI components for plugin: {plugin_name}")
 
     def closeEvent(self, event: Any) -> None:
         self._update_timer.stop()

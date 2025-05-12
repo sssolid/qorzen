@@ -134,22 +134,24 @@ class QtTaskBridge(QObject):
 
 
 class TaskProgressReporter:
-    """Helper class for reporting task progress."""
+    """
+    Class for reporting progress from tasks.
 
-    def __init__(
-            self,
-            task_id: str,
-            task_bridge: QtTaskBridge,
-            execution_context: ThreadExecutionContext,
-            thread_manager: ThreadManager
-    ) -> None:
-        """Initialize the progress reporter.
+    This class provides thread-safe methods to report progress from tasks,
+    ensuring that all UI updates happen on the main thread.
+    """
+
+    def __init__(self, task_id: str, task_bridge: QtTaskBridge,
+                 execution_context: ThreadExecutionContext,
+                 thread_manager: 'ThreadManager') -> None:
+        """
+        Initialize a TaskProgressReporter.
 
         Args:
-            task_id: The ID of the task
-            task_bridge: The Qt task bridge
-            execution_context: The execution context of the task
-            thread_manager: The thread manager
+            task_id: ID of the task
+            task_bridge: Bridge for Qt signal/slot connections
+            execution_context: Execution context (worker thread or main thread)
+            thread_manager: Thread manager instance for thread-safe operations
         """
         self.task_id = task_id
         self.task_bridge = task_bridge
@@ -157,17 +159,26 @@ class TaskProgressReporter:
         self.thread_manager = thread_manager
 
     def report_progress(self, percent: int, message: str = "") -> None:
-        """Report task progress.
+        """
+        Report task progress.
+
+        This method ensures that progress reporting always happens on the main thread,
+        preventing Qt threading issues.
 
         Args:
-            percent: The progress percentage (0-100)
-            message: Optional status message
+            percent: Progress percentage (0-100)
+            message: Progress message
         """
-        if self.thread_manager.is_main_thread():
+
+        # Create a function to emit the signal on the main thread
+        def emit_progress():
             self.task_bridge.taskProgress.emit(self.task_id, percent, message)
+
+        # Ensure we're on the main thread
+        if self.thread_manager.is_main_thread():
+            emit_progress()
         else:
-            self.thread_manager.run_on_main_thread(
-                lambda: self.task_bridge.taskProgress.emit(self.task_id, percent, message))
+            self.thread_manager.run_on_main_thread(emit_progress)
 
 
 class ThreadManager(QorzenManager):

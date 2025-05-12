@@ -6,21 +6,19 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union, cast
 
 class UIComponentRegistry:
     """
-    Manages UI components for a plugin.
+    Registry for tracking UI components created by a plugin for proper cleanup.
 
-    Responsibilities:
-    - Track UI components
-    - Facilitate safe cleanup
-    - Ensure main thread operations
+    This class ensures that when a plugin is unloaded, all of its UI components
+    are properly removed from the system.
     """
 
-    def __init__(self, plugin_name: str, thread_manager: Optional[Any] = None):
+    def __init__(self, plugin_name: str, thread_manager: Optional[Any] = None) -> None:
         """
-        Initialize the UI registry.
+        Initialize the UI component registry.
 
         Args:
-            plugin_name: Name of the plugin this registry belongs to
-            thread_manager: Thread manager for main thread operations
+            plugin_name: Name of the plugin that owns this registry
+            thread_manager: Thread manager for ensuring UI operations run on the main thread
         """
         self.plugin_name = plugin_name
         self.thread_manager = thread_manager
@@ -29,6 +27,7 @@ class UIComponentRegistry:
         self.actions: Set[Any] = set()
         self.dock_widgets: Set[Any] = set()
         self.dialogs: Set[Any] = set()
+        self.sidebar_buttons: Set[Any] = set()  # Added to track sidebar buttons
         self.lock = threading.RLock()
 
     def register(self, component: Any, component_type: str = "widget") -> Any:
@@ -36,11 +35,12 @@ class UIComponentRegistry:
         Register a UI component for tracking.
 
         Args:
-            component: The UI component to register
-            component_type: Type of component (widget, menu, action, dock, dialog)
+            component: UI component to register
+            component_type: Type of the component
+                            ("widget", "menu", "action", "dock", "dialog", "sidebar_button")
 
         Returns:
-            The registered component (for chaining)
+            The registered component
         """
         with self.lock:
             if component_type == "menu":
@@ -51,86 +51,94 @@ class UIComponentRegistry:
                 self.dock_widgets.add(component)
             elif component_type == "dialog":
                 self.dialogs.add(component)
+            elif component_type == "sidebar_button":
+                self.sidebar_buttons.add(component)
             else:
                 self.widgets.add(component)
 
         return component
 
     def cleanup(self) -> None:
-        """
-        Clean up all registered UI components.
-
-        Ensures cleanup happens on the main thread.
-        """
-        # Ensure on main thread
-        if self.thread_manager and not self.thread_manager.is_main_thread():
+        """Clean up all registered UI components, ensuring main thread execution."""
+        # If we have a thread manager and we're not on the main thread,
+        # execute this method on the main thread
+        if self.thread_manager and (not self.thread_manager.is_main_thread()):
             self.thread_manager.execute_on_main_thread_sync(self.cleanup)
             return
 
         with self.lock:
-            # Remove actions first
+            # Clean up actions
             for action in list(self.actions):
                 try:
-                    # Check if action is in a menu
                     parent = action.parentWidget()
                     if parent and hasattr(parent, "removeAction"):
                         parent.removeAction(action)
-
                     if hasattr(action, "deleteLater"):
                         action.deleteLater()
                 except Exception:
-                    pass  # Ignore errors during cleanup
+                    pass
             self.actions.clear()
 
-            # Remove menus
+            # Clean up menus
             for menu in list(self.menus):
                 try:
-                    # Check if menu is in a menubar
                     parent = menu.parentWidget()
                     if parent and hasattr(parent, "removeAction"):
                         parent.removeAction(menu.menuAction())
-
                     if hasattr(menu, "deleteLater"):
                         menu.deleteLater()
                 except Exception:
                     pass
             self.menus.clear()
 
-            # Remove dock widgets
+            # Clean up dock widgets
             for dock in list(self.dock_widgets):
                 try:
                     if hasattr(dock, "parentWidget") and dock.parentWidget():
                         if hasattr(dock.parentWidget(), "removeDockWidget"):
                             dock.parentWidget().removeDockWidget(dock)
-
                     if hasattr(dock, "deleteLater"):
                         dock.deleteLater()
                 except Exception:
                     pass
             self.dock_widgets.clear()
 
-            # Remove dialogs
+            # Clean up dialogs
             for dialog in list(self.dialogs):
                 try:
                     if hasattr(dialog, "reject"):
                         dialog.reject()
-
                     if hasattr(dialog, "deleteLater"):
                         dialog.deleteLater()
                 except Exception:
                     pass
             self.dialogs.clear()
 
-            # Remove other widgets
+            # Clean up sidebar buttons
+            for button in list(self.sidebar_buttons):
+                try:
+                    parent = button.parentWidget()
+                    if parent and hasattr(parent, "layout") and parent.layout():
+                        parent.layout().removeWidget(button)
+                    if hasattr(button, "deleteLater"):
+                        button.deleteLater()
+                except Exception:
+                    pass
+            self.sidebar_buttons.clear()
+
+            # Clean up widgets
             for widget in list(self.widgets):
                 try:
-                    # Check if widget is in a layout
                     parent = widget.parentWidget()
                     if parent and hasattr(parent, "layout") and parent.layout():
                         parent.layout().removeWidget(widget)
-
                     if hasattr(widget, "deleteLater"):
                         widget.deleteLater()
                 except Exception:
                     pass
             self.widgets.clear()
+
+    # Added shutdown alias for compatibility with current code
+    def shutdown(self) -> None:
+        """Alias for cleanup method to maintain backward compatibility."""
+        self.cleanup()
