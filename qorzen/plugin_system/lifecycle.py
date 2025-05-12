@@ -131,20 +131,71 @@ class LifecycleManager:
         with self._ui_integrations_lock:
             return self._ui_integrations.get(plugin_name)
 
-    def cleanup_ui(self, plugin_name: str) -> None:
-        """Clean up UI components for a plugin."""
-        ui_integration = None
-        with self._ui_integrations_lock:
-            ui_integration = self._ui_integrations.get(plugin_name)
-            if ui_integration:
-                del self._ui_integrations[plugin_name]
+    def cleanup_ui(self, plugin_name: str) -> bool:
+        """
+        Clean up UI components for a plugin.
 
-        if ui_integration:
-            try:
-                ui_integration.cleanup_plugin(plugin_name)
-                self.log(f"Cleaned up UI integration for plugin '{plugin_name}'", 'debug')
-            except Exception as e:
-                self.log(f"Error during UI cleanup for plugin '{plugin_name}': {str(e)}", 'error')
+        Args:
+            plugin_name: The name of the plugin to clean up
+
+        Returns:
+            bool: True if cleanup was successful, False otherwise
+        """
+
+        lifecycle_manager = get_lifecycle_manager()
+        thread_manager = getattr(lifecycle_manager, '_thread_manager', None)
+
+        # Ensure on main thread
+        if thread_manager and not thread_manager.is_main_thread():
+            return thread_manager.execute_on_main_thread_sync(cleanup_ui, plugin_name)
+
+        try:
+            # Check for UIComponentRegistry in plugin instance
+            plugin_manager = getattr(lifecycle_manager, '_plugin_manager', None)
+            if plugin_manager:
+                with plugin_manager._plugins_lock:
+                    plugin_info = plugin_manager._plugins.get(plugin_name)
+                    if plugin_info and plugin_info.instance:
+                        if hasattr(plugin_info.instance, '_ui_registry'):
+                            plugin_info.instance._ui_registry.cleanup()
+
+            # Standard UI integration cleanup
+            with lifecycle_manager._ui_integrations_lock:
+                ui_integration = lifecycle_manager._ui_integrations.get(plugin_name)
+                if ui_integration:
+                    try:
+                        ui_integration.cleanup_plugin(plugin_name)
+                        del lifecycle_manager._ui_integrations[plugin_name]
+                        lifecycle_manager.log(
+                            f"Cleaned up UI integration for plugin '{plugin_name}'",
+                            'debug'
+                        )
+                    except Exception as e:
+                        lifecycle_manager.log(
+                            f"Error during UI cleanup for plugin '{plugin_name}': {str(e)}",
+                            'error'
+                        )
+
+            # Reset UI ready state
+            with lifecycle_manager._ui_integrations_lock:
+                if plugin_name in lifecycle_manager._ui_ready_events:
+                    lifecycle_manager._ui_ready_events[plugin_name].clear()
+
+            # Remove from UI setup plugins
+            if hasattr(lifecycle_manager, '_ui_setup_plugins'):
+                with getattr(lifecycle_manager, '_ui_lock', threading.RLock()):
+                    if hasattr(lifecycle_manager,
+                               '_ui_setup_plugins') and plugin_name in lifecycle_manager._ui_setup_plugins:
+                        lifecycle_manager._ui_setup_plugins.remove(plugin_name)
+
+            return True
+
+        except Exception as e:
+            lifecycle_manager.log(
+                f"Error in cleanup_ui for plugin '{plugin_name}': {str(e)}",
+                'error'
+            )
+            return False
 
     def execute_hook(self, hook: PluginLifecycleHook, plugin_name: str, manifest: PluginManifest,
                      plugin_instance: Optional[Any] = None, context: Optional[Dict[str, Any]] = None) -> Any:

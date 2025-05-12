@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Type, cast, Callable
 
 from qorzen.core.base import QorzenManager
 from qorzen.core.event_model import EventType
+from qorzen.core.task_manager import TaskManager
 from qorzen.ui.integration import MainWindowIntegration
 
 # Import managers
@@ -60,7 +61,7 @@ class ApplicationCore:
 
     def get_initialization_steps(self, progress_callback):
         steps = []
-        total_steps = 14
+        total_steps = 15
         index_ref = {'index': 1}  # Use mutable reference to avoid scoping issues
 
         def wrap(step_fn, name):
@@ -85,6 +86,7 @@ class ApplicationCore:
         steps.append(wrap(lambda: self._init_security_manager(), 'security manager'))
         steps.append(wrap(lambda: self._init_api_manager(), 'API manager'))
         steps.append(wrap(lambda: self._init_cloud_manager(), 'cloud manager'))
+        steps.append(wrap(lambda: self._init_task_manager(), 'task manager'))
         steps.append(wrap(lambda: self._init_plugin_components(), 'plugin system components'))
         steps.append(wrap(lambda: self._configure_extension_registry(), 'extension registry'))
         steps.append(wrap(lambda: self._init_plugin_manager(), 'plugin manager'))
@@ -201,6 +203,16 @@ class ApplicationCore:
         cloud_manager.initialize()
         self._managers['cloud_manager'] = cloud_manager
 
+    def _init_task_manager(self) -> None:
+        """Initialize the task management system"""
+        config = self._managers['config']
+        logging = self._managers['logging']
+        event_bus = self._managers['event_bus']
+        thread = self._managers['thread_manager']
+        task_manager = TaskManager(application_core=self, logger_manager=logging, config_manager=config, thread_manager=thread, event_bus_manager=event_bus)
+        task_manager.initialize()
+        self._managers['task_manager'] = task_manager
+
     def _init_plugin_components(self):
         config = self._managers['config']
         repository_manager = self._initialize_plugin_repository(config)
@@ -225,6 +237,7 @@ class ApplicationCore:
         security = self._managers['security_manager']
         api = self._managers['api_manager']
         cloud = self._managers['cloud_manager']
+        task_manager = self._managers['task_manager']
 
         plugin_manager = PluginManager(
             application_core=self,
@@ -237,7 +250,8 @@ class ApplicationCore:
             remote_service_manager=remote,
             security_manager=security,
             api_manager=api,
-            cloud_manager=cloud
+            cloud_manager=cloud,
+            task_manager=task_manager
         )
         plugin_manager.repository_manager = self._plugin_repository
         plugin_manager.plugin_installer = self._plugin_installer

@@ -20,7 +20,7 @@ from PySide6.QtCore import QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QIcon, QColor, QPalette
 
 from qorzen.core.event_model import EventType, Event
-from qorzen.ui.integration import UIIntegration, TabComponent
+from qorzen.ui.integration import UIIntegration
 from qorzen.plugin_system.interface import BasePlugin
 
 

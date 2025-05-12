@@ -10,8 +10,10 @@ from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMenuBar,
     QPushButton, QScrollArea, QSizePolicy, QSpacerItem, QSplitter, QStackedWidget,
-    QVBoxLayout, QWidget
+    QVBoxLayout, QWidget, QDockWidget, QToolBar
 )
+
+from qorzen.ui.task_monitor import TaskMonitorWidget
 
 
 class SidebarButton(QPushButton):
@@ -257,6 +259,18 @@ class MainWindow(QMainWindow):
         self._create_plugins_page()
         self._create_logs_page()
 
+        # Create task monitor dock widget
+        self.task_monitor = TaskMonitorWidget(self._event_bus)
+        self.task_dock = QDockWidget("Tasks", self)
+        self.task_dock.setWidget(self.task_monitor)
+        self.task_dock.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.RightDockWidgetArea)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.task_dock)
+
+        # Add task monitor toggle to view menu
+        view_menu = self.menuBar().findChild(QMenu, "View")
+        if view_menu:
+            view_menu.addAction(self.task_dock.toggleViewAction())
+
         self.panel_layout.add_separator()
         self.statusBar().showMessage('Ready')
 
@@ -483,6 +497,10 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, '_plugin_error_handler') and self._plugin_error_handler:
             self._plugin_error_handler.cleanup()
+
+        # Clean up task monitor
+        if hasattr(self, 'task_monitor'):
+            self.task_monitor.cleanup()
 
         if self._app_core:
             self._app_core.shutdown()

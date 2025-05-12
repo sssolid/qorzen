@@ -208,13 +208,13 @@ class VCdbExplorerPlugin(BasePlugin):
         self._connection_registered = False
         self._icon_path: Optional[str] = None
 
-    def initialize(self, event_bus: EventBusManager, logger_provider: LoggingManager,
+    def initialize(self, application_core: Any, event_bus: EventBusManager, logger_provider: LoggingManager,
                    config_provider: ConfigManager, file_manager: FileManager,
                    thread_manager: ThreadManager, database_manager: DatabaseManager,
                    remote_services_manager: RemoteServicesManager, security_manager: SecurityManager,
                    api_manager: APIManager, cloud_manager: CloudManager, **kwargs: Any) -> None:
         """Initialize the plugin with core services."""
-        super().initialize(event_bus, logger_provider, config_provider, file_manager,
+        super().initialize(application_core, event_bus, logger_provider, config_provider, file_manager,
                            thread_manager, database_manager, remote_services_manager,
                            security_manager, api_manager, cloud_manager, **kwargs)
 

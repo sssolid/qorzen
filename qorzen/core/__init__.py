@@ -13,3 +13,4 @@ from qorzen.core.plugin_manager import PluginManager
 from qorzen.core.remote_manager import RemoteServicesManager
 from qorzen.core.security_manager import SecurityManager
 from qorzen.core.thread_manager import ThreadManager
+from qorzen.core.task_manager import TaskManager

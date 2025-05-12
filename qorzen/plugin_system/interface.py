@@ -1,13 +1,14 @@
 from __future__ import annotations
 import abc
 import threading
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable, TypeVar, Generic, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable, TypeVar, Generic, TYPE_CHECKING, Set, \
+    Callable
 from PySide6.QtCore import QObject, Signal
 
 if TYPE_CHECKING:
     from qorzen.ui.integration import UIIntegration
     from qorzen.core import (
-        RemoteServicesManager, SecurityManager, APIManager, CloudManager,
+        TaskManager, RemoteServicesManager, SecurityManager, APIManager, CloudManager,
         LoggingManager, ConfigManager, DatabaseManager, EventBusManager,
         FileManager, ThreadManager
     )
@@ -37,6 +38,7 @@ class PluginInterface(Protocol):
                    security_manager: 'SecurityManager',
                    api_manager: 'APIManager',
                    cloud_manager: 'CloudManager',
+                   task_manager: 'TaskManager',
                    **kwargs: Any) -> None:
         """Initialize the plugin with core services.
 
@@ -51,6 +53,7 @@ class PluginInterface(Protocol):
             security_manager: The security manager for security operations.
             api_manager: The API manager for API operations.
             cloud_manager: The cloud manager for cloud operations.
+            task_manager: The task manager for managing background tasks.
             **kwargs: Additional keyword arguments.
         """
         ...
@@ -107,8 +110,13 @@ class BasePlugin(QObject):
         self._security_manager: Optional['SecurityManager'] = None
         self._api_manager: Optional['APIManager'] = None
         self._cloud_manager: Optional['CloudManager'] = None
+        self._task_manager: Optional['TaskManager'] = None
+
+        self._registered_tasks: Set[str] = set()
+        self._ui_registry = None
 
     def initialize(self,
+                   application_core: Any,
                    event_bus: 'EventBusManager',
                    logger_provider: 'LoggingManager',
                    config_provider: 'ConfigManager',
@@ -119,10 +127,12 @@ class BasePlugin(QObject):
                    security_manager: 'SecurityManager',
                    api_manager: 'APIManager',
                    cloud_manager: 'CloudManager',
+                   task_manager: 'TaskManager',
                    **kwargs: Any) -> None:
         """Initialize the plugin with core services.
 
         Args:
+            application_core: The application core object for accessing core services.
             event_bus: The event bus manager for publishing/subscribing to events.
             logger_provider: The logging manager for creating loggers.
             config_provider: The configuration manager for accessing configuration.
@@ -133,6 +143,7 @@ class BasePlugin(QObject):
             security_manager: The security manager for security operations.
             api_manager: The API manager for API operations.
             cloud_manager: The cloud manager for cloud operations.
+            task_manager: The task manager for managing background tasks.
             **kwargs: Additional keyword arguments.
         """
         with self._lock:
@@ -146,6 +157,7 @@ class BasePlugin(QObject):
             if logger_provider:
                 self._logger = logger_provider.get_logger(self.name)
 
+            self._application_core = application_core
             self._config = config_provider
             self._file_manager = file_manager
             self._thread_manager = thread_manager
@@ -154,6 +166,14 @@ class BasePlugin(QObject):
             self._security_manager = security_manager
             self._api_manager = api_manager
             self._cloud_manager = cloud_manager
+            self._task_manager = task_manager
+
+            # Create UI registry
+            from qorzen.plugin_system.ui_registry import UIComponentRegistry
+            self._ui_registry = UIComponentRegistry(
+                self.name,
+                thread_manager=self._thread_manager,
+            )
 
             # Mark as initialized
             self._initialized = True
@@ -174,6 +194,86 @@ class BasePlugin(QObject):
         # Emit signal
         self.ui_ready.emit()
 
+    def register_task(self, task_name: str, function: Callable, **properties: Any) -> None:
+        """
+        Register a plugin task with the task manager.
+
+        Args:
+            task_name: Name of the task
+            function: Function to execute
+            **properties: Task properties including:
+                - long_running: If True, runs on worker thread
+                - needs_progress: If True, provides progress reporting
+                - priority: Task priority (LOW, NORMAL, HIGH, CRITICAL)
+                - description: Human-readable description
+        """
+        if not self._task_manager:
+            if self._logger:
+                self._logger.warning(
+                    f"Task manager not available, can't register task {task_name}"
+                )
+            return
+
+        self._task_manager.register_task(
+            self.name, task_name, function, **properties
+        )
+        self._registered_tasks.add(task_name)
+
+        if self._logger:
+            self._logger.debug(f"Registered task: {task_name}")
+
+    def execute_task(self, task_name: str, *args: Any, **kwargs: Any) -> Optional[str]:
+        """
+        Execute a registered task.
+
+        Args:
+            task_name: Name of the registered task to execute
+            *args: Task arguments
+            **kwargs: Task keyword arguments
+
+        Returns:
+            str: Task ID if execution started, None otherwise
+        """
+        if not self._task_manager:
+            if self._logger:
+                self._logger.warning(
+                    f"Task manager not available, can't execute task {task_name}"
+                )
+            return None
+
+        if task_name not in self._registered_tasks:
+            if self._logger:
+                self._logger.warning(f"Task not registered: {task_name}")
+            return None
+
+        return self._task_manager.execute_task(
+            self.name, task_name, *args, **kwargs
+        )
+
+    def register_ui_component(self, component: Any, component_type: str = "widget") -> Any:
+        """
+        Register a UI component for automatic cleanup.
+
+        Args:
+            component: UI component to register
+            component_type: Type of component (widget, menu, action, dock, dialog)
+
+        Returns:
+            The registered component (for chaining)
+        """
+        if self._ui_registry:
+            return self._ui_registry.register(component, component_type)
+        return component
+
+    def get_registered_tasks(self) -> Set[str]:
+        """
+        Get names of all registered tasks.
+
+        Returns:
+            set: Set of task names
+        """
+        return self._registered_tasks.copy()
+
     def shutdown(self) -> None:
         """Called when the plugin is being unloaded."""
         with self._lock:
@@ -186,6 +286,11 @@ class BasePlugin(QObject):
 
             # Emit signal
             self.shutdown_started.emit()
+
+            if self._ui_registry:
+                self._ui_registry.shutdown()
+
+            self._registered_tasks.clear()
 
             # Reset initialized state
             self._initialized = False

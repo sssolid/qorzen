@@ -82,7 +82,8 @@ class PluginManager(QorzenManager):
             remote_service_manager: Any,
             security_manager: Any,
             api_manager: Any,
-            cloud_manager: Any
+            cloud_manager: Any,
+            task_manager: Any
     ) -> None:
         """Initialize the plugin manager."""
         super().__init__(name='PluginManager')
@@ -104,6 +105,7 @@ class PluginManager(QorzenManager):
         self._security_manager = security_manager
         self._api_manager = api_manager
         self._cloud_manager = cloud_manager
+        self._task_manager = task_manager
 
         # Plugin tracking
         self._plugins: Dict[str, PluginInfo] = {}
@@ -785,6 +787,7 @@ class PluginManager(QorzenManager):
                             plugin_name=plugin_name,
                             manifest=plugin_info.manifest,
                             context={
+                                'application_core': self._application_core,
                                 'plugin_manager': self,
                                 'config_manager': self._config_manager,
                                 'logger_manager': self._logger_manager,
@@ -795,7 +798,8 @@ class PluginManager(QorzenManager):
                                 'remote_services_manager': self._remote_services_manager,
                                 'security_manager': self._security_manager,
                                 'api_manager': self._api_manager,
-                                'cloud_manager': self._cloud_manager
+                                'cloud_manager': self._cloud_manager,
+                                'task_manager': self._task_manager,
                             }
                         )
                     except Exception as e:
@@ -828,6 +832,7 @@ class PluginManager(QorzenManager):
             # Initialize plugin
             if hasattr(plugin_info.instance, 'initialize'):
                 plugin_info.instance.initialize(
+                    application_core=self._application_core,
                     event_bus=self._event_bus,
                     logger_provider=self._logger_manager,
                     config_provider=self._config_manager,
@@ -837,7 +842,8 @@ class PluginManager(QorzenManager):
                     remote_services_manager=self._remote_services_manager,
                     security_manager=self._security_manager,
                     api_manager=self._api_manager,
-                    cloud_manager=self._cloud_manager
+                    cloud_manager=self._cloud_manager,
+                    task_manager=self._task_manager
                 )
 
             # Register extensions from manifest
@@ -880,7 +886,7 @@ class PluginManager(QorzenManager):
                             manifest=plugin_info.manifest,
                             plugin_instance=plugin_info.instance,
                             context={
-                                'app_core': self._application_core,
+                                'application_core': self._application_core,
                                 'plugin_manager': self,
                                 'config_manager': self._config_manager,
                                 'logger_manager': self._logger_manager,
@@ -891,7 +897,8 @@ class PluginManager(QorzenManager):
                                 'remote_services_manager': self._remote_services_manager,
                                 'security_manager': self._security_manager,
                                 'api_manager': self._api_manager,
-                                'cloud_manager': self._cloud_manager
+                                'cloud_manager': self._cloud_manager,
+                                'task_manager': self._task_manager,
                             }
                         )
                     except Exception as e:
