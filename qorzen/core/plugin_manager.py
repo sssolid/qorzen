@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union,
 from qorzen.core.base import QorzenManager
 from qorzen.core.event_model import EventType, Event
 from qorzen.core.service_locator import ServiceLocator, ManagerType
-from qorzen.core.thread_manager import ThreadExecutionContext, TaskProgressReporter
+from qorzen.core.thread_manager import ThreadExecutionContext, TaskProgressReporter, TaskPriority
 from qorzen.ui.integration import UIIntegration, MainWindowIntegration
 from qorzen.plugin_system.interface import PluginInterface
 from qorzen.plugin_system.manifest import PluginManifest, PluginLifecycleHook
@@ -1689,41 +1689,54 @@ class PluginManager(QorzenManager):
             )
 
     def _on_plugin_enable_event(self, event: Event) -> None:
-        """Handle plugin enable event."""
         payload = event.payload
         plugin_name = payload.get('plugin_name')
-
         if not plugin_name:
-            self._logger.error(
-                'Invalid plugin enable event: Missing plugin_name',
-                extra={'event_id': event.event_id}
-            )
+            self._logger.error('Invalid plugin enable event: Missing plugin_name', extra={'event_id': event.event_id})
             return
 
-        # If already enabled, try to load
         if plugin_name in self._enabled_plugins:
             try:
                 with self._plugins_lock:
                     plugin_info = self._plugins[plugin_name]
                     if plugin_info.state not in (PluginState.LOADED, PluginState.ACTIVE):
-                        self.load_plugin(plugin_name)
+                        # Create a wrapper function that ignores the progress_reporter
+                        def load_plugin_wrapper(plugin_name_to_load, progress_reporter=None):
+                            return self.load_plugin(plugin_name_to_load)
+
+                        # Load plugin asynchronously
+                        self._thread_manager.submit_task(
+                            load_plugin_wrapper,
+                            plugin_name,
+                            name=f'load_plugin_{plugin_name}',
+                            submitter='plugin_manager',
+                            priority=TaskPriority.HIGH,
+                            execution_context=ThreadExecutionContext.WORKER_THREAD
+                        )
             except Exception as e:
-                self._logger.error(
-                    f"Failed to load already enabled plugin '{plugin_name}': {str(e)}",
-                    extra={'plugin': plugin_name, 'error': str(e)}
-                )
+                self._logger.error(f"Failed to load already enabled plugin '{plugin_name}': {str(e)}",
+                                   extra={'plugin': plugin_name, 'error': str(e)})
             return
 
-        # Otherwise enable and load
         try:
             success = self.enable_plugin(plugin_name)
             if success:
-                self.load_plugin(plugin_name)
+                # Create a wrapper function that ignores the progress_reporter
+                def load_plugin_wrapper(plugin_name_to_load, progress_reporter=None):
+                    return self.load_plugin(plugin_name_to_load)
+
+                # Load plugin asynchronously
+                self._thread_manager.submit_task(
+                    load_plugin_wrapper,
+                    plugin_name,
+                    name=f'load_plugin_{plugin_name}',
+                    submitter='plugin_manager',
+                    priority=TaskPriority.HIGH,
+                    execution_context=ThreadExecutionContext.WORKER_THREAD
+                )
         except Exception as e:
-            self._logger.error(
-                f"Failed to enable plugin '{plugin_name}': {str(e)}",
-                extra={'plugin': plugin_name, 'error': str(e)}
-            )
+            self._logger.error(f"Failed to enable plugin '{plugin_name}': {str(e)}",
+                               extra={'plugin': plugin_name, 'error': str(e)})
 
     def _on_plugin_disable_event(self, event: Event) -> None:
         """Handle plugin disable event."""

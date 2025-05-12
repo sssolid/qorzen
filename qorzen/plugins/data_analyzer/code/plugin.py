@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QL
     QTreeWidgetItem, QFileDialog, QTextEdit, QTabWidget, QSplitter, QGroupBox, QGridLayout, QMessageBox, QProgressBar
 from PySide6.QtGui import QIcon, QFont
 from qorzen.core.service_locator import ServiceLocator, ManagerType, inject
-from qorzen.core.thread_manager import TaskPriority, ThreadExecutionContext
+from qorzen.core.thread_manager import TaskPriority, ThreadExecutionContext, TaskProgressReporter
 from qorzen.plugin_system.interface import BasePlugin
 
 
@@ -244,15 +244,10 @@ class DataAnalyzerPlugin(BasePlugin):
     def initialize(self, service_locator: ServiceLocator, **kwargs: Any) -> None:
         super().initialize(service_locator, **kwargs)
 
-        # We'll only register the main analysis task - no UI update tasks
-        self.register_task(
-            'analyze_dataset',
-            self._analyze_dataset_task,
-            long_running=True,
-            needs_progress=True,
-            priority=TaskPriority.NORMAL,
-            description='Analyze dataset with progress reporting'
-        )
+        self.register_task('analyze_dataset', self._analyze_dataset_task,
+                           long_running=True, needs_progress=True,
+                           priority=TaskPriority.NORMAL,
+                           description='Thread-safe analyze dataset')
 
         if self._logger:
             self._logger.info(f'{self.name} plugin initialized')
@@ -283,29 +278,59 @@ class DataAnalyzerPlugin(BasePlugin):
         super().on_ui_ready(ui_integration)
 
     def analyze_dataset(self, file_path: str, analysis_type: str, signals: ProgressSignals) -> None:
-        """Start dataset analysis task with signal connections."""
-        self.execute_task('analyze_dataset', file_path, analysis_type, signals)
+        """
+        Analyze a dataset asynchronously.
 
-    def _analyze_dataset_task(self, file_path: str, analysis_type: str, signals: ProgressSignals) -> DatasetSummary:
-        """Perform dataset analysis in a worker thread."""
+        Instead of passing the signals object to the worker thread,
+        we'll use a callback function that safely handles the signals.
+        """
+
+        # Create a proxy function to handle the progress updates safely
+        def on_progress_update(result_type: str, *args: Any) -> None:
+            """Handle progress updates and results from the worker thread."""
+            if not self._thread_manager:
+                return
+
+            def main_thread_handler():
+                if result_type == "progress":
+                    progress, message = args
+                    signals.progress.emit(progress, message)
+                elif result_type == "result":
+                    summary = args[0]
+                    signals.result.emit(summary)
+                elif result_type == "error":
+                    error_msg = args[0]
+                    signals.error.emit(error_msg)
+
+            # Ensure this runs on the main thread
+            if self._thread_manager.is_main_thread():
+                main_thread_handler()
+            else:
+                self._thread_manager.run_on_main_thread(main_thread_handler)
+
+        # Execute the task with the proxy callback
+        self.execute_task('analyze_dataset', file_path, analysis_type, on_progress_update)
+
+    def _analyze_dataset_task(self, file_path: str, analysis_type: str,
+                                   progress_callback: Callable,
+                                   progress_reporter: Optional[TaskProgressReporter] = None) -> None:
+        """Thread-safe version of the dataset analysis task."""
         try:
-            # Create a thread-safe progress reporter
+            # Report progress through the callback
             def report_progress(progress: int, message: str) -> None:
-                # Emit signal to update UI on main thread
-                signals.progress.emit(progress, message)
+                if progress_callback:
+                    progress_callback("progress", progress, message)
+                if isinstance(progress_reporter, TaskProgressReporter):
+                    progress_reporter.report_progress(progress, message)
 
-            # Initial progress
             report_progress(0, 'Starting analysis...')
 
-            # Basic file validation
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f'File not found: {file_path}')
 
-            # Read and parse file
             file_name = os.path.basename(file_path)
             file_content = self._file_manager.read_text(file_path)
             lines = file_content.splitlines()
-
             if not lines:
                 raise ValueError('File is empty')
 
@@ -314,31 +339,26 @@ class DataAnalyzerPlugin(BasePlugin):
 
             report_progress(10, 'Reading dataset...')
 
-            # Process data rows
+            # Rest of the analysis code remains the same...
             data = []
             for i, row in enumerate(data_rows):
                 values = row.split(',')
                 if len(values) != len(header):
                     continue
-
                 row_data = {header[j]: values[j] for j in range(len(header))}
                 data.append(row_data)
-
                 if i % 100 == 0:
                     progress = 10 + min(30, int(i / len(data_rows) * 30))
                     report_progress(progress, f'Parsing data rows... ({i}/{len(data_rows)})')
 
             report_progress(40, 'Analyzing data...')
-
-            # Simulate processing time
-            time.sleep(1)
+            time.sleep(1)  # Simulate work
 
             # Analyze columns
             column_stats = {}
             for col in header:
                 col_stats = {}
                 try:
-                    # Try numeric analysis
                     values = [float(row[col]) for row in data if row[col].strip()]
                     if values:
                         col_stats['min'] = min(values)
@@ -346,18 +366,16 @@ class DataAnalyzerPlugin(BasePlugin):
                         col_stats['mean'] = sum(values) / len(values)
                         col_stats['count'] = len(values)
                 except ValueError:
-                    # Fall back to text analysis
                     values = [row[col] for row in data if row[col].strip()]
                     if values:
                         col_stats['count'] = len(values)
                         col_stats['unique'] = len(set(values))
                         col_stats['most_common'] = max(set(values), key=values.count)
-
                 column_stats[col] = col_stats
 
             report_progress(70, 'Generating summary...')
 
-            # Generate report text
+            # Generate details
             details = f'Dataset Analysis Report\n'
             details += f'=====================\n\n'
             details += f'File: {file_name}\n'
@@ -376,7 +394,6 @@ class DataAnalyzerPlugin(BasePlugin):
             if analysis_type == 'Correlation Analysis':
                 description += ' Correlation analysis has been performed between numeric columns.'
 
-            # Create summary object
             stats = {
                 'description': description,
                 'column_stats': column_stats,
@@ -393,18 +410,15 @@ class DataAnalyzerPlugin(BasePlugin):
 
             report_progress(100, 'Analysis complete')
 
-            # Emit result signal to update UI on main thread
-            signals.result.emit(summary)
-
-            return summary
+            # Return the summary through the callback
+            progress_callback("result", summary)
 
         except Exception as e:
             if self._logger:
                 self._logger.error(f'Error analyzing dataset: {str(e)}', exc_info=True)
 
-            # Emit error signal to update UI on main thread
-            signals.error.emit(str(e))
-            raise
+            # Report the error through the callback
+            progress_callback("error", str(e))
 
     def shutdown(self) -> None:
         if self._logger:

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget, QDockWidget, QToolBar
 )
 
+from qorzen.core.thread_manager import ThreadExecutionContext
 from qorzen.ui.task_monitor import TaskMonitorWidget
 
 
@@ -404,19 +405,60 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Ready - Last update: {time.strftime('%H:%M:%S')}")
 
     def _on_plugin_state_change(self, plugin_name: str, enable: bool) -> None:
+        """
+        Handle plugin state change request from the UI.
+
+        Args:
+            plugin_name: Name of the plugin to enable/disable
+            enable: Whether to enable (True) or disable (False) the plugin
+        """
         if not self._plugin_manager:
             return
+
         try:
+            # First make UI changes to reflect the pending change
+            plugins_view = self.panel_layout.content_area.get_page_by_name('plugins')
+            if plugins_view and hasattr(plugins_view, '_plugin_cards'):
+                if plugin_name in plugins_view._plugin_cards:
+                    card = plugins_view._plugin_cards[plugin_name]
+                    # Keep the checkbox checked/unchecked based on user action
+                    card.enable_checkbox.setChecked(enable)
+                    if enable:
+                        card.status_label.setText('Status: Loading...')
+                        card.status_label.setStyleSheet('font-weight: bold; color: #17a2b8;')
+
+            # Then process the state change
             if enable:
-                # Only call enable_plugin, remove direct call to load_plugin
-                # The event handler will take care of loading
+                # Enable the plugin but load it asynchronously
                 self._plugin_manager.enable_plugin(plugin_name)
-                # Remove: self._plugin_manager.load_plugin(plugin_name)
+
+                # Create a wrapper function that ignores the progress_reporter
+                def load_plugin_wrapper(plugin_name_to_load, progress_reporter=None):
+                    return self._plugin_manager.load_plugin(plugin_name_to_load)
+
+                # Submit asynchronous task to load the plugin
+                thread_manager = self._app_core.get_manager('thread_manager')
+                if thread_manager:
+                    thread_manager.submit_task(
+                        load_plugin_wrapper,
+                        plugin_name,
+                        name=f'load_plugin_{plugin_name}',
+                        submitter='main_window',
+                        execution_context=ThreadExecutionContext.WORKER_THREAD
+                    )
             elif self._plugin_manager.unload_plugin(plugin_name):
                 self._plugin_manager.disable_plugin(plugin_name)
+
         except Exception as e:
             self._logger.error(f'Error changing plugin state: {str(e)}',
                                extra={'plugin_name': plugin_name, 'enable': enable})
+
+            # Revert UI state on error
+            plugins_view = self.panel_layout.content_area.get_page_by_name('plugins')
+            if plugins_view and hasattr(plugins_view, '_plugin_cards'):
+                if plugin_name in plugins_view._plugin_cards:
+                    card = plugins_view._plugin_cards[plugin_name]
+                    card.enable_checkbox.setChecked(not enable)
 
     def _on_plugin_reload(self, plugin_name: str) -> None:
         if not self._plugin_manager:

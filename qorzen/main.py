@@ -78,11 +78,11 @@ def start_ui(args: argparse.Namespace) -> int:
     """
     from qorzen.ui.panel_ui import MainWindow
     from qorzen.core.app import ApplicationCore
-    from qorzen.utils.qt_thread_debug import install_qt_thread_debug, uninstall_qt_thread_debug
+    from qorzen.utils.qt_thread_debug import install_enhanced_thread_debug, uninstall_enhanced_thread_debug
 
     # Install Qt threading debug if debugging is enabled
     if args.debug:
-        install_qt_thread_debug(enable_logging=True)
+        install_enhanced_thread_debug(enable_logging=True)
         print("Installed Qt threading debug - threading issues will be logged")
 
     app = QApplication.instance() or QApplication(sys.argv)
@@ -131,7 +131,7 @@ def start_ui(args: argparse.Namespace) -> int:
 
     # Clean up Qt threading debug
     if args.debug:
-        uninstall_qt_thread_debug()
+        uninstall_enhanced_thread_debug()
 
     return exit_code
 

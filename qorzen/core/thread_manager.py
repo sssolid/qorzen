@@ -539,6 +539,23 @@ class ThreadManager(QorzenManager):
 
             raise ThreadManagerError(f"Failed to submit task: {str(e)}", thread_id=task_id) from e
 
+    def safely_emit_signal(self, signal: Signal, *args: Any) -> None:
+        """
+        Safely emit a Qt signal from any thread, ensuring it happens on the main thread.
+
+        Args:
+            signal: The Qt signal to emit
+            *args: Arguments to pass to the signal
+        """
+
+        def do_emit():
+            signal.emit(*args)
+
+        if self.is_main_thread():
+            do_emit()
+        else:
+            self.run_on_main_thread(do_emit)
+
     def _process_task_result(self, task_id: str, result: TaskResult) -> None:
         """Process the result of a task.
 
