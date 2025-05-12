@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union,
 from qorzen.core.base import QorzenManager
 from qorzen.core.event_model import EventType, Event
 from qorzen.core.service_locator import ServiceLocator, ManagerType
-from qorzen.core.thread_manager import ThreadExecutionContext, TaskProgressReporter, TaskPriority
+from qorzen.core.thread_manager import TaskPriority
 from qorzen.ui.integration import UIIntegration, MainWindowIntegration
 from qorzen.plugin_system.interface import PluginInterface
 from qorzen.plugin_system.manifest import PluginManifest, PluginLifecycleHook
@@ -312,7 +312,7 @@ class PluginManager(QorzenManager):
             for name, info in active_plugins:
                 self._setup_plugin_ui(name, info)
 
-    def _setup_plugin_ui(self, plugin_name: str, plugin_info: PluginInfo, progress_reporter: Optional[TaskProgressReporter]) -> None:
+    def _setup_plugin_ui(self, plugin_name: str, plugin_info: PluginInfo, progress_reporter: Any) -> None:
         """Set up UI for a plugin."""
         with self._ui_lock:
             if plugin_name in self._ui_setup_plugins:
@@ -851,8 +851,7 @@ class PluginManager(QorzenManager):
                         plugin_name,
                         plugin_info,
                         name=f'setup_ui_{plugin_name}',
-                        submitter='plugin_manager',
-                        execution_context=ThreadExecutionContext.MAIN_THREAD
+                        submitter='plugin_manager'
                     )
 
             # Update plugin state
@@ -1711,7 +1710,6 @@ class PluginManager(QorzenManager):
                             name=f'load_plugin_{plugin_name}',
                             submitter='plugin_manager',
                             priority=TaskPriority.HIGH,
-                            execution_context=ThreadExecutionContext.WORKER_THREAD
                         )
             except Exception as e:
                 self._logger.error(f"Failed to load already enabled plugin '{plugin_name}': {str(e)}",
@@ -1732,7 +1730,6 @@ class PluginManager(QorzenManager):
                     name=f'load_plugin_{plugin_name}',
                     submitter='plugin_manager',
                     priority=TaskPriority.HIGH,
-                    execution_context=ThreadExecutionContext.WORKER_THREAD
                 )
         except Exception as e:
             self._logger.error(f"Failed to enable plugin '{plugin_name}': {str(e)}",

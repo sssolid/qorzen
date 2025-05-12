@@ -4,56 +4,45 @@ from typing import Any, Dict, Optional
 
 
 class QorzenError(Exception):
-    """Base exception for all Qorzen errors.
+    """Base exception for all Qorzen errors."""
 
-    All custom exceptions in the Qorzen system should inherit from this class
-    to ensure consistent error handling and logging.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *args: Any,
-        code: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
-    ) -> None:
-        """Initialize a QorzenError.
+    def __init__(self, message: str, **kwargs: Any) -> None:
+        """
+        Initialize exception.
 
         Args:
-            message: A descriptive error message.
-            *args: Additional positional arguments to pass to the parent Exception.
-            code: An optional error code for programmatic identification.
-            details: An optional dictionary with additional error details.
-            **kwargs: Additional keyword arguments to pass to the parent Exception.
+            message: Error message
+            **kwargs: Additional error information
         """
-        self.code = code or self.__class__.__name__
-        self.details = details or {}
-        super().__init__(message, *args, **kwargs)
+        self.message = message
+        self.details = kwargs
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        """String representation."""
+        return f"{self.message}"
 
 
 class ManagerError(QorzenError):
-    """Base exception for all manager-related errors."""
+    """Base exception for manager-related errors."""
 
-    def __init__(
-        self,
-        message: str,
-        *args: Any,
-        manager_name: Optional[str] = None,
-        **kwargs: Any,
-    ) -> None:
-        """Initialize a ManagerError.
+    def __init__(self, message: str, manager_name: Optional[str] = None, **kwargs: Any) -> None:
+        """
+        Initialize manager error.
 
         Args:
-            message: A descriptive error message.
-            *args: Additional positional arguments to pass to the parent Exception.
-            manager_name: The name of the manager that raised the error.
-            **kwargs: Additional keyword arguments to pass to the parent Exception.
+            message: Error message
+            manager_name: Name of the affected manager
+            **kwargs: Additional error information
         """
-        details = kwargs.pop("details", {})
-        if manager_name:
-            details["manager_name"] = manager_name
-        super().__init__(message, *args, details=details, **kwargs)
+        super().__init__(message, manager_name=manager_name, **kwargs)
+        self.manager_name = manager_name
+
+    def __str__(self) -> str:
+        """String representation."""
+        if self.manager_name:
+            return f"{self.message} (Manager: {self.manager_name})"
+        return super().__str__()
 
 
 class ManagerInitializationError(ManagerError):
@@ -176,24 +165,63 @@ class SecurityError(QorzenError):
         super().__init__(message, *args, details=details, **kwargs)
 
 
-class ThreadManagerError(QorzenError):
-    """Exception raised for thread management-related errors."""
+class ThreadManagerError(ManagerError):
+    """Error in thread manager."""
 
-    def __init__(
-        self, message: str, *args: Any, thread_id: Optional[str] = None, **kwargs: Any
-    ) -> None:
-        """Initialize a ThreadManagerError.
+    def __init__(self, message: str, thread_id: Optional[str] = None, **kwargs: Any) -> None:
+        """
+        Initialize thread manager error.
 
         Args:
-            message: A descriptive error message.
-            *args: Additional positional arguments to pass to the parent Exception.
-            thread_id: The ID of the thread that caused the error.
-            **kwargs: Additional keyword arguments to pass to the parent Exception.
+            message: Error message
+            thread_id: Identifier of affected thread
+            **kwargs: Additional error information
         """
-        details = kwargs.pop("details", {})
-        if thread_id:
-            details["thread_id"] = thread_id
-        super().__init__(message, *args, details=details, **kwargs)
+        super().__init__(message, manager_name="ThreadManager", thread_id=thread_id, **kwargs)
+        self.thread_id = thread_id
+
+    def __str__(self) -> str:
+        """String representation."""
+        if self.thread_id:
+            return f"{self.message} (Thread: {self.thread_id})"
+        return super().__str__()
+
+
+class ThreadingError(QorzenError):
+    """Error related to threading."""
+
+    def __init__(self, message: str, thread_name: Optional[str] = None, **kwargs: Any) -> None:
+        """
+        Initialize threading error.
+
+        Args:
+            message: Error message
+            thread_name: Name of affected thread
+            **kwargs: Additional error information
+        """
+        super().__init__(message, thread_name=thread_name, **kwargs)
+        self.thread_name = thread_name
+
+    def __str__(self) -> str:
+        """String representation."""
+        if self.thread_name:
+            return f"{self.message} (Thread: {self.thread_name})"
+        return super().__str__()
+
+
+class WrongThreadError(ThreadingError):
+    """Error when accessing UI elements from wrong thread."""
+
+    def __init__(self, message: str = "UI operation attempted from wrong thread",
+                 **kwargs: Any) -> None:
+        """
+        Initialize wrong thread error.
+
+        Args:
+            message: Error message
+            **kwargs: Additional error information
+        """
+        super().__init__(message, **kwargs)
 
 
 class FileError(QorzenError):

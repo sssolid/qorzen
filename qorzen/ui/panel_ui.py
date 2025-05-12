@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget, QDockWidget, QToolBar
 )
 
-from qorzen.core.thread_manager import ThreadExecutionContext
 from qorzen.ui.task_monitor import TaskMonitorWidget
 
 
@@ -443,8 +442,7 @@ class MainWindow(QMainWindow):
                         load_plugin_wrapper,
                         plugin_name,
                         name=f'load_plugin_{plugin_name}',
-                        submitter='main_window',
-                        execution_context=ThreadExecutionContext.WORKER_THREAD
+                        submitter='main_window'
                     )
             elif self._plugin_manager.unload_plugin(plugin_name):
                 self._plugin_manager.disable_plugin(plugin_name)
