@@ -662,42 +662,52 @@ class PluginManager(QorzenManager):
         return plugin_info
 
     def _load_enabled_plugins(self) -> None:
-        """Load all enabled plugins in proper dependency order."""
+        """
+        Load enabled plugins asynchronously to prevent UI freezing
+        """
         if not self.plugin_installer:
-            # Legacy loading
+            # No plugin installer available, load plugins directly
             for plugin_name, plugin_info in self._plugins.items():
                 if not plugin_info.dependencies and self._is_plugin_enabled(plugin_name):
-                    self.load_plugin(plugin_name)
+                    # Use async loading instead of direct loading
+                    self.load_plugin_async(plugin_name)
 
             for plugin_name, plugin_info in self._plugins.items():
                 if plugin_info.dependencies and self._is_plugin_enabled(plugin_name):
-                    self.load_plugin(plugin_name)
+                    # Use async loading instead of direct loading
+                    self.load_plugin_async(plugin_name)
         else:
-            # Enhanced loading with dependency resolution
             try:
+                # Use the plugin installer to get the loading order
                 plugin_manifests = {}
                 with self._plugins_lock:
                     for plugin_name, plugin_info in self._plugins.items():
                         if self._is_plugin_enabled(plugin_name) and plugin_info.manifest:
                             plugin_manifests[plugin_name] = plugin_info.manifest
 
+                # Get the loading order from the installer
                 loading_order = self.plugin_installer.get_loading_order()
+
+                # Load plugins in the correct order, but asynchronously
                 for plugin_name in loading_order:
                     with self._plugins_lock:
                         if plugin_name in self._plugins and self._is_plugin_enabled(plugin_name):
-                            self.load_plugin(plugin_name)
+                            # Use async loading instead of direct loading
+                            self.load_plugin_async(plugin_name)
+
             except Exception as e:
                 self._logger.error(f'Failed to load plugins in dependency order: {str(e)}')
                 self._logger.warning('Falling back to legacy plugin loading method')
 
-                # Legacy loading fallback
                 for plugin_name, plugin_info in self._plugins.items():
                     if not plugin_info.dependencies and self._is_plugin_enabled(plugin_name):
-                        self.load_plugin(plugin_name)
+                        # Use async loading instead of direct loading
+                        self.load_plugin_async(plugin_name)
 
                 for plugin_name, plugin_info in self._plugins.items():
                     if plugin_info.dependencies and self._is_plugin_enabled(plugin_name):
-                        self.load_plugin(plugin_name)
+                        # Use async loading instead of direct loading
+                        self.load_plugin_async(plugin_name)
 
     def _is_plugin_enabled(self, plugin_name: str) -> bool:
         """Check if a plugin is enabled."""
@@ -926,6 +936,269 @@ class PluginManager(QorzenManager):
                 f"Failed to load plugin '{plugin_name}': {str(e)}",
                 plugin_name=plugin_name
             ) from e
+
+    def load_plugin_async(self, plugin_name: str) -> None:
+        """
+        Asynchronously load a plugin without blocking the UI
+        """
+        if not self._initialized:
+            if self._logger:
+                self._logger.error(f"Cannot load plugin '{plugin_name}' - Plugin Manager not initialized")
+            return
+
+        with self._plugins_lock:
+            if plugin_name not in self._plugins:
+                if self._logger:
+                    self._logger.error(f"Plugin '{plugin_name}' not found")
+                return
+
+            plugin_info = self._plugins[plugin_name]
+            if plugin_info.state in (PluginState.LOADED, PluginState.ACTIVE):
+                if self._logger:
+                    self._logger.debug(f"Plugin '{plugin_name}' is already loaded")
+                return
+
+            lifecycle_state = get_plugin_state(plugin_name)
+            if lifecycle_state in (PluginLifecycleState.LOADING,
+                                   PluginLifecycleState.INITIALIZING,
+                                   PluginLifecycleState.INITIALIZED,
+                                   PluginLifecycleState.ACTIVE):
+                if self._logger:
+                    self._logger.debug(f"Plugin '{plugin_name}' is already being loaded")
+                return
+
+            if plugin_name in self._disabled_plugins:
+                if self._logger:
+                    self._logger.warning(f"Plugin '{plugin_name}' is disabled and cannot be loaded")
+                return
+
+            # Mark plugin as loading
+            set_plugin_state(plugin_name, PluginLifecycleState.LOADING)
+
+        # Start a task to load the plugin asynchronously
+        if self._thread_manager:
+            task_id = self._thread_manager.submit_task(
+                self._load_plugin_task,
+                plugin_name,
+                name=f"load_plugin_{plugin_name}",
+                submitter="plugin_manager",
+                priority=TaskPriority.HIGH
+            )
+
+            if self._logger:
+                self._logger.debug(f"Started asynchronous load task for plugin '{plugin_name}' with ID {task_id}")
+        else:
+            # Fall back to synchronous load if there's no thread manager
+            try:
+                self.load_plugin(plugin_name)
+            except Exception as e:
+                if self._logger:
+                    self._logger.error(f"Failed to load plugin '{plugin_name}': {str(e)}")
+
+    def _load_plugin_task(self, plugin_name: str, progress_reporter: Any = None) -> bool:
+        """
+        Worker thread task to load a plugin
+        """
+        try:
+            if progress_reporter:
+                progress_reporter.report_progress(0, f"Loading plugin '{plugin_name}'...")
+
+            # Load dependencies first
+            with self._plugins_lock:
+                if plugin_name not in self._plugins:
+                    if self._logger:
+                        self._logger.error(f"Plugin '{plugin_name}' not found")
+                    return False
+
+                plugin_info = self._plugins[plugin_name]
+
+            dependencies_loaded = True
+            for dependency in plugin_info.dependencies:
+                if dependency == 'core':
+                    continue
+
+                with self._plugins_lock:
+                    if dependency not in self._plugins:
+                        plugin_info.state = PluginState.FAILED
+                        plugin_info.error = f"Dependency '{dependency}' not found"
+                        set_plugin_state(plugin_name, PluginLifecycleState.FAILED)
+
+                        if self._logger:
+                            self._logger.error(
+                                f"Failed to load plugin '{plugin_name}': Dependency '{dependency}' not found"
+                            )
+
+                        return False
+
+                    dependency_info = self._plugins[dependency]
+
+                if dependency_info.state not in (PluginState.LOADED, PluginState.ACTIVE):
+                    if not self._load_plugin_task(dependency):
+                        with self._plugins_lock:
+                            plugin_info.state = PluginState.FAILED
+                            plugin_info.error = f"Failed to load dependency '{dependency}'"
+                            set_plugin_state(plugin_name, PluginLifecycleState.FAILED)
+
+                        if self._logger:
+                            self._logger.error(
+                                f"Failed to load plugin '{plugin_name}': Dependency '{dependency}' could not be loaded"
+                            )
+
+                        return False
+
+            if progress_reporter:
+                progress_reporter.report_progress(30, f"Dependencies loaded for plugin '{plugin_name}'")
+
+            # Pre-enable hook
+            with self._plugins_lock:
+                if plugin_info.manifest and PluginLifecycleHook.PRE_ENABLE in plugin_info.manifest.lifecycle_hooks:
+                    try:
+                        execute_hook(
+                            hook=PluginLifecycleHook.PRE_ENABLE,
+                            plugin_name=plugin_name,
+                            manifest=plugin_info.manifest,
+                            context={'application_core': self._application_core,
+                                     'service_locator': self._service_locator}
+                        )
+                    except Exception as e:
+                        if self._logger:
+                            self._logger.warning(
+                                f"Pre-enable hook failed for plugin '{plugin_name}': {str(e)}"
+                            )
+
+            if progress_reporter:
+                progress_reporter.report_progress(50, f"Initializing plugin '{plugin_name}'")
+
+            # Create and initialize the plugin instance
+            with self._plugins_lock:
+                if plugin_info.manifest:
+                    plugin_class = self._load_packaged_plugin(plugin_info)
+                else:
+                    plugin_class = self._get_plugin_class(plugin_info)
+
+                plugin_info.instance = plugin_class()
+
+            set_plugin_state(plugin_name, PluginLifecycleState.INITIALIZING)
+
+            # Initialize the plugin
+            if hasattr(plugin_info.instance, 'initialize'):
+                plugin_info.instance.initialize(
+                    service_locator=self._service_locator,
+                    application_core=self._application_core
+                )
+
+            if progress_reporter:
+                progress_reporter.report_progress(70, f"Registering extensions for plugin '{plugin_name}'")
+
+            # Register extensions
+            with self._plugins_lock:
+                if plugin_info.manifest:
+                    from qorzen.plugin_system.extension import register_plugin_extensions
+                    register_plugin_extensions(
+                        plugin_name=plugin_name,
+                        plugin_instance=plugin_info.instance,
+                        manifest=plugin_info.manifest
+                    )
+
+            # Setup UI if available
+            with self._ui_lock:
+                if self._ui_integration and hasattr(plugin_info.instance, 'on_ui_ready'):
+                    if progress_reporter:
+                        progress_reporter.report_progress(
+                            85, f"Setting up UI for plugin '{plugin_name}'"
+                        )
+
+                    self._thread_manager.submit_task(
+                        self._setup_plugin_ui,
+                        plugin_name,
+                        plugin_info,
+                        progress_reporter,
+                        name=f'setup_ui_{plugin_name}',
+                        submitter='plugin_manager'
+                    )
+
+            # Mark plugin as active
+            with self._plugins_lock:
+                plugin_info.state = PluginState.ACTIVE
+                plugin_info.load_time = time.time()
+                plugin_info.metadata['state'] = PluginState.ACTIVE.value
+
+            set_plugin_state(plugin_name, PluginLifecycleState.INITIALIZED)
+
+            # Post-enable hook
+            with self._plugins_lock:
+                if plugin_info.manifest and PluginLifecycleHook.POST_ENABLE in plugin_info.manifest.lifecycle_hooks:
+                    try:
+                        execute_hook(
+                            hook=PluginLifecycleHook.POST_ENABLE,
+                            plugin_name=plugin_name,
+                            manifest=plugin_info.manifest,
+                            plugin_instance=plugin_info.instance,
+                            context={
+                                'application_core': self._application_core,
+                                'service_locator': self._service_locator
+                            }
+                        )
+                    except Exception as e:
+                        if self._logger:
+                            self._logger.warning(
+                                f"Post-enable hook failed for plugin '{plugin_name}': {str(e)}"
+                            )
+
+            if self._logger:
+                self._logger.info(
+                    f"Loaded plugin '{plugin_name}' v{plugin_info.version}"
+                )
+
+            if progress_reporter:
+                progress_reporter.report_progress(100, f"Plugin '{plugin_name}' loaded successfully")
+
+            # Publish plugin loaded event
+            if self._event_bus:
+                self._event_bus.publish(
+                    event_type=EventType.PLUGIN_LOADED,
+                    source='plugin_manager',
+                    payload={
+                        'plugin_name': plugin_name,
+                        'version': plugin_info.version,
+                        'description': plugin_info.description,
+                        'author': plugin_info.author,
+                        'no_auto_unload': True
+                    }
+                )
+
+            return True
+
+        except Exception as e:
+            with self._plugins_lock:
+                plugin_info.state = PluginState.FAILED
+                plugin_info.error = str(e)
+                plugin_info.metadata['state'] = PluginState.FAILED.value
+
+            set_plugin_state(plugin_name, PluginLifecycleState.FAILED)
+
+            if self._logger:
+                self._logger.error(
+                    f"Failed to load plugin '{plugin_name}': {str(e)}"
+                )
+
+            # Publish plugin error event
+            if self._event_bus:
+                self._event_bus.publish(
+                    event_type=EventType.PLUGIN_ERROR,
+                    source='plugin_manager',
+                    payload={
+                        'plugin_name': plugin_name,
+                        'error': str(e)
+                    }
+                )
+
+            if progress_reporter:
+                progress_reporter.report_progress(
+                    100, f"Failed to load plugin '{plugin_name}': {str(e)}"
+                )
+
+            return False
 
     def _load_packaged_plugin(self, plugin_info: PluginInfo) -> Type:
         """Load a packaged plugin."""
