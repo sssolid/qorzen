@@ -35,6 +35,7 @@ class PluginManifest:
     version: str
     description: str
     author: str
+    logo_path: str
     homepage: Optional[str] = None
     license: Optional[str] = None
     min_core_version: Optional[str] = None

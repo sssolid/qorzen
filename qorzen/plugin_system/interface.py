@@ -1,57 +1,36 @@
 from __future__ import annotations
 
 import abc
-import threading
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable, TypeVar, Generic, TYPE_CHECKING, Set, \
-    Callable
+import asyncio
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable, TypeVar, Set, Callable, Awaitable
 
-from PySide6.QtCore import QObject, Signal
-
-from qorzen.core.service_locator import ServiceLocator, ManagerType, inject
-
-if TYPE_CHECKING:
-    from qorzen.ui.integration import UIIntegration
-    from qorzen.core import TaskManager, RemoteServicesManager, SecurityManager, APIManager, CloudManager, \
-        LoggingManager, ConfigManager, DatabaseManager, EventBusManager, FileManager, ThreadManager
+from PySide6.QtCore import QObject
 
 
 @runtime_checkable
 class PluginInterface(Protocol):
-    """Protocol defining the interface that all plugins must implement."""
-
+    """Protocol defining the expected interface for plugins."""
     name: str
     version: str
     description: str
     author: str
     dependencies: List[str]
 
-    def initialize(self, service_locator: ServiceLocator, **kwargs: Any) -> None:
-        """
-        Initialize the plugin with the service locator.
-
-        Args:
-            service_locator: Provides access to all system services
-            **kwargs: Additional initialization parameters
-        """
+    async def initialize(self, application_core: Any) -> None:
+        """Initialize the plugin asynchronously."""
         ...
 
-    def on_ui_ready(self, ui_integration: 'UIIntegration') -> None:
-        """
-        Called when the UI is ready for plugin integration.
-
-        Args:
-            ui_integration: UI integration interface for the plugin
-        """
+    async def on_ui_ready(self, ui_integration: Any) -> None:
+        """Called when the UI is ready for plugin integration."""
         ...
 
-    def shutdown(self) -> None:
-        """Perform cleanup operations before plugin is unloaded."""
+    async def shutdown(self) -> None:
+        """Shutdown the plugin asynchronously."""
         ...
 
 
 class BasePlugin(QObject):
-    """Base class for Qorzen plugins with common functionality."""
-
+    """Base class for plugins providing common functionality."""
     name: str = 'base_plugin'
     version: str = '0.0.0'
     description: str = 'Base plugin'
@@ -59,126 +38,112 @@ class BasePlugin(QObject):
     display_name: Optional[str] = None
     dependencies: List[str] = []
 
-    # Signals
-    initialized = Signal()
-    ui_ready = Signal()
-    shutdown_started = Signal()
-    shutdown_completed = Signal()
-
     def __init__(self) -> None:
-        """Initialize the plugin base."""
+        """Initialize the plugin."""
         super().__init__()
         self._initialized = False
         self._ui_initialized = False
         self._shutdown = False
-        self._lock = threading.RLock()
+        self._lock = asyncio.Lock()
+        self._application_core = None
 
-        # Services - will be initialized later
-        self._service_locator: Optional[ServiceLocator] = None
-        self._event_bus_manager: Optional['EventBusManager'] = None
-        self._logger: Optional[Any] = None
-        self._config: Optional['ConfigManager'] = None
-        self._file_manager: Optional['FileManager'] = None
-        self._thread_manager: Optional['ThreadManager'] = None
-        self._database_manager: Optional['DatabaseManager'] = None
-        self._remote_service_manager: Optional['RemoteServicesManager'] = None
-        self._security_manager: Optional['SecurityManager'] = None
-        self._api_manager: Optional['APIManager'] = None
-        self._cloud_manager: Optional['CloudManager'] = None
-        self._task_manager: Optional['TaskManager'] = None
+        # Manager references
+        self._event_bus_manager = None
+        self._logger = None
+        self._config_manager = None
+        self._file_manager = None
+        self._thread_manager = None
+        self._database_manager = None
+        self._remote_service_manager = None
+        self._security_manager = None
+        self._api_manager = None
+        self._cloud_manager = None
+        self._task_manager = None
 
         self._registered_tasks: Set[str] = set()
         self._ui_registry = None
 
-    def initialize(self, service_locator: ServiceLocator, **kwargs: Any) -> None:
+    async def initialize(self, application_core: Any) -> None:
         """
-        Initialize the plugin with services from the service locator.
+        Initialize the plugin asynchronously with the application core.
 
         Args:
-            service_locator: Service locator containing all system services
-            **kwargs: Additional initialization parameters
+            application_core: The main application core instance
         """
-        with self._lock:
+        async with self._lock:
             if self._initialized:
                 return
 
-            self._service_locator = service_locator
+            self._application_core = application_core
 
-            # Get essential services
-            try:
-                self._event_bus_manager = service_locator.get(ManagerType.EVENT_BUS)
+            # Get all required managers from the application core
+            self._event_bus_manager = application_core.get_manager('event_bus_manager')
+            logger_manager = application_core.get_manager('logging_manager')
+            if logger_manager:
+                self._logger = logger_manager.get_logger(self.name)
+            self._config_manager = application_core.get_manager('config_manager')
+            self._file_manager = application_core.get_manager('file_manager')
+            self._thread_manager = application_core.get_manager('concurrency_manager')
+            self._database_manager = application_core.get_manager('database_manager')
+            self._remote_service_manager = application_core.get_manager('remote_services')
+            self._security_manager = application_core.get_manager('security_manager')
+            self._api_manager = application_core.get_manager('api_manager')
+            self._cloud_manager = application_core.get_manager('cloud_manager')
+            self._task_manager = application_core.get_manager('task_manager')
 
-                logger_provider = service_locator.get(ManagerType.LOGGING)
-                if logger_provider:
-                    self._logger = logger_provider.get_logger(self.name)
-
-                self._config = service_locator.get(ManagerType.CONFIG)
-                self._file_manager = service_locator.get(ManagerType.FILE)
-                self._thread_manager = service_locator.get(ManagerType.THREAD)
-                self._database_manager = service_locator.get(ManagerType.DATABASE)
-                self._remote_service_manager = service_locator.get(ManagerType.REMOTE_SERVICES)
-                self._security_manager = service_locator.get(ManagerType.SECURITY)
-                self._api_manager = service_locator.get(ManagerType.API)
-                self._cloud_manager = service_locator.get(ManagerType.CLOUD)
-                self._task_manager = service_locator.get(ManagerType.TASK)
-
-            except KeyError as e:
-                if self._logger:
-                    self._logger.warning(f"Could not find required service: {e}")
-
-            # Get application core from kwargs
-            self._application_core = kwargs.get('application_core')
-
-            # Initialize UI registry with thread manager
+            # Initialize UI component registry
             from qorzen.plugin_system.ui_registry import UIComponentRegistry
             self._ui_registry = UIComponentRegistry(self.name, thread_manager=self._thread_manager)
 
             self._initialized = True
 
-        self.initialized.emit()
+            if self._logger:
+                self._logger.info(f"{self.name} v{self.version} initialized successfully")
 
-    def on_ui_ready(self, ui_integration: 'UIIntegration') -> None:
+    async def on_ui_ready(self, ui_integration: Any) -> None:
         """
         Called when the UI is ready for plugin integration.
 
         Args:
-            ui_integration: UI integration interface for the plugin
+            ui_integration: The UI integration instance
         """
-        with self._lock:
+        async with self._lock:
             self._ui_initialized = True
-        self.ui_ready.emit()
 
-    def register_task(self, task_name: str, function: Callable, **properties: Any) -> None:
+            if self._logger:
+                self._logger.debug(f"{self.name} UI ready event received")
+
+    async def register_task(self, task_name: str, function: Callable, **properties: Any) -> None:
         """
         Register a task with the task manager.
 
         Args:
-            task_name: Name of the task
-            function: Function to execute
-            **properties: Task properties
+            task_name: The name of the task
+            function: The function to execute
+            **properties: Additional task properties
         """
         if not self._task_manager:
             if self._logger:
                 self._logger.warning(f"Task manager not available, can't register task {task_name}")
             return
 
-        self._task_manager.register_task(self.name, task_name, function, **properties)
+        await self._task_manager.register_task(self.name, task_name, function, **properties)
         self._registered_tasks.add(task_name)
 
         if self._logger:
             self._logger.debug(f'Registered task: {task_name}')
 
-    def execute_task(self, task_name: str, *args: Any, **kwargs: Any) -> Optional[str]:
+    async def execute_task(self, task_name: str, *args: Any, **kwargs: Any) -> Optional[str]:
         """
         Execute a registered task.
 
         Args:
-            task_name: Name of the task to execute
-            *args: Arguments for the task
+            task_name: The name of the task to execute
+            *args: Positional arguments for the task
             **kwargs: Keyword arguments for the task
 
         Returns:
-            Task ID if successful, None otherwise
+            Optional[str]: The task ID if execution was successful, None otherwise
         """
         if not self._task_manager:
             if self._logger:
@@ -190,18 +155,18 @@ class BasePlugin(QObject):
                 self._logger.warning(f'Task not registered: {task_name}')
             return None
 
-        return self._task_manager.execute_task(self.name, task_name, *args, **kwargs)
+        return await self._task_manager.execute_task(self.name, task_name, *args, **kwargs)
 
-    def register_ui_component(self, component: Any, component_type: str = 'widget') -> Any:
+    async def register_ui_component(self, component: Any, component_type: str = 'widget') -> Any:
         """
-        Register a UI component with the UI registry.
+        Register a UI component.
 
         Args:
-            component: UI component to register
-            component_type: Type of component
+            component: The UI component to register
+            component_type: The type of component
 
         Returns:
-            Registered component
+            Any: The registered component
         """
         if self._ui_registry:
             return self._ui_registry.register(component, component_type)
@@ -209,39 +174,39 @@ class BasePlugin(QObject):
 
     def get_registered_tasks(self) -> Set[str]:
         """
-        Get the set of registered task names.
+        Get the set of registered tasks.
 
         Returns:
-            Set of registered task names
+            Set[str]: The set of registered task names
         """
         return self._registered_tasks.copy()
 
-    def shutdown(self) -> None:
-        """Perform cleanup operations before plugin is unloaded."""
-        with self._lock:
+    async def shutdown(self) -> None:
+        """Shutdown the plugin asynchronously."""
+        async with self._lock:
             if self._shutdown:
                 return
 
             self._shutdown = True
-            self.shutdown_started.emit()
 
             if self._ui_registry:
-                self._ui_registry.cleanup()
+                await self._ui_registry.cleanup()
 
             self._registered_tasks.clear()
             self._initialized = False
             self._ui_initialized = False
 
-        self.shutdown_completed.emit()
+            if self._logger:
+                self._logger.info(f"{self.name} shutdown complete")
 
-    def status(self) -> Dict[str, Any]:
+    async def status(self) -> Dict[str, Any]:
         """
         Get the current status of the plugin.
 
         Returns:
-            Dictionary with plugin status information
+            Dict[str, Any]: The plugin status information
         """
-        with self._lock:
+        async with self._lock:
             return {
                 'name': self.name,
                 'version': self.version,
