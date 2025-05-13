@@ -53,7 +53,7 @@ class ExamplePlugin(QObject):
         super().__init__()
 
         # Will be set during initialize()
-        self.event_bus = None
+        self.event_bus_manager = None
         self.logger = None
         self.config_provider = None
         self.file_manager = None
@@ -90,7 +90,7 @@ class ExamplePlugin(QObject):
             thread_manager: Thread manager for background tasks
             **kwargs: Additional managers or dependencies
         """
-        self.event_bus = event_bus
+        self.event_bus_manager = event_bus_manager
         self.logger = logger_provider.get_logger("example_plugin")
         self.config_provider = config_provider
         self.file_manager = file_manager

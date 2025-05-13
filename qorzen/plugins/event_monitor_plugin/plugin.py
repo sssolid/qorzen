@@ -23,7 +23,7 @@ class EventMonitorPlugin:
     def __init__(self) -> None:
         """Initialize the plugin."""
         self.initialized = False
-        self.event_bus = None
+        self.event_bus_manager = None
         self.logger = None
         self.config_provider = None
         self.file_manager = None
@@ -45,7 +45,7 @@ class EventMonitorPlugin:
             **kwargs: Any
     ) -> None:
         """Initialize the plugin with the provided managers."""
-        self.event_bus = event_bus
+        self.event_bus_manager = event_bus_manager
         self.logger = logger_provider.get_logger("event_monitor")
         self.config_provider = config_provider
         self.file_manager = file_manager
@@ -314,7 +314,7 @@ class EventMonitorPlugin:
 
     def _send_ui_ready_event(self) -> None:
         """Re-send the UI ready event."""
-        if not self.event_bus or not self._main_window:
+        if not self.event_bus_manager or not self._main_window:
             self.logger.error("Event bus or main window not available")
             return
 

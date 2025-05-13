@@ -346,3 +346,65 @@ class APIError(QorzenError):
         if endpoint:
             details["endpoint"] = endpoint
         super().__init__(message, *args, details=details, **kwargs)
+
+
+class UIError(QorzenError):
+    """Exception raised for UI-related errors."""
+
+    def __init__(
+            self,
+            message: str,
+            *args: Any,
+            element_id: Optional[str] = None,
+            element_type: Optional[str] = None,
+            operation: Optional[str] = None,
+            **kwargs: Any
+    ) -> None:
+        """
+        Initialize UIError.
+
+        Args:
+            message: Error message
+            *args: Additional positional arguments
+            element_id: The ID of the UI element where the error occurred
+            element_type: The type of the UI element where the error occurred
+            operation: The UI operation that caused the error
+            **kwargs: Additional keyword arguments
+        """
+        details = kwargs.pop('details', {})
+        if element_id:
+            details['element_id'] = element_id
+        if element_type:
+            details['element_type'] = element_type
+        if operation:
+            details['operation'] = operation
+        super().__init__(message, *args, details=details, **kwargs)
+
+
+class AsyncOperationError(QorzenError):
+    """Exception raised for errors in asynchronous operations."""
+
+    def __init__(
+            self,
+            message: str,
+            *args: Any,
+            operation: Optional[str] = None,
+            operation_id: Optional[str] = None,
+            **kwargs: Any
+    ) -> None:
+        """
+        Initialize AsyncOperationError.
+
+        Args:
+            message: Error message
+            *args: Additional positional arguments
+            operation: The asynchronous operation that caused the error
+            operation_id: The ID of the asynchronous operation
+            **kwargs: Additional keyword arguments
+        """
+        details = kwargs.pop('details', {})
+        if operation:
+            details['operation'] = operation
+        if operation_id:
+            details['operation_id'] = operation_id
+        super().__init__(message, *args, details=details, **kwargs)

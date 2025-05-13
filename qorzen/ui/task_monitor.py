@@ -107,7 +107,7 @@ class TaskMonitorWidget(QWidget):
             parent: The parent widget
         """
         super().__init__(parent)
-        self.event_bus = event_bus
+        self.event_bus_manager = event_bus_manager
         self.tasks: Dict[str, TaskProgressWidget] = {}
 
         # Create layout

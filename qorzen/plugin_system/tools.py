@@ -148,7 +148,7 @@ class {plugin_name.replace("-", "_").title()}Plugin:
     def __init__(self) -> None:
         """Initialize the plugin."""
         self.initialized = False
-        self.event_bus = None
+        self.event_bus_manager = None
         self.logger = None
         self.config_provider = None
         self.file_manager = None
@@ -171,7 +171,7 @@ class {plugin_name.replace("-", "_").title()}Plugin:
             file_manager: File manager for file operations
             thread_manager: Thread manager for background tasks
         """
-        self.event_bus = event_bus
+        self.event_bus_manager = event_bus_manager
         self.logger = logger_provider.get_logger("{plugin_name}")
         self.config_provider = config_provider
         self.file_manager = file_manager
@@ -308,7 +308,7 @@ class Test{plugin_name.replace("-", "_").title()}Plugin(unittest.TestCase):
         from code.plugin import {plugin_name.replace("-", "_").title()}Plugin
 
         # Create mock dependencies
-        self.event_bus = mock.MagicMock()
+        self.event_bus_manager = mock.MagicMock()
         self.logger = mock.MagicMock()
         self.logger_provider = mock.MagicMock()
         self.logger_provider.get_logger.return_value = self.logger
