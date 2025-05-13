@@ -23,6 +23,24 @@ class QorzenError(Exception):
         return f"{self.message}"
 
 
+class ApplicationError(QorzenError):
+    """Exception raised for application-related errors."""
+
+    def __init__(
+            self, message: str, *args: Any, **kwargs: Any
+    ) -> None:
+        """Initialize an ApplicationError.
+
+        Args:
+            message: A descriptive error message.
+            *args: Additional positional arguments to pass to the parent Exception.
+            config_key: The configuration key that caused the error.
+            **kwargs: Additional keyword arguments to pass to the parent Exception.
+        """
+        details = kwargs.pop("details", {})
+        super().__init__(message, *args, details=details, **kwargs)
+
+
 class ManagerError(QorzenError):
     """Base exception for manager-related errors."""
 
@@ -57,11 +75,29 @@ class ManagerShutdownError(ManagerError):
     pass
 
 
+class DependencyError(QorzenError):
+    """Exception raised for dependency manager errors."""
+
+    def __init__(
+            self, message: str, *args: Any, **kwargs: Any
+    ) -> None:
+        """Initialize a DependencyError.
+
+        Args:
+            message: A descriptive error message.
+            *args: Additional positional arguments to pass to the parent Exception.
+            config_key: The configuration key that caused the error.
+            **kwargs: Additional keyword arguments to pass to the parent Exception.
+        """
+        details = kwargs.pop("details", {})
+        super().__init__(message, *args, details=details, **kwargs)
+
+
 class ConfigurationError(QorzenError):
     """Exception raised for configuration-related errors."""
 
     def __init__(
-        self, message: str, *args: Any, config_key: Optional[str] = None, **kwargs: Any
+            self, message: str, *args: Any, config_key: Optional[str] = None, **kwargs: Any
     ) -> None:
         """Initialize a ConfigurationError.
 
@@ -81,7 +117,7 @@ class EventBusError(QorzenError):
     """Exception raised for event bus-related errors."""
 
     def __init__(
-        self, message: str, *args: Any, event_type: Optional[str] = None, **kwargs: Any
+            self, message: str, *args: Any, event_type: Optional[str] = None, **kwargs: Any
     ) -> None:
         """Initialize an EventBusError.
 
@@ -101,7 +137,7 @@ class PluginError(QorzenError):
     """Exception raised for plugin-related errors."""
 
     def __init__(
-        self, message: str, *args: Any, plugin_name: Optional[str] = None, **kwargs: Any
+            self, message: str, *args: Any, plugin_name: Optional[str] = None, **kwargs: Any
     ) -> None:
         """Initialize a PluginError.
 
@@ -117,11 +153,29 @@ class PluginError(QorzenError):
         super().__init__(message, *args, details=details, **kwargs)
 
 
+class PluginIsolationError(QorzenError):
+    """Exception raised when a plugin fails to isolate itself.
+
+    Args:
+        message: A descriptive error message.
+        *args: Additional positional arguments to pass to the parent Exception.
+        plugin_name: The name of the plugin that caused the error.
+        **kwargs: Additional keyword arguments to pass to the parent Exception.
+    """
+
+    def __init__(self, message: str, *args: Any, plugin_name: Optional[str] = None, **kwargs: Any) -> None:
+        """Initialize a PluginIsolationError."""
+        details = kwargs.pop("details", {})
+        if plugin_name:
+            details["plugin_name"] = plugin_name
+        super().__init__(message, *args, details=details, **kwargs)
+
+
 class DatabaseError(QorzenError):
     """Exception raised for database-related errors."""
 
     def __init__(
-        self, message: str, *args: Any, query: Optional[str] = None, **kwargs: Any
+            self, message: str, *args: Any, query: Optional[str] = None, **kwargs: Any
     ) -> None:
         """Initialize a DatabaseError.
 
@@ -141,12 +195,12 @@ class SecurityError(QorzenError):
     """Exception raised for security-related errors."""
 
     def __init__(
-        self,
-        message: str,
-        *args: Any,
-        user_id: Optional[str] = None,
-        permission: Optional[str] = None,
-        **kwargs: Any,
+            self,
+            message: str,
+            *args: Any,
+            user_id: Optional[str] = None,
+            permission: Optional[str] = None,
+            **kwargs: Any,
     ) -> None:
         """Initialize a SecurityError.
 
@@ -224,11 +278,33 @@ class WrongThreadError(ThreadingError):
         super().__init__(message, **kwargs)
 
 
+class TaskError(QorzenError):
+    """Error related to task execution."""
+
+    def __init__(self, message: str, task_name: Optional[str] = None, **kwargs: Any) -> None:
+        """
+        Initialize threading error.
+
+        Args:
+            message: Error message
+            task_name: Name of affected thread
+            **kwargs: Additional error information
+        """
+        super().__init__(message, task_name=task_name, **kwargs)
+        self.task_name = task_name
+
+    def __str__(self) -> str:
+        """String representation."""
+        if self.task_name:
+            return f"{self.message} (Task: {self.task_name})"
+        return super().__str__()
+
+
 class FileError(QorzenError):
     """Exception raised for file-related errors."""
 
     def __init__(
-        self, message: str, *args: Any, file_path: Optional[str] = None, **kwargs: Any
+            self, message: str, *args: Any, file_path: Optional[str] = None, **kwargs: Any
     ) -> None:
         """Initialize a FileError.
 
@@ -248,12 +324,12 @@ class APIError(QorzenError):
     """Exception raised for API-related errors."""
 
     def __init__(
-        self,
-        message: str,
-        *args: Any,
-        status_code: Optional[int] = None,
-        endpoint: Optional[str] = None,
-        **kwargs: Any,
+            self,
+            message: str,
+            *args: Any,
+            status_code: Optional[int] = None,
+            endpoint: Optional[str] = None,
+            **kwargs: Any,
     ) -> None:
         """Initialize an APIError.
 

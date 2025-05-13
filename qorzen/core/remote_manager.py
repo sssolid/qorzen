@@ -19,7 +19,6 @@ from tenacity import (
 )
 
 from qorzen.core.base import QorzenManager
-from qorzen.core.thread_safe_core import ProgressReporter
 from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownError
 
 
@@ -769,9 +768,9 @@ class RemoteServicesManager(QorzenManager):
             event_bus_manager: The Event Bus Manager for service events.
             thread_manager: The Thread Manager for service-related background tasks.
         """
-        super().__init__(name="RemoteServicesManager")
+        super().__init__(name="remote_services_manager")
         self._config_manager = config_manager
-        self._logger = logger_manager.get_logger("remote_manager")
+        self._logger = logger_manager.get_logger("remote_services_manager")
         self._event_bus = event_bus_manager
         self._thread_manager = thread_manager
 
@@ -1094,7 +1093,7 @@ class RemoteServicesManager(QorzenManager):
 
         return result
 
-    def _health_check_task(self, progress_reporter: Optional[ProgressReporter]) -> None:
+    def _health_check_task(self) -> None:
         """Periodic task to check the health of all services."""
         if not self._initialized:
             return

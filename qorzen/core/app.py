@@ -1,595 +1,551 @@
 from __future__ import annotations
-
-import atexit
+import asyncio
 import importlib
+import logging
+import os
 import signal
 import sys
 import traceback
 from pathlib import Path
-import logging
-from typing import Any, Dict, List, Optional, Type, cast, Callable
+from typing import Any, Dict, List, Optional, Set, Type, cast, T
 
-from qorzen.core.base import QorzenManager
-from qorzen.core.event_model import EventType
-from qorzen.core.service_locator import ServiceLocator, ManagerType, get_default_locator
-from qorzen.ui.integration import MainWindowIntegration
-
-logger = logging.getLogger(__name__)
+from qorzen.core.base import QorzenManager, BaseManager
+from qorzen.core.concurrency_manager import ConcurrencyManager
+from qorzen.core.dependency_manager import DependencyManager
+from qorzen.core.task_manager import TaskManager, TaskCategory
+from qorzen.core.plugin_isolation_manager import PluginIsolationManager, PluginIsolationLevel
+from qorzen.utils.exceptions import ApplicationError
 
 
 class ApplicationCore:
-    """
-    Core application class responsible for managing the application lifecycle.
+    """The main application core with async support.
 
-    This class initializes and manages all system managers, coordinates the
-    startup process, and handles shutdown procedures.
+    Manages the lifecycle of all core components and provides
+    a clean architecture for plugin integration.
     """
 
     def __init__(self, config_path: Optional[str] = None) -> None:
-        """
-        Initialize the application core.
+        """Initialize the application core.
 
         Args:
-            config_path: Path to the configuration file
+            config_path: Optional path to configuration file
         """
         self._config_path = config_path
-        self._managers: Dict[str, QorzenManager] = {}
+        self._managers: Dict[str, BaseManager] = {}
         self._initialized = False
-        self._logger = None
-        self._main_window = None
+        self._logger: Optional[logging.Logger] = None
+        self._dependency_manager: Optional[DependencyManager] = None
+        self._shutdown_event = asyncio.Event()
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
         self._ui_integration = None
 
-        # Initialize service locator
-        self._service_locator = get_default_locator()
-
-    def get_initialization_steps(self, progress_callback: Optional[Callable[[str, int], None]] = None) -> List[
-        Callable[[], None]]:
-        """
-        Get a list of initialization steps for the application.
+    async def initialize(self, progress_callback: Optional[callable] = None) -> None:
+        """Initialize the application core asynchronously.
 
         Args:
-            progress_callback: Callback function for reporting initialization progress
+            progress_callback: Optional callback for initialization progress
 
-        Returns:
-            List of initialization step functions
+        Raises:
+            ApplicationError: If initialization fails
         """
-        steps = []
-        total_steps = 15
-        index_ref = {'index': 1}
+        try:
+            # Store the main event loop
+            self._main_loop = asyncio.get_running_loop()
 
-        def wrap(step_fn: Callable[[], None], name: str) -> Callable[[], None]:
-            """Wrap an initialization step with progress reporting."""
+            # Create and initialize managers in dependency order
+            await self._init_dependency_manager()
+            await self._init_config_manager()
+            await self._init_logging_manager()
+            await self._init_concurrency_manager()
+            await self._init_event_bus_manager()
+            await self._init_file_manager()
+            await self._init_resource_monitoring_manager()
+            await self._init_database_manager()
+            await self._init_security_manager()
+            await self._init_api_manager()
+            await self._init_cloud_manager()
+            await self._init_task_manager()
+            await self._init_plugin_isolation_manager()
+            await self._init_plugin_manager()
 
-            def wrapped() -> None:
-                current_index = index_ref['index']
-                if progress_callback:
-                    progress_callback(
-                        f'Initializing {name} ({current_index}/{total_steps})',
-                        int(current_index / total_steps * 100)
-                    )
-                step_fn()
-                index_ref['index'] += 1
+            # Initialize all managers in correct dependency order
+            await self._dependency_manager.initialize_all()
 
-            return wrapped
+            self._initialized = True
 
-        # Define initialization steps with progress reporting
-        steps.append(wrap(lambda: self._init_config(), 'configuration manager'))
-        steps.append(wrap(lambda: self._init_logging(), 'logging manager'))
-        steps.append(wrap(lambda: self._init_thread_manager(), 'thread manager'))
-        steps.append(wrap(lambda: self._init_event_bus(), 'event bus manager'))
-        steps.append(wrap(lambda: self._init_file_manager(), 'file manager'))
-        steps.append(wrap(lambda: self._init_resource_manager(), 'resource manager'))
-        steps.append(wrap(lambda: self._init_database_manager(), 'database manager'))
-        steps.append(wrap(lambda: self._init_remote_services_manager(), 'remote services manager'))
-        steps.append(wrap(lambda: self._init_security_manager(), 'security manager'))
-        steps.append(wrap(lambda: self._init_api_manager(), 'API manager'))
-        steps.append(wrap(lambda: self._init_cloud_manager(), 'cloud manager'))
-        steps.append(wrap(lambda: self._init_task_manager(), 'task manager'))
-        steps.append(wrap(lambda: self._init_plugin_components(), 'plugin system components'))
-        steps.append(wrap(lambda: self._configure_extension_registry(), 'extension registry'))
-        steps.append(wrap(lambda: self._init_plugin_manager(), 'plugin manager'))
+            if self._logger:
+                self._logger.info('Qorzen initialization complete')
 
-        return steps
+            # Publish system started event
+            event_bus_manager = self.get_manager('event_bus_manager')
+            if event_bus_manager:
+                await event_bus_manager.publish(
+                    event_type='system/started',
+                    source='app_core',
+                    payload={'version': self._get_version()}
+                )
 
-    def finalize_initialization(self) -> None:
-        """
-        Finalize the initialization process.
+        except Exception as e:
+            if self._logger:
+                self._logger.error(f'Failed to initialize Qorzen: {str(e)}', exc_info=True)
+            else:
+                print(f'Failed to initialize Qorzen: {str(e)}')
+                traceback.print_exc()
 
-        This method sets up signal handlers, registers the shutdown handler,
-        and signals that the system is fully initialized.
-        """
-        import atexit
-        import signal
+            raise ApplicationError(f'Failed to initialize application: {str(e)}') from e
 
-        # Register signal handlers
-        if sys.platform != 'win32':
-            signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
+    async def _init_dependency_manager(self) -> None:
+        """Initialize the dependency manager."""
+        self._dependency_manager = DependencyManager()
+        await self._dependency_manager.initialize()
+        self._managers['dependency_manager'] = self._dependency_manager
 
-        # Register shutdown handler
-        atexit.register(self.shutdown)
-
-        self._initialized = True
-
-        if self._logger:
-            self._logger.info('Qorzen initialization complete')
-
-        # Publish system started event
-        event_bus_manager = self.get_manager('event_bus')
-        if event_bus_manager:
-            event_bus_manager.publish(
-                event_type=EventType.SYSTEM_STARTED,
-                source='app_core',
-                payload={'version': self._get_version()}
-            )
-
-    def _init_config(self) -> None:
+    async def _init_config_manager(self) -> None:
         """Initialize the configuration manager."""
+        # Import here to avoid circular imports
         from qorzen.core.config_manager import ConfigManager
 
         config_manager = ConfigManager(config_path=self._config_path)
-        config_manager.initialize()
-        self._managers['config'] = config_manager
+        # Register with no dependencies
+        self._dependency_manager.register_manager(config_manager)
+        self._managers['config_manager'] = config_manager
 
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.CONFIG,
-            config_manager,
-            name='config'
-        )
-
-    def _init_logging(self) -> None:
+    async def _init_logging_manager(self) -> None:
         """Initialize the logging manager."""
+        # Import here to avoid circular imports
         from qorzen.core.logging_manager import LoggingManager
 
-        config = self._managers['config']
-        logging_manager = LoggingManager(config)
-        logging_manager.initialize()
-        self._managers['logging'] = logging_manager
+        config_manager = self.get_manager('config_manager')
+        logging_manager = LoggingManager(config_manager)
+        # Register with config dependency
+        self._dependency_manager.register_manager(
+            logging_manager,
+            dependencies=['config_manager']
+        )
+        self._managers['logging_manager'] = logging_manager
         self._logger = logging_manager.get_logger('app_core')
 
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.LOGGING,
-            logging_manager,
-            name='logging'
+    async def _init_concurrency_manager(self) -> None:
+        """Initialize the concurrency manager."""
+        config_manager = self.get_manager('config_manager')
+        logging_manager = self.get_manager('logging_manager')
+
+        concurrency_manager = ConcurrencyManager(config_manager, logging_manager)
+        # Register with config and logging dependencies
+        self._dependency_manager.register_manager(
+            concurrency_manager,
+            dependencies=['config_manager', 'logging_manager']
         )
+        self._managers['concurrency_manager'] = concurrency_manager
 
-        self._logger.info('Starting Qorzen initialization')
-
-    def _init_thread_manager(self) -> None:
-        """Initialize the thread manager."""
-        from qorzen.core.thread_manager import ThreadManager
-
-        config = self._managers['config']
-        logging = self._managers['logging']
-
-        thread_manager = ThreadManager(config, logging)
-        thread_manager.initialize()
-        self._managers['thread_manager'] = thread_manager
-
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.THREAD,
-            thread_manager,
-            name='thread_manager'
-        )
-
-    def _init_event_bus(self) -> None:
+    async def _init_event_bus_manager(self) -> None:
         """Initialize the event bus manager."""
+        # Import here to avoid circular imports
         from qorzen.core.event_bus_manager import EventBusManager
 
-        config = self._managers['config']
-        logging = self._managers['logging']
-        thread_manager = self._managers['thread_manager']
+        config_manager = self.get_manager('config_manager')
+        logging_manager = self.get_manager('logging_manager')
+        concurrency_manager = self.get_manager('concurrency_manager')
 
-        event_bus_manager = EventBusManager(config, logging, thread_manager)
-        event_bus_manager.initialize()
-        self._managers['event_bus'] = event_bus_manager
-
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.EVENT_BUS,
-            event_bus_manager,
-            name='event_bus'
+        event_bus_manager = EventBusManager(
+            config_manager,
+            logging_manager,
+            concurrency_manager
         )
+        # Register with dependencies
+        self._dependency_manager.register_manager(
+            event_bus_manager,
+            dependencies=['config_manager', 'logging_manager', 'concurrency_manager']
+        )
+        self._managers['event_bus_manager'] = event_bus_manager
 
-        # Connect event bus to logging for event-based logging
-        logging.set_event_bus_manager(event_bus_manager)
-
-    def _init_file_manager(self) -> None:
+    async def _init_file_manager(self) -> None:
         """Initialize the file manager."""
+        # Import here to avoid circular imports
         from qorzen.core.file_manager import FileManager
 
-        config = self._managers['config']
-        logging = self._managers['logging']
+        config_manager = self.get_manager('config_manager')
+        logging_manager = self.get_manager('logging_manager')
 
-        file_manager = FileManager(config, logging)
-        file_manager.initialize()
+        file_manager = FileManager(config_manager, logging_manager)
+        # Register with dependencies
+        self._dependency_manager.register_manager(
+            file_manager,
+            dependencies=['config_manager', 'logging_manager']
+        )
         self._managers['file_manager'] = file_manager
 
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.FILE,
-            file_manager,
-            name='file_manager'
-        )
-
-    def _init_resource_manager(self) -> None:
+    async def _init_resource_monitoring_manager(self) -> None:
         """Initialize the resource monitoring manager."""
-        from qorzen.core.monitoring_manager import ResourceMonitoringManager
+        # Import here to avoid circular imports
+        from qorzen.core.resource_monitoring_manager import ResourceMonitoringManager
 
-        config = self._managers['config']
-        logging = self._managers['logging']
-        event_bus = self._managers['event_bus']
-        thread = self._managers['thread_manager']
+        config_manager = self.get_manager('config_manager')
+        logging_manager = self.get_manager('logging_manager')
+        event_bus = self.get_manager('event_bus_manager')
+        concurrency_manager = self.get_manager('concurrency_manager')
 
-        resource_manager = ResourceMonitoringManager(config, logging, event_bus, thread)
-        resource_manager.initialize()
-        self._managers['resource_manager'] = resource_manager
-
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.MONITORING,
-            resource_manager,
-            name='resource_manager'
+        resource_monitoring_manager = ResourceMonitoringManager(
+            config_manager,
+            logging_manager,
+            event_bus,
+            concurrency_manager
         )
+        # Register with dependencies
+        self._dependency_manager.register_manager(
+            resource_monitoring_manager,
+            dependencies=['config_manager', 'logging_manager', 'event_bus_manager', 'concurrency_manager']
+        )
+        self._managers['resource_monitoring_manager'] = resource_monitoring_manager
 
-    def _init_database_manager(self) -> None:
+    async def _init_database_manager(self) -> None:
         """Initialize the database manager."""
+        # Import here to avoid circular imports
         from qorzen.core.database_manager import DatabaseManager
 
-        config = self._managers['config']
-        logging = self._managers['logging']
+        config_manager = self.get_manager('config_manager')
+        logging_manager = self.get_manager('logging_manager')
 
-        database_manager = DatabaseManager(config, logging)
-        database_manager.initialize()
+        database_manager = DatabaseManager(config_manager, logging_manager)
+        # Register with dependencies
+        self._dependency_manager.register_manager(
+            database_manager,
+            dependencies=['config_manager', 'logging_manager']
+        )
         self._managers['database_manager'] = database_manager
 
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.DATABASE,
-            database_manager,
-            name='database_manager'
-        )
-
-    def _init_remote_services_manager(self) -> None:
-        """Initialize the remote services manager."""
-        from qorzen.core.remote_manager import RemoteServicesManager
-
-        config = self._managers['config']
-        logging = self._managers['logging']
-        event_bus = self._managers['event_bus']
-        thread = self._managers['thread_manager']
-
-        remote_services_manager = RemoteServicesManager(config, logging, event_bus, thread)
-        remote_services_manager.initialize()
-        self._managers['remote_services_manager'] = remote_services_manager
-
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.REMOTE_SERVICES,
-            remote_services_manager,
-            name='remote_services_manager'
-        )
-
-    def _init_security_manager(self) -> None:
+    async def _init_security_manager(self) -> None:
         """Initialize the security manager."""
+        # Import here to avoid circular imports
         from qorzen.core.security_manager import SecurityManager
 
-        config = self._managers['config']
-        logging = self._managers['logging']
-        event_bus = self._managers['event_bus']
-        database = self._managers['database_manager']
+        config_manager = self.get_manager('config_manager')
+        logging_manager = self.get_manager('logging_manager')
+        event_bus = self.get_manager('event_bus_manager')
+        database = self.get_manager('database_manager')
 
-        security_manager = SecurityManager(config, logging, event_bus, database)
-        security_manager.initialize()
+        security_manager = SecurityManager(
+            config_manager,
+            logging_manager,
+            event_bus,
+            database
+        )
+        # Register with dependencies
+        self._dependency_manager.register_manager(
+            security_manager,
+            dependencies=['config_manager', 'logging_manager', 'event_bus_manager', 'database_manager']
+        )
         self._managers['security_manager'] = security_manager
 
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.SECURITY,
-            security_manager,
-            name='security_manager'
-        )
-
-    def _init_api_manager(self) -> None:
+    async def _init_api_manager(self) -> None:
         """Initialize the API manager."""
+        # Import here to avoid circular imports
         from qorzen.core.api_manager import APIManager
 
-        config = self._managers['config']
-        logging = self._managers['logging']
-        security = self._managers['security_manager']
-        event_bus = self._managers['event_bus']
-        thread = self._managers['thread_manager']
+        config_manager = self.get_manager('config_manager')
+        logging_manager = self.get_manager('logging_manager')
+        security = self.get_manager('security_manager')
+        event_bus = self.get_manager('event_bus_manager')
+        concurrency_manager = self.get_manager('concurrency_manager')
 
-        api_manager = APIManager(config, logging, security, event_bus, thread)
-        api_manager.initialize()
+        api_manager = APIManager(
+            config_manager,
+            logging_manager,
+            security,
+            event_bus,
+            concurrency_manager
+        )
+        # Register with dependencies
+        self._dependency_manager.register_manager(
+            api_manager,
+            dependencies=[
+                'config_manager', 'logging_manager', 'security_manager',
+                'event_bus_manager', 'concurrency_manager'
+            ]
+        )
         self._managers['api_manager'] = api_manager
 
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.API,
-            api_manager,
-            name='api_manager'
-        )
-
-    def _init_cloud_manager(self) -> None:
+    async def _init_cloud_manager(self) -> None:
         """Initialize the cloud manager."""
+        # Import here to avoid circular imports
         from qorzen.core.cloud_manager import CloudManager
 
-        config = self._managers['config']
-        logging = self._managers['logging']
-        file = self._managers['file_manager']
+        config_manager = self.get_manager('config_manager')
+        logging_manager = self.get_manager('logging_manager')
+        file_manager = self.get_manager('file_manager')
 
-        cloud_manager = CloudManager(config, logging, file)
-        cloud_manager.initialize()
+        cloud_manager = CloudManager(
+            config_manager,
+            logging_manager,
+            file_manager
+        )
+        # Register with dependencies
+        self._dependency_manager.register_manager(
+            cloud_manager,
+            dependencies=['config_manager', 'logging_manager', 'file_manager']
+        )
         self._managers['cloud_manager'] = cloud_manager
 
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.CLOUD,
-            cloud_manager,
-            name='cloud_manager'
-        )
-
-    def _init_task_manager(self) -> None:
+    async def _init_task_manager(self) -> None:
         """Initialize the task manager."""
-        from qorzen.core.task_manager import TaskManager
-
-        config = self._managers['config']
-        logging = self._managers['logging']
-        event_bus = self._managers['event_bus']
-        thread = self._managers['thread_manager']
+        config_manager = self.get_manager('config_manager')
+        logging_manager = self.get_manager('logging_manager')
+        event_bus = self.get_manager('event_bus_manager')
+        concurrency_manager = self.get_manager('concurrency_manager')
 
         task_manager = TaskManager(
-            application_core=self,
-            config_manager=config,
-            logger_manager=logging,
-            event_bus_manager=event_bus,
-            thread_manager=thread
+            concurrency_manager,
+            event_bus,
+            logging_manager,
+            config_manager
         )
-        task_manager.initialize()
+        # Register with dependencies
+        self._dependency_manager.register_manager(
+            task_manager,
+            dependencies=[
+                'config_manager', 'logging_manager', 'event_bus_manager', 'concurrency_manager'
+            ]
+        )
         self._managers['task_manager'] = task_manager
 
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.TASK,
-            task_manager,
-            name='task_manager'
+    async def _init_plugin_isolation_manager(self) -> None:
+        """Initialize the plugin isolation manager."""
+        config_manager = self.get_manager('config_manager')
+        logging_manager = self.get_manager('logging_manager')
+        concurrency_manager = self.get_manager('concurrency_manager')
+
+        plugin_isolation_manager = PluginIsolationManager(
+            concurrency_manager,
+            logging_manager,
+            config_manager
         )
+        # Register with dependencies
+        self._dependency_manager.register_manager(
+            plugin_isolation_manager,
+            dependencies=['config_manager', 'logging_manager', 'concurrency_manager']
+        )
+        self._managers['plugin_isolation'] = plugin_isolation_manager
 
-    def _init_plugin_components(self) -> None:
-        """Initialize plugin system components."""
-        config = self._managers['config']
-        repository_manager = self._initialize_plugin_repository(config)
-        plugin_verifier = self._initialize_plugin_verifier(config)
-        plugin_installer = self._initialize_plugin_installer(config, repository_manager, plugin_verifier)
-
-        self._plugin_repository = repository_manager
-        self._plugin_verifier = plugin_verifier
-        self._plugin_installer = plugin_installer
-
-    def _configure_extension_registry(self) -> None:
-        """Configure the extension registry."""
-        from qorzen.plugin_system.extension import extension_registry
-
-        if self._logger:
-            extension_registry.logger = lambda msg, level: self._logger.log(level.upper(), msg)
-
-    def _init_plugin_manager(self) -> None:
+    async def _init_plugin_manager(self) -> None:
         """Initialize the plugin manager."""
+        # Import here to avoid circular imports
         from qorzen.core.plugin_manager import PluginManager
 
-        # Create plugin manager with service locator
+        config_manager = self.get_manager('config_manager')
+        logging_manager = self.get_manager('logging_manager')
+        event_bus = self.get_manager('event_bus_manager')
+        file_manager = self.get_manager('file_manager')
+        task_manager = self.get_manager('task_manager')
+        plugin_isolation = self.get_manager('plugin_isolation_manager')
+
         plugin_manager = PluginManager(
             application_core=self,
-            service_locator=self._service_locator
+            config_manager=config_manager,
+            logger_manager=logging_manager,
+            event_bus_manager=event_bus,
+            file_manager=file_manager,
+            task_manager=task_manager,
+            plugin_isolation_manager=plugin_isolation
         )
-
-        # Set up plugin components
-        plugin_manager.repository_manager = self._plugin_repository
-        plugin_manager.plugin_installer = self._plugin_installer
-        plugin_manager.plugin_verifier = self._plugin_verifier
-
-        plugin_manager.initialize()
+        # Register with dependencies
+        self._dependency_manager.register_manager(
+            plugin_manager,
+            dependencies=[
+                'config_manager', 'logging_manager', 'event_bus_manager', 'file_manager',
+                'task_manager', 'plugin_isolation_manager'
+            ]
+        )
         self._managers['plugin_manager'] = plugin_manager
 
-        # Register with service locator
-        self._service_locator.register(
-            ManagerType.PLUGIN,
-            plugin_manager,
-            name='plugin_manager'
-        )
-
-    def _initialize_plugin_repository(self, config_manager: Any) -> Any:
-        """
-        Initialize the plugin repository manager.
+    def get_manager(self, name: str) -> Optional[BaseManager]:
+        """Get a manager by name.
 
         Args:
-            config_manager: Configuration manager
+            name: Name of the manager
 
         Returns:
-            PluginRepositoryManager instance
+            The manager or None if not found
         """
-        from qorzen.plugin_system.repository import PluginRepositoryManager
+        return self._managers.get(name)
 
-        plugins_dir = Path(config_manager.get('plugins.directory', 'plugins'))
-        repository_config_path = plugins_dir / 'repositories.json'
-
-        logger_fn = (
-            lambda msg, level: self._logger.log(level.upper(), msg)
-            if self._logger
-            else None
-        )
-
-        repository_manager = PluginRepositoryManager(
-            config_file=repository_config_path if repository_config_path.exists() else None,
-            logger=logger_fn
-        )
-
-        return repository_manager
-
-    def _initialize_plugin_verifier(self, config_manager: Any) -> Any:
-        """
-        Initialize the plugin verifier.
+    def get_manager_typed(self, name: str, manager_type: Type[T]) -> Optional[T]:
+        """Get a manager by name with type checking.
 
         Args:
-            config_manager: Configuration manager
+            name: Name of the manager
+            manager_type: Type of the manager
 
         Returns:
-            PluginVerifier instance
+            The manager or None if not found
         """
-        from qorzen.plugin_system.signing import PluginVerifier
-        return PluginVerifier()
+        manager = self._managers.get(name)
+        if manager and isinstance(manager, manager_type):
+            return cast(T, manager)
+        return None
 
-    def _initialize_plugin_installer(self, config_manager: Any,
-                                     repository_manager: Any,
-                                     verifier: Any) -> Any:
+    async def shutdown(self) -> None:
+        """Shutdown the application core.
+
+        Shuts down all managers in reverse dependency order.
+
+        Raises:
+            ApplicationError: If shutdown fails
         """
-        Initialize the plugin installer.
+        if not self._initialized:
+            return
 
-        Args:
-            config_manager: Configuration manager
-            repository_manager: Repository manager
-            verifier: Plugin verifier
-
-        Returns:
-            IntegratedPluginInstaller instance
-        """
-        from qorzen.plugin_system.integration import IntegratedPluginInstaller
-
-        plugins_dir = Path(config_manager.get('plugins.directory', 'plugins'))
-
-        logger_fn = (
-            lambda msg, level: self._logger.log(level.upper(), msg)
-            if self._logger
-            else None
-        )
-
-        installer = IntegratedPluginInstaller(
-            plugins_dir=plugins_dir,
-            repository_manager=repository_manager,
-            verifier=verifier,
-            logger=logger_fn,
-            core_version=self._get_version()
-        )
-
-        return installer
-
-    def _get_version(self) -> str:
-        """
-        Get the application version.
-
-        Returns:
-            Application version string
-        """
         try:
-            from qorzen.__version__ import __version__ as app_version
-            return app_version
-        except ImportError:
-            return '0.1.0'
+            if self._logger:
+                self._logger.info('Shutting down Qorzen')
 
-    def _setup_signal_handlers(self) -> None:
-        """Set up signal handlers for graceful shutdown."""
-        if sys.platform != 'win32':
-            signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
+            # Shutdown all managers through the dependency manager
+            if self._dependency_manager:
+                await self._dependency_manager.shutdown()
 
-    def _signal_handler(self, sig: int, frame: Any) -> None:
-        """
-        Signal handler for clean shutdown.
+            self._managers.clear()
+            self._initialized = False
 
-        Args:
-            sig: Signal number
-            frame: Current stack frame
-        """
-        if self._logger:
-            self._logger.info(f'Received signal {sig}, shutting down')
-        self.shutdown()
-        sys.exit(0)
+            if self._logger:
+                self._logger.info('Qorzen shutdown complete')
 
-    def set_main_window(self, main_window: Any) -> None:
-        """
-        Set the main application window.
+            self._shutdown_event.set()
+        except Exception as e:
+            if self._logger:
+                self._logger.error(f'Error during shutdown: {str(e)}', exc_info=True)
+            else:
+                print(f'Error during shutdown: {str(e)}')
+                traceback.print_exc()
+
+            raise ApplicationError(f'Failed to shutdown application: {str(e)}') from e
+
+    def set_ui_integration(self, ui_integration: Any) -> None:
+        """Set the UI integration.
 
         Args:
-            main_window: Main window instance
+            ui_integration: UI integration object
         """
-        self._main_window = main_window
-        self._ui_integration = MainWindowIntegration(main_window)
+        self._ui_integration = ui_integration
 
-        event_bus = self.get_manager('event_bus')
+        # Notify the event bus
+        event_bus = self.get_manager('event_bus_manager')
         if event_bus and self._initialized:
-            event_bus.publish(
-                event_type=EventType.UI_READY,
-                source='app_core',
-                payload={'main_window': main_window}
+            asyncio.create_task(
+                event_bus.publish(
+                    event_type='ui/ready',
+                    source='app_core',
+                    payload={'ui_integration': ui_integration}
+                )
             )
 
             if self._logger:
                 self._logger.info('UI ready event published for plugins')
 
-    def get_manager(self, name: str) -> Optional[QorzenManager]:
+    def get_ui_integration(self) -> Any:
+        """Get the UI integration.
+
+        Returns:
+            The UI integration object
         """
-        Get a manager by name.
+        return self._ui_integration
+
+    def is_initialized(self) -> bool:
+        """Check if the application is initialized.
+
+        Returns:
+            True if initialized, False otherwise
+        """
+        return self._initialized
+
+    def _get_version(self) -> str:
+        """Get the application version.
+
+        Returns:
+            Version string
+        """
+        try:
+            # Import as late as possible to avoid circular imports
+            from qorzen.__version__ import __version__ as app_version
+            return app_version
+        except ImportError:
+            return '0.1.0'
+
+    async def wait_for_shutdown(self) -> None:
+        """Wait for the application to shut down."""
+        await self._shutdown_event.wait()
+
+    def setup_signal_handlers(self) -> None:
+        """Set up signal handlers for graceful shutdown."""
+        if sys.platform != 'win32':
+            # Register SIGTERM handler
+            signal.signal(signal.SIGTERM, lambda sig, frame: asyncio.create_task(self._signal_handler(sig)))
+
+        # Register SIGINT handler (Ctrl+C)
+        signal.signal(signal.SIGINT, lambda sig, frame: asyncio.create_task(self._signal_handler(sig)))
+
+    async def _signal_handler(self, sig: int) -> None:
+        """Handle termination signals.
 
         Args:
-            name: Name of the manager to get
+            sig: Signal number
+        """
+        if self._logger:
+            self._logger.info(f'Received signal {sig}, shutting down')
+
+        await self.shutdown()
+
+    async def submit_core_task(
+            self,
+            func: callable,
+            *args: Any,
+            name: str = "core_task",
+            **kwargs: Any
+    ) -> str:
+        """Submit a core task for execution.
+
+        Args:
+            func: Function to execute
+            *args: Positional arguments
+            name: Task name
+            **kwargs: Keyword arguments
 
         Returns:
-            Manager instance or None if not found
+            Task ID
+
+        Raises:
+            ApplicationError: If task submission fails
         """
-        return self._managers.get(name)
+        if not self._initialized:
+            raise ApplicationError('Application core not initialized')
 
-    def shutdown(self) -> None:
-        """
-        Shutdown the application, cleaning up all resources.
-        """
-        if not self._initialized and (not self._managers):
-            return
-
-        if self._logger:
-            self._logger.info('Shutting down Qorzen')
-
-        # Shutdown managers in reverse initialization order
-        managers = list(self._managers.items())
-        managers.reverse()
-
-        for name, manager in managers:
-            try:
-                if manager.initialized:
-                    if self._logger:
-                        self._logger.debug(f'Shutting down {name} manager')
-                    manager.shutdown()
-            except Exception as e:
-                if self._logger:
-                    self._logger.error(f'Error shutting down {name} manager: {str(e)}')
-
-        self._managers.clear()
-        self._initialized = False
+        task_manager = self.get_manager('task_manager')
+        if not task_manager:
+            raise ApplicationError('Task manager not available')
 
         try:
-            atexit.unregister(self.shutdown)
-        except Exception:
-            pass
-
-        if self._logger:
-            self._logger.info('Qorzen shutdown complete')
-            self._logger = None
+            return await task_manager.submit_task(
+                func=func,
+                *args,
+                name=name,
+                category=TaskCategory.CORE,
+                **kwargs
+            )
+        except Exception as e:
+            if self._logger:
+                self._logger.error(f'Failed to submit core task: {str(e)}', exc_info=True)
+            raise ApplicationError(f'Failed to submit core task: {str(e)}') from e
 
     def status(self) -> Dict[str, Any]:
-        """
-        Get the current status of the application.
+        """Get the application status.
 
         Returns:
-            Dictionary with status information
+            Status dictionary
         """
         status = {
-            'name': 'ApplicationCore',
+            'name': 'AsyncApplicationCore',
             'initialized': self._initialized,
-            'managers': {},
-            'version': self._get_version()
+            'version': self._get_version(),
+            'ui_integration': self._ui_integration is not None,
+            'managers': {}
         }
 
         for name, manager in self._managers.items():
@@ -598,8 +554,8 @@ class ApplicationCore:
             except Exception as e:
                 status['managers'][name] = {
                     'error': f'Failed to get status: {str(e)}',
-                    'initialized': manager.initialized,
-                    'healthy': False
+                    'initialized': getattr(manager, 'initialized', False),
+                    'healthy': getattr(manager, 'healthy', False)
                 }
 
         return status

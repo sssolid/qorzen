@@ -335,12 +335,12 @@ class DashboardWidget(QWidget):
         super().__init__(parent)
 
         self._app_core = app_core
-        self._config_manager = app_core.get_manager('config')
-        self._event_bus = app_core.get_manager('event_bus')
-        self._monitoring_manager = app_core.get_manager('monitoring')
+        self._config_manager = app_core.get_manager('config_manager')
+        self._event_bus = app_core.get_manager('event_bus_manager')
+        self._monitoring_manager = app_core.get_manager('monitoring_manager')
 
-        if app_core.get_manager('logging'):
-            self._logger = app_core.get_manager('logging').get_logger('dashboard')
+        if app_core.get_manager('logging_manager'):
+            self._logger = app_core.get_manager('logging_manager').get_logger('dashboard')
         else:
             import logging
             self._logger = logging.getLogger('dashboard')

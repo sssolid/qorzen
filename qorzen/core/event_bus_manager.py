@@ -24,7 +24,7 @@ class EventBusManager(QorzenManager):
             config_manager: Configuration manager
             logger_manager: Logger manager
         """
-        super().__init__(name='EventBusManager')
+        super().__init__(name='event_bus_manager')
         self._config_manager = config_manager
         self._logger_manager = logger_manager
         self._logger = logger_manager.get_logger('event_bus')
@@ -53,7 +53,7 @@ class EventBusManager(QorzenManager):
         """
         try:
             # Load configuration
-            event_bus_config = self._config_manager.get('event_bus', {})
+            event_bus_config = self._config_manager.get('event_bus_manager', {})
             thread_pool_size = event_bus_config.get('thread_pool_size', 4)
             self._max_queue_size = event_bus_config.get('max_queue_size', 1000)
             self._publish_timeout = event_bus_config.get('publish_timeout', 5.0)

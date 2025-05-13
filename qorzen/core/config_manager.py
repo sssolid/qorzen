@@ -257,7 +257,7 @@ class ConfigManager(QorzenManager):
             env_prefix: Prefix for environment variables to consider for configuration.
 
         """
-        super().__init__(name="ConfigManager")
+        super().__init__(name="config_manager")
         self._config_path = (
             pathlib.Path(config_path) if config_path else pathlib.Path("config.yaml")
         )

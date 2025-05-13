@@ -249,11 +249,11 @@ class MainWindow(QMainWindow):
     def __init__(self, app_core: Any) -> None:
         super().__init__()
         self._app_core = app_core
-        self._config_manager = app_core.get_manager('config')
-        self._logging_manager = app_core.get_manager('logging')
-        self._event_bus = app_core.get_manager('event_bus')
+        self._config_manager = app_core.get_manager('config_manager')
+        self._logging_manager = app_core.get_manager('logging_manager')
+        self._event_bus = app_core.get_manager('event_bus_manager')
         self._plugin_manager = app_core.get_manager('plugin_manager')
-        self._monitoring_manager = app_core.get_manager('monitoring')
+        self._monitoring_manager = app_core.get_manager('resource_monitoring_manager')
 
         if self._logging_manager:
             self._logger = self._logging_manager.get_logger('ui')

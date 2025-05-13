@@ -112,7 +112,7 @@ class DatabaseManager(QorzenManager):
             config_manager: The configuration manager
             logger_manager: The logger manager
         """
-        super().__init__(name='DatabaseManager')
+        super().__init__(name='database_manager')
         self._config_manager = config_manager
         self._logger = logger_manager.get_logger('database_manager')
 
@@ -131,7 +131,7 @@ class DatabaseManager(QorzenManager):
     def initialize(self) -> None:
         """Initialize the database manager."""
         try:
-            db_config = self._config_manager.get('database', {})
+            db_config = self._config_manager.get('database_manager', {})
 
             # Configure the default connection
             self._db_type = db_config.get('type', 'postgresql').lower()

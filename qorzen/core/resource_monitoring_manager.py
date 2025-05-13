@@ -12,7 +12,6 @@ import psutil
 from prometheus_client import Counter, Gauge, Histogram, Summary, start_http_server
 
 from qorzen.core.base import QorzenManager
-from qorzen.core.thread_safe_core import ProgressReporter
 from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownError
 
 
@@ -66,9 +65,9 @@ class ResourceMonitoringManager(QorzenManager):
             event_bus_manager: The Event Bus Manager for publishing alerts.
             thread_manager: The Thread Manager for scheduling metric collection.
         """
-        super().__init__(name="ResourceMonitoringManager")
+        super().__init__(name="resource_monitoring_manager")
         self._config_manager = config_manager
-        self._logger = logger_manager.get_logger("monitoring_manager")
+        self._logger = logger_manager.get_logger("resource_monitoring_manager")
         self._event_bus = event_bus_manager
         self._thread_manager = thread_manager
 
@@ -225,7 +224,7 @@ class ResourceMonitoringManager(QorzenManager):
         )
         self._collection_tasks["uptime"] = uptime_task_id
 
-    def _collect_system_metrics(self, progress_reporter: ProgressReporter) -> None:
+    def _collect_system_metrics(self) -> None:
         """Collect system resource metrics (CPU, memory, disk)."""
         try:
             # CPU usage
@@ -264,7 +263,7 @@ class ResourceMonitoringManager(QorzenManager):
         except Exception as e:
             self._logger.error(f'Error collecting system metrics: {str(e)}')
 
-    def _collect_uptime_metrics(self, progress_reporter: ProgressReporter) -> None:
+    def _collect_uptime_metrics(self) -> None:
         """Collect application uptime metrics."""
         try:
             # Calculate uptime (time since process started)

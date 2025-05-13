@@ -1,413 +1,768 @@
-# qorzen/core/task_manager.py
 from __future__ import annotations
-
-import inspect
-import threading
+import asyncio
 import time
-import traceback
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Set, cast, Union
+from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Union, cast
 
 from qorzen.core.base import QorzenManager
-from qorzen.core.thread_safe_core import (
-    ThreadType, TaskPriority, ProgressReporter, ThreadDispatcher, ensure_main_thread
-)
-from qorzen.core.thread_manager import ThreadManager
-from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownError
+from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownError, TaskError
+
+T = TypeVar('T')
+
+
+class TaskStatus(str, Enum):
+    """Status of a task."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TaskPriority(int, Enum):
+    """Priority levels for tasks."""
+    LOW = 0
+    NORMAL = 50
+    HIGH = 100
+    CRITICAL = 200
+
+
+class TaskCategory(str, Enum):
+    """Categories of tasks."""
+    CORE = "core"
+    PLUGIN = "plugin"
+    UI = "ui"
+    IO = "io"
+    BACKGROUND = "background"
+    USER = "user"
 
 
 @dataclass
-class TaskDefinition:
-    """Definition of a task that can be executed."""
+class TaskProgress:
+    """Progress information for a task."""
+    percent: int = 0
+    message: str = ""
+    updated_at: float = field(default_factory=time.time)
+
+
+@dataclass
+class TaskInfo:
+    """Information about a task."""
+    task_id: str
     name: str
-    plugin_name: str
-    function: Callable
-    long_running: bool = True
-    needs_progress: bool = True
+    category: TaskCategory
+    plugin_id: Optional[str] = None
     priority: TaskPriority = TaskPriority.NORMAL
-    description: str = ''
+    status: TaskStatus = TaskStatus.PENDING
+    progress: TaskProgress = field(default_factory=TaskProgress)
+    created_at: float = field(default_factory=time.time)
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    error: Optional[str] = None
+    traceback: Optional[str] = None
+    result: Any = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    cancellable: bool = True
 
 
 class TaskManager(QorzenManager):
-    """
-    Task manager for handling plugin tasks with proper thread management.
+    """Manager for handling tasks asynchronously.
 
-    This implementation ensures plugins never have to worry about what thread they're
-    running on, and properly handles all Qt threading concerns automatically.
+    This manager provides a unified interface for running both
+    synchronous and asynchronous tasks with progress reporting
+    and error handling.
     """
 
-    def __init__(self,
-                 application_core: Any,
-                 config_manager: Any,
-                 logger_manager: Any,
-                 event_bus_manager: Any,
-                 thread_manager: ThreadManager) -> None:
-        """
-        Initialize task manager.
+    def __init__(
+            self,
+            concurrency_manager: Any,
+            event_bus_manager: Any,
+            logger_manager: Any,
+            config_manager: Any
+    ) -> None:
+        """Initialize the task manager.
 
         Args:
-            application_core: Application core
-            config_manager: Configuration manager
-            logger_manager: Logger manager
-            event_bus_manager: Event bus manager
-            thread_manager: Thread manager
+            concurrency_manager: Manager for concurrency operations
+            event_bus_manager: Manager for event bus operations
+            logger_manager: Manager for logging
+            config_manager: Manager for configuration
         """
-        super().__init__(name="TaskManager")
-        self._application_core = application_core
-        self._config_manager = config_manager
-        self._logger_manager = logger_manager
-        self._logger = logger_manager.get_logger('task_manager')
+        super().__init__(name='task_manager')
+        self._concurrency_manager = concurrency_manager
         self._event_bus = event_bus_manager
-        self._thread_manager = thread_manager
+        self._logger = logger_manager.get_logger('task_manager')
+        self._config_manager = config_manager
 
-        # Task registry
-        self.tasks: Dict[str, Dict[str, TaskDefinition]] = {}
-        self.running_tasks: Dict[str, Dict[str, Any]] = {}
-        self.lock = threading.RLock()
+        self._tasks: Dict[str, TaskInfo] = {}
+        self._task_futures: Dict[str, asyncio.Task] = {}
+        self._task_lock = asyncio.Lock()
+        self._task_events: Dict[str, asyncio.Event] = {}
 
-        # Thread dispatcher
-        self._dispatcher = ThreadDispatcher.instance()
+        # Configuration
+        self._max_concurrent_tasks = 20
+        self._keep_completed_tasks = 100
+        self._task_timeout = 300.0  # 5 minutes default
 
-    def initialize(self) -> None:
-        """Initialize the task manager."""
+    async def initialize(self) -> None:
+        """Initialize the task manager.
+
+        Raises:
+            ManagerInitializationError: If initialization fails
+        """
         try:
-            self._logger.info('Task Manager initialized')
+            self._logger.info('Initializing task manager')
+
+            # Load configuration
+            task_config = self._config_manager.get('tasks', {})
+            self._max_concurrent_tasks = task_config.get('max_concurrent_tasks', 20)
+            self._keep_completed_tasks = task_config.get('keep_completed_tasks', 100)
+            self._task_timeout = task_config.get('default_timeout', 300.0)
+
+            self._config_manager.register_listener('tasks', self._on_config_changed)
+
             self._initialized = True
             self._healthy = True
+            self._logger.info('Task manager initialized successfully')
         except Exception as e:
-            self._logger.error(f'Failed to initialize Task Manager: {str(e)}')
-            raise ManagerInitializationError(
-                f'Failed to initialize TaskManager: {str(e)}',
-                manager_name=self.name
-            ) from e
+            self._logger.error(f'Failed to initialize task manager: {str(e)}')
+            raise ManagerInitializationError(f'Failed to initialize TaskManager: {str(e)}',
+                                             manager_name=self.name) from e
 
-    def register_task(self,
-                      plugin_name: str,
-                      task_name: str,
-                      function: Callable,
-                      **properties) -> None:
+    async def shutdown(self) -> None:
+        """Shutdown the task manager.
+
+        Cancels all running tasks and cleans up resources.
+
+        Raises:
+            ManagerShutdownError: If shutdown fails
         """
-        Register a task for future execution.
-
-        Args:
-            plugin_name: Plugin that owns the task
-            task_name: Task name
-            function: Task function
-            **properties: Additional task properties
-        """
-        with self.lock:
-            plugin_tasks = self.tasks.get(plugin_name, {})
-
-            task_def = TaskDefinition(
-                name=task_name,
-                plugin_name=plugin_name,
-                function=function,
-                long_running=properties.get('long_running', True),
-                needs_progress=properties.get('needs_progress', True),
-                priority=properties.get('priority', TaskPriority.NORMAL),
-                description=properties.get('description', ''),
-                metadata=properties.get('metadata', {})
-            )
-
-            plugin_tasks[task_name] = task_def
-            self.tasks[plugin_name] = plugin_tasks
-
-            self._logger.debug(f"Registered task '{task_name}' for plugin '{plugin_name}'")
-
-    def execute_task(self,
-                     plugin_name: str,
-                     task_name: str,
-                     *args: Any,
-                     **kwargs: Any) -> str:
-        """
-        Execute a registered task.
-
-        Args:
-            plugin_name: Plugin that owns the task
-            task_name: Task to execute
-            *args: Task arguments
-            **kwargs: Task keyword arguments
-
-        Returns:
-            Task identifier
-        """
-        if not self._initialized:
-            raise ValueError("Task Manager not initialized")
-
-        with self.lock:
-            plugin_tasks = self.tasks.get(plugin_name, {})
-            task_def = plugin_tasks.get(task_name)
-
-            if not task_def:
-                raise ValueError(f"Task '{task_name}' not registered for plugin '{plugin_name}'")
-
-        # Generate task ID
-        task_id = f'{plugin_name}_{task_name}_{uuid.uuid4().hex[:8]}'
-
-        # Determine execution context
-        thread_type = ThreadType.WORKER if task_def.long_running else ThreadType.MAIN
-
-        # Create wrapped task that handles progress reporting and event publishing
-        def task_wrapper(progress_reporter: ProgressReporter) -> Any:
-            # Publish task started event
-            self._event_bus.publish(
-                event_type='task/started',
-                source='task_manager',
-                payload={
-                    'task_id': task_id,
-                    'plugin_name': plugin_name,
-                    'task_name': task_name,
-                    'properties': {
-                        'long_running': task_def.long_running,
-                        'needs_progress': task_def.needs_progress,
-                        'priority': task_def.priority.value,
-                        'description': task_def.description
-                    }
-                }
-            )
-
-            try:
-                # Execute task with progress reporting if needed
-                if task_def.needs_progress:
-                    if 'progress_reporter' in inspect.signature(task_def.function).parameters:
-                        result = task_def.function(*args, progress_reporter=progress_reporter, **kwargs)
-                    else:
-                        result = task_def.function(*args, **kwargs)
-                else:
-                    result = task_def.function(*args, **kwargs)
-
-                # Task completed successfully
-                with self.lock:
-                    if task_id in self.running_tasks:
-                        self.running_tasks[task_id]['end_time'] = time.time()
-                        self.running_tasks[task_id]['completed'] = True
-
-                # Publish task completed event
-                self._event_bus.publish(
-                    event_type='task/completed',
-                    source='task_manager',
-                    payload={
-                        'task_id': task_id,
-                        'plugin_name': plugin_name,
-                        'task_name': task_name,
-                        'result': result
-                    }
-                )
-
-                return result
-
-            except Exception as e:
-                # Task failed
-                error_traceback = traceback.format_exc()
-
-                with self.lock:
-                    if task_id in self.running_tasks:
-                        self.running_tasks[task_id]['end_time'] = time.time()
-                        self.running_tasks[task_id]['error'] = str(e)
-                        self.running_tasks[task_id]['traceback'] = error_traceback
-
-                # Publish task failed event
-                self._event_bus.publish(
-                    event_type='task/failed',
-                    source='task_manager',
-                    payload={
-                        'task_id': task_id,
-                        'plugin_name': plugin_name,
-                        'task_name': task_name,
-                        'error': str(e),
-                        'traceback': error_traceback
-                    }
-                )
-
-                # Re-raise exception
-                raise
-
-        # Submit task
-        internal_task_id = self._dispatcher.submit_task(
-            task_wrapper,
-            task_id=task_id,
-            on_ui_thread=(thread_type == ThreadType.MAIN),
-            has_progress=task_def.needs_progress,
-            on_completed=self._on_task_completed,
-            on_failed=self._on_task_failed,
-            on_cancelled=self._on_task_cancelled
-        )
-
-        # Track running task
-        with self.lock:
-            self.running_tasks[task_id] = {
-                'id': task_id,
-                'internal_id': internal_task_id,
-                'plugin_name': plugin_name,
-                'task_name': task_name,
-                'start_time': time.time(),
-                'definition': task_def,
-                'completed': False
-            }
-
-        return task_id
-
-    def _on_task_completed(self, task_id: str, result: Any) -> None:
-        """
-        Handle task completion.
-
-        Args:
-            task_id: Task identifier
-            result: Task result
-        """
-        with self.lock:
-            if task_id in self.running_tasks:
-                del self.running_tasks[task_id]
-
-    def _on_task_failed(self, task_id: str, error_message: str,
-                        error_traceback: str) -> None:
-        """
-        Handle task failure.
-
-        Args:
-            task_id: Task identifier
-            error_message: Error message
-            error_traceback: Error traceback
-        """
-        self._logger.error(
-            f"Task {task_id} failed: {error_message}",
-            extra={
-                'task_id': task_id,
-                'error': error_message,
-                'traceback': error_traceback
-            }
-        )
-
-        with self.lock:
-            if task_id in self.running_tasks:
-                del self.running_tasks[task_id]
-
-    def _on_task_cancelled(self, task_id: str) -> None:
-        """
-        Handle task cancellation.
-
-        Args:
-            task_id: Task identifier
-        """
-        with self.lock:
-            if task_id in self.running_tasks:
-                del self.running_tasks[task_id]
-
-        # Publish task cancelled event
-        self._event_bus.publish(
-            event_type='task/cancelled',
-            source='task_manager',
-            payload={'task_id': task_id}
-        )
-
-    def get_running_tasks(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Get information about currently running tasks.
-
-        Returns:
-            Dictionary of running task information
-        """
-        with self.lock:
-            return {
-                task_id: {
-                    'plugin_name': info['plugin_name'],
-                    'task_name': info['task_name'],
-                    'start_time': info['start_time'],
-                    'elapsed_time': time.time() - info['start_time'],
-                    'properties': {
-                        'long_running': info['definition'].long_running,
-                        'priority': info['definition'].priority.value,
-                        'description': info['definition'].description
-                    }
-                }
-                for task_id, info in self.running_tasks.items()
-            }
-
-    def cancel_task(self, task_id: str) -> bool:
-        """
-        Cancel a running task.
-
-        Args:
-            task_id: Task to cancel
-
-        Returns:
-            Whether cancellation was successful
-        """
-        with self.lock:
-            if task_id not in self.running_tasks:
-                return False
-
-            # Get internal task ID
-            internal_id = self.running_tasks[task_id].get('internal_id')
-
-        # Cancel task with dispatcher
-        cancelled = self._dispatcher.cancel_task(task_id)
-
-        if cancelled:
-            # Publish task cancelled event
-            self._event_bus.publish(
-                event_type='task/cancelled',
-                source='task_manager',
-                payload={'task_id': task_id}
-            )
-
-            with self.lock:
-                if task_id in self.running_tasks:
-                    del self.running_tasks[task_id]
-
-        return cancelled
-
-    def shutdown(self) -> None:
-        """Shutdown the task manager."""
         if not self._initialized:
             return
 
         try:
-            self._logger.info('Shutting down Task Manager')
+            self._logger.info('Shutting down task manager')
 
             # Cancel all running tasks
-            with self.lock:
-                for task_id in list(self.running_tasks.keys()):
-                    self.cancel_task(task_id)
+            async with self._task_lock:
+                running_tasks = [
+                    task_id for task_id, task_info in self._tasks.items()
+                    if task_info.status == TaskStatus.RUNNING and task_info.cancellable
+                ]
 
+            for task_id in running_tasks:
+                try:
+                    await self.cancel_task(task_id)
+                except Exception as e:
+                    self._logger.warning(f'Error cancelling task {task_id} during shutdown: {e}')
+
+            # Wait for tasks to finish
+            for task_id, future in list(self._task_futures.items()):
+                if not future.done():
+                    try:
+                        future.cancel()
+                    except Exception as e:
+                        self._logger.warning(f'Error cancelling future for task {task_id}: {e}')
+
+            self._config_manager.unregister_listener('tasks', self._on_config_changed)
             self._initialized = False
             self._healthy = False
-            self._logger.info('Task Manager shut down successfully')
-
+            self._logger.info('Task manager shut down successfully')
         except Exception as e:
-            self._logger.error(f'Failed to shut down Task Manager: {str(e)}')
-            raise ManagerShutdownError(
-                f'Failed to shut down TaskManager: {str(e)}',
-                manager_name=self.name
-            ) from e
+            self._logger.error(f'Failed to shut down task manager: {str(e)}')
+            raise ManagerShutdownError(f'Failed to shut down TaskManager: {str(e)}',
+                                       manager_name=self.name) from e
 
-    def status(self) -> Dict[str, Any]:
-        """
-        Get task manager status.
+    async def submit_task(
+            self,
+            func: Callable[..., T],
+            *args: Any,
+            name: str = "unnamed_task",
+            category: TaskCategory = TaskCategory.CORE,
+            plugin_id: Optional[str] = None,
+            priority: TaskPriority = TaskPriority.NORMAL,
+            metadata: Optional[Dict[str, Any]] = None,
+            timeout: Optional[float] = None,
+            cancellable: bool = True,
+            **kwargs: Any
+    ) -> str:
+        """Submit a task to be executed.
+
+        Args:
+            func: The function to execute
+            *args: Positional arguments to pass to the function
+            name: Name of the task
+            category: Category of the task
+            plugin_id: ID of the plugin if this is a plugin task
+            priority: Priority of the task
+            metadata: Additional metadata for the task
+            timeout: Timeout in seconds, or None for default
+            cancellable: Whether the task can be cancelled
+            **kwargs: Keyword arguments to pass to the function
 
         Returns:
-            Status information dictionary
+            ID of the submitted task
+
+        Raises:
+            TaskError: If submission fails
+        """
+        if not self._initialized:
+            raise TaskError('Task manager not initialized')
+
+        # Generate a task ID
+        task_id = str(uuid.uuid4())
+
+        # Create task info
+        task_info = TaskInfo(
+            task_id=task_id,
+            name=name,
+            category=category,
+            plugin_id=plugin_id,
+            priority=priority,
+            status=TaskStatus.PENDING,
+            progress=TaskProgress(),
+            created_at=time.time(),
+            metadata=metadata or {},
+            cancellable=cancellable
+        )
+
+        # Store task info
+        async with self._task_lock:
+            running_count = sum(
+                1 for info in self._tasks.values()
+                if info.status == TaskStatus.RUNNING
+            )
+
+            if running_count >= self._max_concurrent_tasks:
+                raise TaskError(f'Too many concurrent tasks ({running_count} >= {self._max_concurrent_tasks})')
+
+            self._tasks[task_id] = task_info
+
+        # Create progress reporter
+        progress_reporter = self._create_progress_reporter(task_id)
+
+        # Determine if the function is async or not
+        is_async = asyncio.iscoroutinefunction(func)
+
+        # Create a task event for waiting on completion
+        self._task_events[task_id] = asyncio.Event()
+
+        # Create and schedule the task
+        task_future = asyncio.create_task(
+            self._execute_task(
+                task_id=task_id,
+                func=func,
+                args=args,
+                kwargs={**kwargs, 'progress_reporter': progress_reporter} if 'progress_reporter' in kwargs else kwargs,
+                is_async=is_async,
+                timeout=timeout or self._task_timeout
+            ),
+            name=f"task_{task_id}"
+        )
+
+        self._task_futures[task_id] = task_future
+
+        # Publish task submitted event
+        await self._publish_task_event('task/submitted', task_id, task_info)
+
+        return task_id
+
+    async def submit_async_task(
+            self,
+            func: Callable[..., T],
+            *args: Any,
+            name: str = "unnamed_async_task",
+            category: TaskCategory = TaskCategory.CORE,
+            plugin_id: Optional[str] = None,
+            priority: TaskPriority = TaskPriority.NORMAL,
+            metadata: Optional[Dict[str, Any]] = None,
+            timeout: Optional[float] = None,
+            cancellable: bool = True,
+            **kwargs: Any
+    ) -> str:
+        """Submit an asynchronous task to be executed.
+
+        This is a convenience wrapper around submit_task that ensures
+        the function is treated as asynchronous.
+
+        Args:
+            func: The async function to execute
+            *args: Positional arguments to pass to the function
+            name: Name of the task
+            category: Category of the task
+            plugin_id: ID of the plugin if this is a plugin task
+            priority: Priority of the task
+            metadata: Additional metadata for the task
+            timeout: Timeout in seconds, or None for default
+            cancellable: Whether the task can be cancelled
+            **kwargs: Keyword arguments to pass to the function
+
+        Returns:
+            ID of the submitted task
+
+        Raises:
+            TaskError: If submission fails or the function is not async
+        """
+        if not asyncio.iscoroutinefunction(func):
+            raise TaskError('Function must be asynchronous (use "async def")')
+
+        return await self.submit_task(
+            func=func,
+            *args,
+            name=name,
+            category=category,
+            plugin_id=plugin_id,
+            priority=priority,
+            metadata=metadata,
+            timeout=timeout,
+            cancellable=cancellable,
+            **kwargs
+        )
+
+    async def cancel_task(self, task_id: str) -> bool:
+        """Cancel a running task.
+
+        Args:
+            task_id: ID of the task to cancel
+
+        Returns:
+            True if the task was cancelled, False otherwise
+
+        Raises:
+            TaskError: If the task can't be cancelled
+        """
+        if not self._initialized:
+            raise TaskError('Task manager not initialized')
+
+        async with self._task_lock:
+            if task_id not in self._tasks:
+                raise TaskError(f'Task {task_id} not found')
+
+            task_info = self._tasks[task_id]
+
+            if task_info.status != TaskStatus.RUNNING:
+                self._logger.debug(f'Task {task_id} is not running (status: {task_info.status})')
+                return False
+
+            if not task_info.cancellable:
+                raise TaskError(f'Task {task_id} cannot be cancelled')
+
+        # Cancel the task
+        future = self._task_futures.get(task_id)
+        if future and not future.done():
+            future.cancel()
+
+            # Update task info
+            task_info.status = TaskStatus.CANCELLED
+            task_info.completed_at = time.time()
+
+            # Signal completion
+            event = self._task_events.get(task_id)
+            if event:
+                event.set()
+
+            # Publish task cancelled event
+            await self._publish_task_event('task/cancelled', task_id, task_info)
+
+            self._logger.info(f'Task {task_id} ({task_info.name}) cancelled')
+            return True
+
+        return False
+
+    async def get_task_info(self, task_id: str) -> Optional[TaskInfo]:
+        """Get information about a task.
+
+        Args:
+            task_id: ID of the task
+
+        Returns:
+            Task information or None if not found
+        """
+        async with self._task_lock:
+            return self._tasks.get(task_id)
+
+    async def get_tasks(
+            self,
+            status: Optional[Union[TaskStatus, List[TaskStatus]]] = None,
+            category: Optional[Union[TaskCategory, List[TaskCategory]]] = None,
+            plugin_id: Optional[str] = None,
+            limit: int = 100
+    ) -> List[TaskInfo]:
+        """Get tasks matching the specified criteria.
+
+        Args:
+            status: Filter by task status
+            category: Filter by task category
+            plugin_id: Filter by plugin ID
+            limit: Maximum number of tasks to return
+
+        Returns:
+            List of task information objects
+        """
+        async with self._task_lock:
+            # Convert single values to lists for consistent handling
+            status_list = [status] if isinstance(status, TaskStatus) else status if status else None
+            category_list = [category] if isinstance(category, TaskCategory) else category if category else None
+
+            # Filter tasks
+            filtered_tasks = []
+            for task_info in self._tasks.values():
+                if status_list and task_info.status not in status_list:
+                    continue
+                if category_list and task_info.category not in category_list:
+                    continue
+                if plugin_id and task_info.plugin_id != plugin_id:
+                    continue
+                filtered_tasks.append(task_info)
+
+            # Sort by priority and created_at
+            filtered_tasks.sort(key=lambda t: (-t.priority.value, t.created_at))
+
+            # Apply limit
+            return filtered_tasks[:limit]
+
+    async def wait_for_task(self, task_id: str, timeout: Optional[float] = None) -> TaskInfo:
+        """Wait for a task to complete.
+
+        Args:
+            task_id: ID of the task to wait for
+            timeout: Timeout in seconds, or None to wait indefinitely
+
+        Returns:
+            Task information
+
+        Raises:
+            TaskError: If the task is not found or waiting times out
+        """
+        if not self._initialized:
+            raise TaskError('Task manager not initialized')
+
+        # Get task info
+        task_info = await self.get_task_info(task_id)
+        if not task_info:
+            raise TaskError(f'Task {task_id} not found')
+
+        # If already completed, return immediately
+        if task_info.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            return task_info
+
+        # Get the task event
+        event = self._task_events.get(task_id)
+        if not event:
+            raise TaskError(f'Task event for {task_id} not found')
+
+        # Wait for the task to complete
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise TaskError(f'Timeout waiting for task {task_id}')
+
+        # Get updated task info
+        updated_task_info = await self.get_task_info(task_id)
+        if not updated_task_info:
+            raise TaskError(f'Task {task_id} not found after completion')
+
+        return updated_task_info
+
+    async def _execute_task(
+            self,
+            task_id: str,
+            func: Callable,
+            args: tuple,
+            kwargs: dict,
+            is_async: bool,
+            timeout: float
+    ) -> Any:
+        """Execute a task and handle its lifecycle.
+
+        Args:
+            task_id: ID of the task
+            func: Function to execute
+            args: Positional arguments
+            kwargs: Keyword arguments
+            is_async: Whether the function is asynchronous
+            timeout: Timeout in seconds
+
+        Returns:
+            Result of the function
+        """
+        # Update task status to running
+        async with self._task_lock:
+            task_info = self._tasks[task_id]
+            task_info.status = TaskStatus.RUNNING
+            task_info.started_at = time.time()
+
+        # Publish task started event
+        await self._publish_task_event('task/started', task_id, task_info)
+
+        try:
+            # Execute the function
+            if is_async:
+                # Execute async function with timeout
+                result = await asyncio.wait_for(
+                    func(*args, **kwargs),
+                    timeout=timeout
+                )
+            else:
+                # Execute sync function in a thread with timeout
+                result = await asyncio.wait_for(
+                    self._concurrency_manager.run_in_thread(
+                        func, *args, **kwargs
+                    ),
+                    timeout=timeout
+                )
+
+            # Update task status to completed
+            async with self._task_lock:
+                task_info = self._tasks[task_id]
+                task_info.status = TaskStatus.COMPLETED
+                task_info.completed_at = time.time()
+                task_info.result = result
+
+            # Publish task completed event
+            await self._publish_task_event('task/completed', task_id, task_info)
+
+            return result
+        except asyncio.CancelledError:
+            # Task was cancelled
+            async with self._task_lock:
+                task_info = self._tasks[task_id]
+                task_info.status = TaskStatus.CANCELLED
+                task_info.completed_at = time.time()
+
+            # Publish task cancelled event
+            await self._publish_task_event('task/cancelled', task_id, task_info)
+
+            raise
+        except asyncio.TimeoutError:
+            # Task timed out
+            async with self._task_lock:
+                task_info = self._tasks[task_id]
+                task_info.status = TaskStatus.FAILED
+                task_info.completed_at = time.time()
+                task_info.error = f"Task timed out after {timeout} seconds"
+
+            # Publish task failed event
+            await self._publish_task_event('task/failed', task_id, task_info)
+
+            self._logger.warning(f'Task {task_id} ({task_info.name}) timed out after {timeout} seconds')
+
+            raise TaskError(f'Task {task_id} timed out')
+        except Exception as e:
+            import traceback
+            tb_str = traceback.format_exc()
+
+            # Update task status to failed
+            async with self._task_lock:
+                task_info = self._tasks[task_id]
+                task_info.status = TaskStatus.FAILED
+                task_info.completed_at = time.time()
+                task_info.error = str(e)
+                task_info.traceback = tb_str
+
+            # Publish task failed event
+            await self._publish_task_event('task/failed', task_id, task_info)
+
+            self._logger.error(
+                f'Task {task_id} ({task_info.name}) failed: {str(e)}',
+                extra={'task_id': task_id, 'error': str(e), 'traceback': tb_str}
+            )
+
+            raise TaskError(f'Task {task_id} failed: {str(e)}') from e
+        finally:
+            # Clean up
+            if task_id in self._task_futures:
+                del self._task_futures[task_id]
+
+            # Signal completion
+            event = self._task_events.get(task_id)
+            if event:
+                event.set()
+
+            # Perform house cleaning if needed
+            asyncio.create_task(self._cleanup_tasks())
+
+    async def _cleanup_tasks(self) -> None:
+        """Clean up completed tasks if we have too many."""
+        async with self._task_lock:
+            completed_tasks = [
+                task_id for task_id, task_info in self._tasks.items()
+                if task_info.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
+            ]
+
+            if len(completed_tasks) > self._keep_completed_tasks:
+                # Sort by completion time (oldest first)
+                completed_tasks.sort(
+                    key=lambda task_id: self._tasks[task_id].completed_at or 0
+                )
+
+                # Remove oldest tasks
+                to_remove = completed_tasks[:-self._keep_completed_tasks]
+                for task_id in to_remove:
+                    del self._tasks[task_id]
+                    if task_id in self._task_events:
+                        del self._task_events[task_id]
+
+                self._logger.debug(f'Cleaned up {len(to_remove)} completed tasks')
+
+    def _create_progress_reporter(self, task_id: str) -> Any:
+        """Create a progress reporter for a task.
+
+        Args:
+            task_id: ID of the task
+
+        Returns:
+            Progress reporter object
+        """
+
+        # Define the ProgressReporter class
+        class ProgressReporter:
+            def __init__(self, task_id: str, manager: TaskManager):
+                self.task_id = task_id
+                self.manager = manager
+
+            async def report_progress(self, percent: int, message: str = "") -> None:
+                await self.manager._update_task_progress(self.task_id, percent, message)
+
+            # Sync version for compatibility
+            def report(self, percent: int, message: str = "") -> None:
+                asyncio.create_task(self.report_progress(percent, message))
+
+        return ProgressReporter(task_id, self)
+
+    async def _update_task_progress(self, task_id: str, percent: int, message: str) -> None:
+        """Update the progress of a task.
+
+        Args:
+            task_id: ID of the task
+            percent: Progress percentage (0-100)
+            message: Progress message
+        """
+        if not self._initialized or task_id not in self._tasks:
+            return
+
+        # Clamp percent to 0-100
+        percent = max(0, min(100, percent))
+
+        # Update task info
+        async with self._task_lock:
+            task_info = self._tasks.get(task_id)
+            if not task_info or task_info.status != TaskStatus.RUNNING:
+                return
+
+            task_info.progress = TaskProgress(
+                percent=percent,
+                message=message,
+                updated_at=time.time()
+            )
+
+        # Publish task progress event
+        await self._publish_task_event('task/progress', task_id, task_info)
+
+    async def _publish_task_event(self, event_type: str, task_id: str, task_info: TaskInfo) -> None:
+        """Publish a task event.
+
+        Args:
+            event_type: Type of the event
+            task_id: ID of the task
+            task_info: Task information
+        """
+        if not self._event_bus or not hasattr(self._event_bus, 'publish'):
+            return
+
+        # Create event payload
+        payload = {
+            'task_id': task_id,
+            'name': task_info.name,
+            'category': task_info.category.value,
+            'plugin_id': task_info.plugin_id,
+            'status': task_info.status.value,
+            'progress': {
+                'percent': task_info.progress.percent,
+                'message': task_info.progress.message
+            }
+        }
+
+        # Add timing information
+        if task_info.started_at:
+            payload['started_at'] = task_info.started_at
+
+        if task_info.completed_at:
+            payload['completed_at'] = task_info.completed_at
+            payload['duration'] = task_info.completed_at - (task_info.started_at or task_info.created_at)
+
+        # Add error information if failed
+        if task_info.status == TaskStatus.FAILED and task_info.error:
+            payload['error'] = task_info.error
+
+        # Add result if completed and not too large
+        if task_info.status == TaskStatus.COMPLETED and task_info.result is not None:
+            try:
+                # Check if the result is serializable and not too large
+                result_str = str(task_info.result)
+                if len(result_str) <= 1024:  # Limit result size
+                    payload['result'] = task_info.result
+            except Exception:
+                pass
+
+        # Publish the event
+        await self._event_bus.publish(
+            event_type=event_type,
+            source='task_manager',
+            payload=payload
+        )
+
+    def _on_config_changed(self, key: str, value: Any) -> None:
+        """Handle configuration changes.
+
+        Args:
+            key: The configuration key that changed
+            value: The new value
+        """
+        if key == 'tasks.max_concurrent_tasks':
+            self._max_concurrent_tasks = int(value)
+            self._logger.info(f'Updated max concurrent tasks to {self._max_concurrent_tasks}')
+        elif key == 'tasks.keep_completed_tasks':
+            self._keep_completed_tasks = int(value)
+            self._logger.info(f'Updated keep completed tasks to {self._keep_completed_tasks}')
+        elif key == 'tasks.default_timeout':
+            self._task_timeout = float(value)
+            self._logger.info(f'Updated default task timeout to {self._task_timeout}')
+
+    def status(self) -> Dict[str, Any]:
+        """Get the status of the task manager.
+
+        Returns:
+            Dictionary containing status information
         """
         status = super().status()
 
         if self._initialized:
-            with self.lock:
-                running_count = len(self.running_tasks)
-                total_registered = sum(len(tasks) for tasks in self.tasks.values())
+            # Count tasks by status
+            status_counts = {status.value: 0 for status in TaskStatus}
+            category_counts = {category.value: 0 for category in TaskCategory}
+            plugin_tasks = set()
+
+            for task_info in self._tasks.values():
+                status_counts[task_info.status.value] += 1
+                category_counts[task_info.category.value] += 1
+                if task_info.plugin_id:
+                    plugin_tasks.add(task_info.plugin_id)
 
             status.update({
                 'tasks': {
-                    'running': running_count,
-                    'registered': total_registered,
-                    'by_plugin': {
-                        plugin: len(tasks)
-                        for plugin, tasks in self.tasks.items()
-                    }
+                    'total': len(self._tasks),
+                    'by_status': status_counts,
+                    'by_category': category_counts,
+                    'plugins_with_tasks': len(plugin_tasks)
                 },
-                'healthy': self._initialized and self._healthy
+                'config': {
+                    'max_concurrent_tasks': self._max_concurrent_tasks,
+                    'keep_completed_tasks': self._keep_completed_tasks,
+                    'default_timeout': self._task_timeout
+                }
             })
 
         return status

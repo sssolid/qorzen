@@ -85,7 +85,7 @@ class LoggingManager(QorzenManager):
         Args:
             config_manager: The Configuration Manager to use for logging settings.
         """
-        super().__init__(name="LoggingManager")
+        super().__init__(name="logging_manager")
         self._config_manager = config_manager
         self._root_logger: Optional[logging.Logger] = None
         self._file_handler: Optional[logging.Handler] = None

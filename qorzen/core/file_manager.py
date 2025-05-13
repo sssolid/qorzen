@@ -66,7 +66,7 @@ class FileManager(QorzenManager):
             config_manager: The Configuration Manager to use for file settings.
             logger_manager: The Logging Manager to use for logging.
         """
-        super().__init__(name="FileManager")
+        super().__init__(name="file_manager")
         self._config_manager = config_manager
         self._logger = logger_manager.get_logger("file_manager")
 

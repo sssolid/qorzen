@@ -1,3 +1,3 @@
 """User interface components for the Qorzen platform."""
 
-from qorzen.ui.panel_ui import MainWindow
+from qorzen.ui.main_window import MainWindow

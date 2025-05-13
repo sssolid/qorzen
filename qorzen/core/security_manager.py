@@ -96,7 +96,7 @@ class SecurityManager(QorzenManager):
             event_bus_manager: The Event Bus Manager for security events.
             db_manager: Optional Database Manager for persistent storage.
         """
-        super().__init__(name="SecurityManager")
+        super().__init__(name="security_manager")
         self._config_manager = config_manager
         self._logger = logger_manager.get_logger("security_manager")
         self._event_bus = event_bus_manager

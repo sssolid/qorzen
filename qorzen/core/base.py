@@ -1,129 +1,99 @@
 from __future__ import annotations
-
 import abc
+import asyncio
+import logging
 from typing import Any, Dict, Optional, Protocol, TypeVar, runtime_checkable
 
-T = TypeVar("T", bound="BaseManager")
+T = TypeVar('T', bound='AsyncBaseManager')
 
 
 @runtime_checkable
 class BaseManager(Protocol):
-    """Protocol defining the interface that all managers must implement.
+    """Protocol defining basic async manager functionality."""
 
-    All core managers in Qorzen must adhere to this interface to ensure
-    consistent initialization, status reporting, and lifecycle management.
-    """
-
-    def initialize(self) -> None:
-        """Initialize the manager and its resources.
-
-        This method should be called after the manager is instantiated to set up
-        any required resources, connections, or state. Managers should not perform
-        heavy initialization in __init__ but should defer it to this method.
-
-        Raises:
-            ManagerInitializationError: If initialization fails.
-        """
+    async def initialize(self) -> None:
+        """Initialize the manager asynchronously."""
         ...
 
-    def shutdown(self) -> None:
-        """Gracefully shut down the manager and release resources.
-
-        This method should properly close connections, stop threads, and release
-        any resources held by the manager to prevent leaks or corruption.
-
-        Raises:
-            ManagerShutdownError: If shutdown fails.
-        """
+    async def shutdown(self) -> None:
+        """Shutdown the manager asynchronously."""
         ...
 
     def status(self) -> Dict[str, Any]:
-        """Return the current status of the manager.
-
-        Returns:
-            Dict[str, Any]: A dictionary containing status information such as:
-                - 'name': The name of the manager
-                - 'initialized': Whether the manager is properly initialized
-                - 'healthy': Whether the manager is functioning correctly
-                - Additional manager-specific status fields
-        """
+        """Return the current status of the manager."""
         ...
 
 
 class QorzenManager(abc.ABC):
-    """Abstract base class for all Qorzen managers.
-
-    This class provides a concrete implementation of common functionality
-    that all managers should have, serving as a base class for specific managers.
-    """
+    """Base class for asynchronous managers in the Qorzen framework."""
 
     def __init__(self, name: str) -> None:
-        """Initialize the manager with a name.
+        """Initialize the async manager with a name.
 
         Args:
-            name: The name of the manager, used for logging and identification.
+            name: The name of the manager
         """
         self._name: str = name
         self._initialized: bool = False
         self._healthy: bool = False
+        self._logger: Optional[logging.Logger] = None
 
     @abc.abstractmethod
-    def initialize(self) -> None:
-        """Initialize the manager and its resources.
+    async def initialize(self) -> None:
+        """Initialize the manager asynchronously.
 
-        Implementations should set self._initialized to True when successful.
+        This method should be implemented by subclasses to perform
+        initialization tasks like loading configuration, setting up
+        connections, etc.
 
         Raises:
-            ManagerInitializationError: If initialization fails.
+            ManagerInitializationError: If initialization fails
         """
         pass
 
     @abc.abstractmethod
-    def shutdown(self) -> None:
-        """Gracefully shut down the manager and release resources.
+    async def shutdown(self) -> None:
+        """Shutdown the manager asynchronously.
 
-        Implementations should set self._initialized to False when successful.
+        This method should be implemented by subclasses to perform
+        cleanup tasks like closing connections, releasing resources, etc.
 
         Raises:
-            ManagerShutdownError: If shutdown fails.
+            ManagerShutdownError: If shutdown fails
         """
         pass
 
     def status(self) -> Dict[str, Any]:
-        """Return the current status of the manager.
+        """Get the current status of the manager.
 
         Returns:
-            Dict[str, Any]: A dictionary containing status information.
+            Dictionary containing status information
         """
         return {
-            "name": self._name,
-            "initialized": self._initialized,
-            "healthy": self._healthy,
+            'name': self._name,
+            'initialized': self._initialized,
+            'healthy': self._healthy
         }
 
     @property
     def name(self) -> str:
-        """Get the name of the manager.
-
-        Returns:
-            str: The manager name.
-        """
+        """Get the manager's name."""
         return self._name
 
     @property
     def initialized(self) -> bool:
-        """Check if the manager is initialized.
-
-        Returns:
-            bool: True if the manager is initialized, False otherwise.
-        """
+        """Check if the manager is initialized."""
         return self._initialized
 
     @property
     def healthy(self) -> bool:
-        """Check if the manager is healthy.
-
-        Returns:
-            bool: True if the manager is healthy, False otherwise.
-        """
+        """Check if the manager is healthy."""
         return self._healthy
+
+    def set_logger(self, logger: logging.Logger) -> None:
+        """Set the logger for this manager.
+
+        Args:
+            logger: Logger instance to use
+        """
+        self._logger = logger

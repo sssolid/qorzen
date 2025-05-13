@@ -1,22 +1,16 @@
 from __future__ import annotations
-
 import argparse
+import asyncio
+import importlib
 import os
 import sys
 import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
 
-from PySide6.QtWidgets import QApplication, QSplashScreen
-from PySide6.QtGui import QPixmap, QIcon
-from PySide6.QtCore import Qt, QTimer
 
-# Import resources
-import qorzen.resources_rc
-
-
-def setup_environment() -> None:
-    """Set up the environment for running the application."""
+async def setup_environment() -> None:
+    """Set up the environment for the application."""
     parent_dir = Path(__file__).parent.parent
     sys.path.insert(0, str(parent_dir))
     os.environ.setdefault('PYTHONUNBUFFERED', '1')
@@ -26,7 +20,7 @@ def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments.
 
     Returns:
-        The parsed arguments
+        Parsed arguments
     """
     parser = argparse.ArgumentParser(description='Qorzen - Modular Platform')
     parser.add_argument('--config', type=str, help='Path to configuration file', default=None)
@@ -35,6 +29,7 @@ def parse_arguments() -> argparse.Namespace:
 
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
 
+    # Build command
     build_parser = subparsers.add_parser('build', help='Build the application')
     build_parser.add_argument('--platform', type=str, default='current')
     build_parser.add_argument('--type', type=str, default='onedir')
@@ -45,30 +40,8 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_steps(steps: List[Callable[[], None]], on_complete: Callable[[], None],
-              on_error: Callable[[str], None]) -> None:
-    """Run a sequence of steps asynchronously.
-
-    Args:
-        steps: The steps to run
-        on_complete: Callback for when all steps complete successfully
-        on_error: Callback for when a step fails
-    """
-    if not steps:
-        on_complete()
-        return
-
-    try:
-        step = steps.pop(0)
-        step()
-        QTimer.singleShot(0, lambda: run_steps(steps, on_complete, on_error))
-    except Exception as e:
-        on_error(str(e))
-
-
-def start_ui(args: argparse.Namespace) -> int:
-    """
-    Start the application UI.
+async def start_ui(args: argparse.Namespace) -> int:
+    """Start the application with a graphical user interface.
 
     Args:
         args: Command line arguments
@@ -76,74 +49,176 @@ def start_ui(args: argparse.Namespace) -> int:
     Returns:
         Exit code
     """
-    from qorzen.ui.panel_ui import MainWindow
-    from qorzen.core.app import ApplicationCore
-    from qorzen.utils.qt_thread_debug import install_enhanced_thread_debug, uninstall_enhanced_thread_debug
+    try:
+        # Import Qt-related modules here to avoid circular imports
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QPixmap, QIcon
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QSplashScreen
+        import qorzen.resources_rc
 
-    # Install Qt threading debug if debugging is enabled
-    if args.debug:
-        install_enhanced_thread_debug(enable_logging=True)
-        print("Installed Qt threading debug - threading issues will be logged")
+        # Import core modules
+        from qorzen.core.app import ApplicationCore
+        from qorzen.core.error_handler import ErrorHandler, set_global_error_handler, \
+            install_global_exception_hook
+        from qorzen.ui.main_window import MainWindow
+        from qorzen.ui.ui_integration import UIIntegration
 
-    app = QApplication.instance() or QApplication(sys.argv)
-    QIcon.setThemeName('breeze')
+        # Create application first to ensure we have an event loop
+        app = QApplication.instance() or QApplication(sys.argv)
 
-    splash_path = Path('resources/logos/qorzen.png').resolve().as_posix()
-    splash = QSplashScreen(QPixmap(splash_path), Qt.WindowStaysOnTopHint)
-    splash.show()
-    app.processEvents()
-
-    app_core = ApplicationCore(config_path=args.config)
-
-    def update_progress(message: str, percent: int) -> None:
-        splash.showMessage(f'{message} ({percent}%)', Qt.AlignBottom | Qt.AlignCenter, Qt.white)
-        app.processEvents()
-
-    def on_complete() -> None:
-        try:
-            app_core.finalize_initialization()
-        except Exception as e:
-            print(f'Finalization failed: {e}')
-            traceback.print_exc()
-            splash.close()
-            app.exit(1)
-            return
-
+        # Set the application icon
+        QIcon.setThemeName('breeze')
         icon_path = Path('resources/logos/qorzen.ico').resolve().as_posix()
         app.setWindowIcon(QIcon(icon_path))
 
+        # Show splash screen
+        splash_path = Path('resources/logos/qorzen.png').resolve().as_posix()
+        splash = QSplashScreen(QPixmap(splash_path), Qt.WindowStaysOnTopHint)
+        splash.show()
+        app.processEvents()
+
+        # Function to update progress
+        def update_progress(message: str, percent: int) -> None:
+            splash.showMessage(f'{message} ({percent}%)', Qt.AlignBottom | Qt.AlignCenter, Qt.white)
+            app.processEvents()
+
+        # Create application core
+        app_core = ApplicationCore(config_path=args.config)
+
+        # Initialize application core
+        await app_core.initialize(progress_callback=update_progress)
+
+        # Setup error handling
+        event_bus = app_core.get_manager('event_bus_manager')
+        logger_manager = app_core.get_manager('logging_manager')
+        config_manager = app_core.get_manager('config_manager')
+
+        error_handler = ErrorHandler(event_bus, logger_manager, config_manager)
+        set_global_error_handler(error_handler)
+        install_global_exception_hook()
+
+        # Create main window
         main_window = MainWindow(app_core)
-        app_core.set_main_window(main_window)
+
+        # Setup UI integration
+        concurrency_manager = app_core.get_manager('concurrency_manager')
+        ui_integration = UIIntegration(main_window, concurrency_manager, logger_manager)
+
+        # Set UI integration in application core
+        app_core.set_ui_integration(ui_integration)
+
+        # Install signal handlers for clean shutdown
+        app_core.setup_signal_handlers()
+
+        # Show main window
         main_window.show()
         splash.finish(main_window)
 
-    def on_error(err: str) -> None:
-        print(f'Initialization failed: {err}')
+        # Create a task to run the application
+        async def run_app() -> int:
+            # Wait for the application to exit
+            exit_future = asyncio.Future()
+            app.aboutToQuit.connect(lambda: exit_future.set_result(0))
+
+            # Wait for shutdown or application exit
+            done, pending = await asyncio.wait(
+                [app_core.wait_for_shutdown(), exit_future],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # Cancel any pending tasks
+            for task in pending:
+                task.cancel()
+
+            # Shutdown application core if not already done
+            await app_core.shutdown()
+
+            # Return the exit code
+            return exit_future.result() if exit_future.done() else 0
+
+        # Run Qt event loop with asyncio
+        loop = asyncio.get_event_loop()
+
+        # Create a task to monitor the asyncio loop
+        async def monitor_tasks() -> None:
+            while True:
+                await asyncio.sleep(0.1)
+                app.processEvents()
+
+        monitor_task = asyncio.create_task(monitor_tasks())
+
+        # Run the application until it exits
+        exit_code = 0
+        try:
+            exit_code = await run_app()
+        finally:
+            # Clean up
+            monitor_task.cancel()
+
+        return exit_code
+    except Exception as e:
+        print(f'Error starting UI: {e}')
         traceback.print_exc()
-        splash.close()
-        app.exit(1)
-
-    steps = app_core.get_initialization_steps(update_progress)
-    QTimer.singleShot(0, lambda: run_steps(steps, on_complete, on_error))
-
-    # Run the app and clean up debugging when done
-    exit_code = app.exec()
-
-    # Clean up Qt threading debug
-    if args.debug:
-        uninstall_enhanced_thread_debug()
-
-    return exit_code
+        return 1
 
 
-def handle_build_command(args: argparse.Namespace) -> int:
+async def run_headless(args: argparse.Namespace) -> int:
+    """Run the application in headless mode.
+
+    Args:
+        args: Command line arguments
+
+    Returns:
+        Exit code
+    """
+    try:
+        # Import core modules
+        from qorzen.core.app import ApplicationCore
+        from qorzen.core.error_handler import ErrorHandler, set_global_error_handler, \
+            install_global_exception_hook
+
+        # Create application core
+        app_core = ApplicationCore(config_path=args.config)
+
+        # Initialize application core
+        await app_core.initialize()
+
+        # Setup error handling
+        event_bus = app_core.get_manager('event_bus_manager')
+        logger_manager = app_core.get_manager('logging_manager')
+        config_manager = app_core.get_manager('config_manager')
+
+        error_handler = ErrorHandler(event_bus, logger_manager, config_manager)
+        set_global_error_handler(error_handler)
+        install_global_exception_hook()
+
+        # Install signal handlers for clean shutdown
+        app_core.setup_signal_handlers()
+
+        print('Qorzen running in headless mode. Press Ctrl+C to exit.')
+
+        # Wait for shutdown signal
+        await app_core.wait_for_shutdown()
+
+        # Shutdown application core
+        await app_core.shutdown()
+
+        return 0
+    except Exception as e:
+        print(f'Error running headless: {e}')
+        traceback.print_exc()
+        return 1
+
+
+async def handle_build_command(args: argparse.Namespace) -> int:
     """Handle the build command.
 
     Args:
-        args: The command line arguments
+        args: Command line arguments
 
     Returns:
-        The exit code
+        Exit code
     """
     try:
         from qorzen.build.cli import main as build_cli
@@ -161,81 +236,51 @@ def handle_build_command(args: argparse.Namespace) -> int:
             build_args.append('--create-installer')
 
         return build_cli(build_args)
-
     except ImportError as e:
         print(f'Error importing build module: {e}')
         print("Make sure you have installed the build dependencies with 'pip install qorzen[build]'")
         return 1
 
 
-def run_headless(args: argparse.Namespace) -> int:
-    """Run the application in headless mode.
-
-    Args:
-        args: The command line arguments
+async def main_async() -> int:
+    """Main entry point for the application (async version).
 
     Returns:
-        The exit code
+        Exit code
     """
-    from qorzen.core.app import ApplicationCore
-
-    app_core = ApplicationCore(config_path=args.config)
-    app_core.finalize_initialization()
-
-    print('Qorzen running in headless mode. Press Ctrl+C to exit.')
-
-    import signal
-
-    def signal_handler(sig: int, frame: Any) -> None:
-        """Handle signal to gracefully shut down.
-
-        Args:
-            sig: The signal number
-            frame: The current stack frame
-        """
-        print('\nShutting down Qorzen...')
-        app_core.shutdown()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    await setup_environment()
+    args = parse_arguments()
 
     try:
-        signal.pause()
-    except KeyboardInterrupt:
-        print('\nShutting down Qorzen...')
-        app_core.shutdown()
+        if args.command == 'build':
+            return await handle_build_command(args)
 
-    return 0
+        if args.headless:
+            return await run_headless(args)
+        else:
+            return await start_ui(args)
+    except Exception as e:
+        print(f'Error starting Qorzen: {e}')
+        traceback.print_exc()
+        return 1
 
 
 def main() -> int:
     """Main entry point for the application.
 
     Returns:
-        The exit code
+        Exit code
     """
-    # Set up environment
-    setup_environment()
-
-    # Parse arguments
-    args = parse_arguments()
-
+    # Create an event loop
     try:
-        # Handle specific commands
-        if args.command == 'build':
-            return handle_build_command(args)
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        # No event loop exists, create a new one
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
-        # Run in UI or headless mode
-        if not args.headless:
-            return start_ui(args)
-        else:
-            return run_headless(args)
-
-    except Exception as e:
-        print(f'Error starting Qorzen: {e}')
-        traceback.print_exc()
-        return 1
+    # Run the async main function
+    return loop.run_until_complete(main_async())
 
 
 if __name__ == '__main__':
