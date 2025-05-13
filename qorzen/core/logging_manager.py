@@ -341,8 +341,8 @@ class LoggingManager(QorzenManager):
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
         if logging_config.get('ui', {}).get('enabled', True) and self._event_bus_manager:
-            self._event_bus_manager_handler = EventBusManagerLogHandler(self._event_bus_manager)
-            self._event_bus_manager_handler.addFilter(ExcludeLoggerFilter('event_bus_manager'))
+            self._event_bus_handler = EventBusManagerLogHandler(self._event_bus_manager)
+            self._event_bus_handler.addFilter(ExcludeLoggerFilter('event_bus_manager'))
             self._event_bus_handler.setLevel(log_level)
             self._event_bus_handler.setFormatter(formatter)
             self._root_logger.addHandler(self._event_bus_handler)

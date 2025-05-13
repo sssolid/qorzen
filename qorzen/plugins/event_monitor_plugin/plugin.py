@@ -271,7 +271,7 @@ class EventMonitorPlugin:
                 text += "Plugin manager not available\n"
             else:
                 # Get all plugins
-                all_plugins = self.plugin_manager.get_all_plugins()
+                all_plugins = self.plugin_manager.get_plugins()
 
                 text += f"Total plugins: {len(all_plugins)}\n\n"
 
@@ -348,7 +348,7 @@ class EventMonitorPlugin:
 
             # Reinstall plugin menu items
             if self.plugin_manager:
-                all_plugins = self.plugin_manager.get_all_plugins()
+                all_plugins = self.plugin_manager.get_plugins()
                 for plugin in all_plugins:
                     instance = plugin.get("instance")
                     if instance and hasattr(instance, "_add_menu_items"):

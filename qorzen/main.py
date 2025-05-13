@@ -92,6 +92,7 @@ async def start_ui(args: argparse.Namespace) -> int:
         # Setup error handling
         event_bus = app_core.get_manager('event_bus_manager')
         logger_manager = app_core.get_manager('logging_manager')
+        await logger_manager.set_event_bus_manager(event_bus)
         config_manager = app_core.get_manager('config_manager')
 
         error_handler = ErrorHandler(event_bus, logger_manager, config_manager)
@@ -122,8 +123,9 @@ async def start_ui(args: argparse.Namespace) -> int:
             app.aboutToQuit.connect(lambda: exit_future.set_result(0))
 
             # Wait for shutdown or application exit
+            shutdown_task = asyncio.create_task(app_core.wait_for_shutdown())
             done, pending = await asyncio.wait(
-                [app_core.wait_for_shutdown(), exit_future],
+                [shutdown_task, exit_future],
                 return_when=asyncio.FIRST_COMPLETED
             )
 
@@ -133,6 +135,7 @@ async def start_ui(args: argparse.Namespace) -> int:
 
             # Shutdown application core if not already done
             await app_core.shutdown()
+            await app_core._ui_integration.shutdown()
 
             # Return the exit code
             return exit_future.result() if exit_future.done() else 0
@@ -155,6 +158,10 @@ async def start_ui(args: argparse.Namespace) -> int:
         finally:
             # Clean up
             monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
 
         return exit_code
     except Exception as e:

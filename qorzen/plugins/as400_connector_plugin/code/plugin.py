@@ -28,7 +28,7 @@ class AS400ConnectorPlugin(BasePlugin):
 
     def __init__(self) -> None:
         super().__init__()  # Initialize QObject
-        self._event_bus = None
+        self._event_bus_manager = None
         self._logger = None
         self._config = None
         self._file_manager = None
@@ -46,7 +46,7 @@ class AS400ConnectorPlugin(BasePlugin):
 
     def initialize(self, event_bus_manager: Any, logger_provider: Any, config_provider: Any, file_manager: Any = None,
                    thread_manager: Any = None, database_manager: Any = None, security_manager: Any = None, **kwargs: Any) -> None:
-        self._event_bus = event_bus
+        self._event_bus_manager = event_bus
         self._logger = logger_provider.get_logger(f'plugin.{self.name}')
         self._config = config_provider
         self._file_manager = file_manager

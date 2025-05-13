@@ -87,7 +87,7 @@ class AS400Tab(QWidget):
         """
         super().__init__(parent)
 
-        self._event_bus = event_bus
+        self._event_bus_manager = event_bus
         self._logger = logger
         self._config = config
         self._file_manager = file_manager

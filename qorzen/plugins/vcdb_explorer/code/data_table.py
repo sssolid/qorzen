@@ -633,7 +633,7 @@ class DataTableWidget(QWidget):
         self._query_thread = None
 
         self._database_handler = database_handler
-        self._event_bus = event_bus
+        self._event_bus_manager = event_bus
         self._logger = logger
         self._available_columns = database_handler.get_available_columns()
         self._column_map = {col['id']: col['name'] for col in self._available_columns}

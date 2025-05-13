@@ -303,7 +303,7 @@ class FilterPanel(QGroupBox):
 
         self._panel_id = panel_id
         self._database_handler = database_handler
-        self._event_bus = event_bus
+        self._event_bus_manager = event_bus
         self._logger = logger
         self._available_filters = database_handler.get_available_filters()
         self._filters: Dict[str, FilterWidget] = {}
@@ -633,7 +633,7 @@ class FilterPanelManager(QWidget):
         super().__init__(parent)
 
         self._database_handler = database_handler
-        self._event_bus = event_bus
+        self._event_bus_manager = event_bus
         self._logger = logger
         self._max_panels = max_panels
         self._panels: Dict[str, FilterPanel] = {}

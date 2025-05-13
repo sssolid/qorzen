@@ -588,7 +588,7 @@ class APIManager(QorzenManager):
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail='Plugin Manager not available'
                 )
-            return await self._registry['plugin_manager'].get_all_plugins()
+            return await self._registry['plugin_manager'].get_plugins()
 
         @router.get('/{plugin_name}', response_model=PluginResponse)
         async def get_plugin(

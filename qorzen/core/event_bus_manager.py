@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import inspect
 import queue
 import threading
 import uuid
@@ -105,72 +106,66 @@ class EventBusManager(QorzenManager):
             ) from e
 
     async def _event_worker(self, worker_id: int) -> None:
-        """Worker task for processing events from the queue.
-
-        Args:
-            worker_id: ID of the worker task
-        """
+        """Worker task for processing events from the queue."""
         self._logger.debug(f"Event worker {worker_id} started")
 
-        while self._running and (not self._stop_event.is_set()):
+        while self._running and not self._stop_event.is_set():
             try:
-                # Get an event from the queue with timeout
+                # Pull an event off the queue, or time out quickly so we can exit
                 try:
-                    event, subscriptions = await asyncio.wait_for(
-                        self._event_queue.get(),
-                        timeout=0.1  # Short timeout allows for stopping
-                    )
+                    event, subscriptions = await self._event_queue.get()
                 except asyncio.TimeoutError:
                     continue
 
-                try:
-                    # Process the event
-                    needs_main_thread = EventType.requires_main_thread(event.event_type)
-                    tasks = []
+                needs_main = EventType.requires_main_thread(event.event_type)
+                background_tasks: list[asyncio.Task] = []
 
-                    for subscription in subscriptions:
-                        try:
-                            callback = subscription.callback
+                for subscription in subscriptions:
+                    callback = subscription.callback
 
-                            if needs_main_thread and self._thread_manager:
-                                # Run on main thread - this is async now
-                                await self._thread_manager.run_on_main_thread(
-                                    lambda s=subscription, e=event: callback(e)
-                                )
-                            else:
-                                # Check if the callback is a coroutine function
-                                if asyncio.iscoroutinefunction(callback):
-                                    # Create a task for each async callback
-                                    task = asyncio.create_task(
-                                        callback(event),
-                                        name=f"event-handler-{event.event_type}-{subscription.subscriber_id}"
-                                    )
-                                    tasks.append(task)
+                    try:
+                        if needs_main and self._thread_manager:
+                            # Dispatch on the Qt/main thread
+                            def dispatch() -> None:
+                                if inspect.iscoroutinefunction(callback):
+                                    # schedule the coroutine so it actually runs
+                                    asyncio.create_task(callback(event))
                                 else:
-                                    # For synchronous callbacks, run directly
                                     callback(event)
-                        except Exception as e:
-                            self._logger.error(
-                                f'Error in event handler for {event.event_type}: {str(e)}',
-                                extra={
-                                    'event_id': event.event_id,
-                                    'subscription_id': subscription.subscriber_id,
-                                    'error': str(e)
-                                }
-                            )
 
-                    # Wait for all async tasks to complete
-                    if tasks:
-                        await asyncio.gather(*tasks, return_exceptions=True)
+                            await self._thread_manager.run_on_main_thread(dispatch)
 
-                finally:
-                    # Mark the task as done even if there was an error
-                    self._event_queue.task_done()
+                        else:
+                            # Off–main‑thread delivery
+                            if inspect.iscoroutinefunction(callback):
+                                task = asyncio.create_task(
+                                    callback(event),
+                                    name=f"event-{event.event_type}-{subscription.subscriber_id}"
+                                )
+                                background_tasks.append(task)
+                            else:
+                                callback(event)
 
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self._logger.error(f'Unexpected error in event worker {worker_id}: {str(e)}')
+                    except Exception as e:
+                        self._logger.error(
+                            f"Error in event handler for {event.event_type}: {e}",
+                            extra={
+                                "event_id": event.event_id,
+                                "subscription_id": subscription.subscriber_id,
+                                "error": str(e),
+                            }
+                        )
+
+                # Wait for any off‑main‑thread handlers to finish
+                if background_tasks:
+                    results = await asyncio.gather(*background_tasks, return_exceptions=True)
+                    for result in results:
+                        if isinstance(result, Exception):
+                            self._logger.error(f"Unhandled exception in async handler: {result}")
+
+            finally:
+                # Always mark the queue item done, even on error
+                self._event_queue.task_done()
 
         self._logger.debug(f"Event worker {worker_id} stopped")
 

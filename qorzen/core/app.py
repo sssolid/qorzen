@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import importlib
+import inspect
 import logging
 import os
 import signal
@@ -533,6 +534,33 @@ class ApplicationCore:
             if self._logger:
                 self._logger.error(f'Failed to submit core task: {str(e)}', exc_info=True)
             raise ApplicationError(f'Failed to submit core task: {str(e)}') from e
+
+    async def status_async(self) -> Dict[str, Any]:
+        """Asynchronously collect all managers’ statuses, awaiting where needed."""
+        status = {
+            'name': 'AsyncApplicationCore',
+            'initialized': self._initialized,
+            'version': self._get_version(),
+            'ui_integration': self._ui_integration is not None,
+            'managers': {}
+        }
+        for name, manager in self._managers.items():
+            try:
+                # If manager.status is an async function, await it…
+                if inspect.iscoroutinefunction(manager.status):
+                    mgr_status = await manager.status()
+                else:
+                    result = manager.status()
+                    # …or if it returns an awaitable, await that
+                    mgr_status = await result if inspect.isawaitable(result) else result
+                status['managers'][name] = mgr_status
+            except Exception as e:
+                status['managers'][name] = {
+                    'error': f'Failed to get status: {e}',
+                    'initialized': getattr(manager, 'initialized', False),
+                    'healthy': getattr(manager, 'healthy', False)
+                }
+        return status
 
     def status(self) -> Dict[str, Any]:
         """Get the application status.

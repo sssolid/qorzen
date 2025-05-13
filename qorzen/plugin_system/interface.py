@@ -106,7 +106,7 @@ class BasePlugin(QObject):
 
             # Get essential services
             try:
-                self._event_bus = service_locator.get(ManagerType.EVENT_BUS)
+                self._event_bus_manager = service_locator.get(ManagerType.EVENT_BUS)
 
                 logger_provider = service_locator.get(ManagerType.LOGGING)
                 if logger_provider:

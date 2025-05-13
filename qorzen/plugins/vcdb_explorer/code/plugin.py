@@ -33,7 +33,7 @@ class VCdbExplorerWidget(QWidget):
                  export_settings: Dict[str, Any], parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._database_handler = database_handler
-        self._event_bus = event_bus
+        self._event_bus_manager = event_bus
         self._thread_manager = thread_manager
         self._logger = logger
         self._export_settings = export_settings
@@ -222,7 +222,7 @@ class VCdbExplorerPlugin(BasePlugin):
         self._logger.info(f'Initializing {self.name} plugin')
 
         self._thread_manager = thread_manager
-        self._event_bus = event_bus
+        self._event_bus_manager = event_bus
 
         # Load configuration
         self._load_config()

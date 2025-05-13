@@ -76,9 +76,9 @@ class MainWindow(QMainWindow):
         self._subscribe_to_events()
 
         # Set up update timer
-        self._update_timer = QTimer(self)
-        self._update_timer.timeout.connect(self._update_status)
-        self._update_timer.start(5000)
+        # self._update_timer = QTimer(self)
+        # self._update_timer.timeout.connect(self._update_status)
+        # self._update_timer.start(5000)
 
         self._logger.info("Qorzen UI started")
 

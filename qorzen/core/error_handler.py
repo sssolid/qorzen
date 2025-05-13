@@ -10,6 +10,8 @@ from enum import Enum, auto
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar, Union, cast
 
+from qorzen.utils import EventBusError
+
 T = TypeVar('T')
 
 
@@ -484,7 +486,7 @@ class ErrorHandler:
         Args:
             error_info: Error information
         """
-        if not hasattr(self._event_bus, 'publish'):
+        if not hasattr(self._event_bus_manager, 'publish'):
             return
 
         # Create payload
@@ -731,31 +733,28 @@ def install_global_exception_hook() -> None:
     """Install a global exception hook to catch unhandled exceptions."""
     original_excepthook = sys.excepthook
 
-    def global_exception_hook(exc_type: type, exc_value: Exception, exc_tb: Any) -> None:
-        # Only handle if we have a global error handler
+    def global_exception_hook(exc_type, exc_value, exc_tb):
         if _global_error_handler is not None:
-            tb_str = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+            tb_str = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
 
-            # Create an async function to handle the error
             async def handle_unhandled_error() -> None:
-                await _global_error_handler.handle_error(
-                    message=str(exc_value),
-                    source='unhandled',
-                    severity=ErrorSeverity.CRITICAL,
-                    traceback=tb_str
-                )
+                try:
+                    await _global_error_handler.handle_error(
+                        message=str(exc_value),
+                        source="unhandled",
+                        severity=ErrorSeverity.CRITICAL,
+                        traceback=tb_str
+                    )
+                except EventBusError:
+                    # event bus is not available, ignore
+                    pass
 
-            # Run the async function in the event loop
             try:
-                loop = asyncio.get_event_loop()
-                loop.run_until_complete(handle_unhandled_error())
+                loop = asyncio.get_running_loop()
+                loop.create_task(handle_unhandled_error())
             except RuntimeError:
-                # No event loop, create one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(handle_unhandled_error())
-
-        # Call the original excepthook
+                # no loop at all: run it without publishing
+                asyncio.run(handle_unhandled_error())
         original_excepthook(exc_type, exc_value, exc_tb)
 
     # Set the new exception hook

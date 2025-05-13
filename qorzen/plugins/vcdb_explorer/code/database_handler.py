@@ -74,7 +74,7 @@ class DatabaseHandler:
             logger: Logger for this component
         """
         self._db_manager = database_manager
-        self._event_bus = event_bus
+        self._event_bus_manager = event_bus
         self._thread_manager = thread_manager
         self._logger = logger
         self._initialized = False
