@@ -176,7 +176,7 @@ class APIManager(QorzenManager):
         self._config_manager = config_manager
         self._logger = logger_manager.get_logger("api_manager")
         self._security_manager = security_manager
-        self._event_bus = event_bus_manager
+        self._event_bus_manager = event_bus_manager
         self._thread_manager = thread_manager
         self._registry = registry or {}
 
@@ -295,7 +295,7 @@ class APIManager(QorzenManager):
             )
 
             # Publish API started event
-            self._event_bus.publish(
+            self._event_bus_manager.publish(
                 event_type="api/started",
                 source="api_manager",
                 payload={

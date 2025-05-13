@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import atexit
+import asyncio
 import logging
 import logging.handlers
 import os
 import pathlib
 import sys
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Union, cast
+from typing import Any, Dict, List, Optional, Set, Union, cast, Callable, Awaitable
 
 import structlog
 from pythonjsonlogger import jsonlogger
@@ -18,20 +19,52 @@ from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownE
 
 
 class ExcludeLoggerFilter(logging.Filter):
-    def __init__(self, excluded_logger_name):
+    """Filter to exclude logs from specific loggers.
+
+    Args:
+        excluded_logger_name: The name of the logger to exclude
+    """
+
+    def __init__(self, excluded_logger_name: str) -> None:
         super().__init__()
         self.excluded_logger_name = excluded_logger_name
 
-    def filter(self, record):
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Filter out records from the excluded logger.
+
+        Args:
+            record: The log record to check
+
+        Returns:
+            True if the record should be included, False otherwise
+        """
         return not record.name.startswith(self.excluded_logger_name)
 
 
-class EventBusLogHandler(logging.Handler):
-    def __init__(self, event_bus_manager):
-        super().__init__()
-        self._event_bus = event_bus_manager  # Directly the manager itself
+class EventBusManagerLogHandler(logging.Handler):
+    """Log handler that publishes log events to an event bus.
 
-    def emit(self, record):
+    This handler formats log records and publishes them as events
+    to the event bus.
+
+    Args:
+        event_bus_manager: The event bus manager to publish events to
+    """
+
+    def __init__(self, event_bus_manager: Any) -> None:
+        super().__init__()
+        self._event_bus_manager = event_bus_manager
+        # Queue to hold log events until they can be processed
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._task: Optional[asyncio.Task] = None
+        self._running = False
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Process a log record by putting it in the queue.
+
+        Args:
+            record: The log record to process
+        """
         try:
             if self.formatter:
                 timestamp = self.formatter.formatTime(record)
@@ -41,51 +74,89 @@ class EventBusLogHandler(logging.Handler):
                 message = record.getMessage()
 
             event_payload = {
-                "timestamp": timestamp,
-                "level": record.levelname,
-                "message": message,
+                'timestamp': timestamp,
+                'level': record.levelname,
+                'message': message
             }
 
+            # Add to queue for async processing
             try:
-                self._event_bus.publish(
-                    event_type=EventType.LOG_EVENT,
-                    source="logging_manager",
-                    payload=event_payload
-                )
-            except EventBusError:
-                pass
-            except Exception:
+                self._queue.put_nowait((EventType.LOG_EVENT, 'logging_manager', event_payload))
+            except asyncio.QueueFull:
                 self.handleError(record)
-
         except Exception:
             self.handleError(record)
 
+    async def start_processing(self) -> None:
+        """Start the background task to process log events."""
+        if self._running:
+            return
+
+        self._running = True
+        self._task = asyncio.create_task(self._process_logs())
+
+    async def stop_processing(self) -> None:
+        """Stop the background processing task."""
+        if not self._running:
+            return
+
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    async def _process_logs(self) -> None:
+        """Process log events from the queue and publish them to the event bus."""
+        while self._running:
+            try:
+                event_type, source, payload = await self._queue.get()
+                try:
+                    await self._event_bus_manager.publish(
+                        event_type=event_type,
+                        source=source,
+                        payload=payload
+                    )
+                except Exception:
+                    # We don't want to fail if event publishing fails
+                    pass
+                finally:
+                    self._queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                # Ensure the loop continues even if there's an error
+                continue
+
 
 class LoggingManager(QorzenManager):
-    """Manages application logging configuration and access.
+    """Asynchronous logging manager for the application.
 
-    The Logging Manager provides a unified logging interface for all components
-    in the Qorzen system. It configures Python's logging module with appropriate
-    handlers based on configuration, and provides methods for components to obtain
-    loggers specialized for their domain.
+    This manager configures and provides access to the logging system,
+    supporting various outputs including console, file, and event bus.
+
+    Attributes:
+        LOG_LEVELS: Mapping of level names to logging levels
     """
 
-    # Mapping from string log levels to logging module constants
     LOG_LEVELS = {
-        "debug": logging.DEBUG,
-        "info": logging.INFO,
-        "warning": logging.WARNING,
-        "error": logging.ERROR,
-        "critical": logging.CRITICAL,
+        'debug': logging.DEBUG,
+        'info': logging.INFO,
+        'warning': logging.WARNING,
+        'error': logging.ERROR,
+        'critical': logging.CRITICAL
     }
 
     def __init__(self, config_manager: Any) -> None:
-        """Initialize the Logging Manager.
+        """Initialize the logging manager.
 
         Args:
-            config_manager: The Configuration Manager to use for logging settings.
+            config_manager: The configuration manager
         """
-        super().__init__(name="logging_manager")
+        super().__init__(name='logging_manager')
         self._config_manager = config_manager
         self._root_logger: Optional[logging.Logger] = None
         self._file_handler: Optional[logging.Handler] = None
@@ -95,121 +166,102 @@ class LoggingManager(QorzenManager):
         self._log_directory: Optional[pathlib.Path] = None
         self._enable_structlog = False
         self._handlers: List[logging.Handler] = []
-
-        # Set after app initialization
         self._event_bus_manager = None
+        self._event_bus_handler: Optional[EventBusLogHandler] = None
 
-    def initialize(self) -> None:
-        """Initialize the Logging Manager.
+    async def initialize(self) -> None:
+        """Initialize the logging manager asynchronously.
 
-        Sets up logging based on the configuration, creating handlers for console,
-        file, database, and ELK as configured.
+        Sets up logging configuration and handlers based on configuration.
 
         Raises:
-            ManagerInitializationError: If initialization fails.
+            ManagerInitializationError: If initialization fails
         """
         try:
-            # Get logging configuration
-            logging_config = self._config_manager.get("logging", {})
-            log_level_str = logging_config.get("level", "INFO").lower()
-            log_level = self.LOG_LEVELS.get(log_level_str, logging.INFO)
-            log_format = logging_config.get("format", "json").lower()
+            logging_config = await self._config_manager.get('logging', {})
 
-            # Create log directory if file logging is enabled
-            if logging_config.get("file", {}).get("enabled", True):
-                log_file_path = logging_config.get("file", {}).get(
-                    "path", "logs/qorzen.log"
-                )
+            log_level_str = logging_config.get('level', 'INFO').lower()
+            log_level = self.LOG_LEVELS.get(log_level_str, logging.INFO)
+
+            log_format = logging_config.get('format', 'json').lower()
+
+            if logging_config.get('file', {}).get('enabled', True):
+                log_file_path = logging_config.get('file', {}).get('path', 'logs/qorzen.log')
                 self._log_directory = pathlib.Path(log_file_path).parent
                 os.makedirs(self._log_directory, exist_ok=True)
 
-            # Reset the root logger
             self._root_logger = logging.getLogger()
             self._root_logger.setLevel(log_level)
 
-            # Remove any existing handlers
+            # Remove existing handlers
             for handler in list(self._root_logger.handlers):
                 self._root_logger.removeHandler(handler)
 
-            # Set up formatters based on format type
-            if log_format == "json":
+            # Set up formatter
+            if log_format == 'json':
                 self._enable_structlog = True
                 formatter = self._create_json_formatter()
             else:
-                formatter = logging.Formatter(
-                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-                )
+                formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-            # Add console handler if enabled
-            if logging_config.get("console", {}).get("enabled", True):
-                console_level_str = (
-                    logging_config.get("console", {}).get("level", "INFO").lower()
-                )
+            # Console handler
+            if logging_config.get('console', {}).get('enabled', True):
+                console_level_str = logging_config.get('console', {}).get('level', 'INFO').lower()
                 console_level = self.LOG_LEVELS.get(console_level_str, logging.INFO)
+
                 self._console_handler = logging.StreamHandler(sys.stdout)
                 self._console_handler.setLevel(console_level)
                 self._console_handler.setFormatter(formatter)
                 self._root_logger.addHandler(self._console_handler)
                 self._handlers.append(self._console_handler)
 
-            # Add file handler if enabled
-            if logging_config.get("file", {}).get("enabled", True):
-                file_path = logging_config.get("file", {}).get(
-                    "path", "logs/qorzen.log"
-                )
-                rotation = logging_config.get("file", {}).get("rotation", "10 MB")
-                retention = logging_config.get("file", {}).get("retention", "30 days")
+            # File handler
+            if logging_config.get('file', {}).get('enabled', True):
+                file_path = logging_config.get('file', {}).get('path', 'logs/qorzen.log')
+                rotation = logging_config.get('file', {}).get('rotation', '10 MB')
+                retention = logging_config.get('file', {}).get('retention', '30 days')
 
-                # Parse rotation (e.g., "10 MB")
-                if isinstance(rotation, str) and "MB" in rotation:
+                if isinstance(rotation, str) and 'MB' in rotation:
                     max_bytes = int(rotation.split()[0]) * 1024 * 1024
                 else:
-                    max_bytes = 10 * 1024 * 1024  # Default: 10 MB
+                    max_bytes = 10 * 1024 * 1024
 
-                # Parse retention (e.g., "30 days")
-                if isinstance(retention, str) and "days" in retention:
+                if isinstance(retention, str) and 'days' in retention:
                     backup_count = int(retention.split()[0])
                 else:
-                    backup_count = 30  # Default: 30 days
+                    backup_count = 30
 
                 self._file_handler = logging.handlers.RotatingFileHandler(
                     file_path,
                     maxBytes=max_bytes,
-                    backupCount=backup_count,
+                    backupCount=backup_count
                 )
                 self._file_handler.setLevel(log_level)
                 self._file_handler.setFormatter(formatter)
                 self._root_logger.addHandler(self._file_handler)
                 self._handlers.append(self._file_handler)
 
-            # Add database handler if enabled (this is a placeholder)
-            if logging_config.get("database", {}).get("enabled", False):
-                # In a real implementation, we would create a custom handler
-                # that writes log records to the database
-                # For now, we'll just note that it's not implemented
+            # Database handler - placeholder for future implementation
+            if logging_config.get('database', {}).get('enabled', False):
                 pass
 
-            # Add ELK handler if enabled (this is a placeholder)
-            if logging_config.get("elk", {}).get("enabled", False):
-                # In a real implementation, we would create a handler
-                # that sends logs to ELK (Elasticsearch)
-                # For now, we'll just note that it's not implemented
+            # ELK handler - placeholder for future implementation
+            if logging_config.get('elk', {}).get('enabled', False):
                 pass
 
             # Configure structlog if enabled
             if self._enable_structlog:
                 self._configure_structlog()
 
-            # Register for config changes
-            self._config_manager.register_listener("logging", self._on_config_changed)
+            # Register configuration listener
+            await self._config_manager.register_listener('logging', self._on_config_changed)
 
-            # Make sure handlers are closed on exit
-            atexit.register(self.shutdown)
+            # Register shutdown handler
+            atexit.register(self._sync_shutdown)
 
-            # Log successful initialization
             self._root_logger.info(
-                "Logging Manager initialized",
-                extra={"manager": "LoggingManager", "event": "initialization"},
+                'Logging Manager initialized',
+                extra={'manager': 'AsyncLoggingManager', 'event': 'initialization'}
             )
 
             self._initialized = True
@@ -217,20 +269,20 @@ class LoggingManager(QorzenManager):
 
         except Exception as e:
             raise ManagerInitializationError(
-                f"Failed to initialize LoggingManager: {str(e)}",
-                manager_name=self.name,
+                f'Failed to initialize AsyncLoggingManager: {str(e)}',
+                manager_name=self.name
             ) from e
 
     def _create_json_formatter(self) -> logging.Formatter:
         """Create a JSON formatter for log records.
 
         Returns:
-            logging.Formatter: A formatter that outputs logs in JSON format.
+            A configured JSON formatter
         """
         return jsonlogger.JsonFormatter(
-            fmt="%(asctime)s %(name)s %(levelname)s %(message)s",
-            datefmt="%Y-%m-%dT%H:%M:%S%z",
-            json_ensure_ascii=False,
+            fmt='%(asctime)s %(name)s %(levelname)s %(message)s',
+            datefmt='%Y-%m-%dT%H:%M:%S%z',
+            json_ensure_ascii=False
         )
 
     def _configure_structlog(self) -> None:
@@ -238,7 +290,7 @@ class LoggingManager(QorzenManager):
         structlog.configure(
             processors=[
                 structlog.stdlib.filter_by_level,
-                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.processors.TimeStamper(fmt='iso'),
                 structlog.stdlib.add_logger_name,
                 structlog.stdlib.add_log_level,
                 structlog.processors.StackInfoRenderer(),
@@ -253,17 +305,15 @@ class LoggingManager(QorzenManager):
         )
 
     def get_logger(self, name: str) -> Union[logging.Logger, Any]:
-        """Get a logger for a specific component.
+        """Get a logger instance.
 
         Args:
-            name: The name of the component requesting a logger.
+            name: Name for the logger
 
         Returns:
-            Union[logging.Logger, Any]: A logger instance configured for the component.
-            If structlog is enabled, returns a structured logger.
+            A standard logger or structlog instance
         """
         if not self._initialized:
-            # Return a minimal logger before initialization
             return logging.getLogger(name)
 
         if self._enable_structlog:
@@ -271,158 +321,193 @@ class LoggingManager(QorzenManager):
         else:
             return logging.getLogger(name)
 
-    def set_event_bus_manager(self, event_bus_manager):
-        self._event_bus_manager = event_bus_manager
-        logging_config = self._config_manager.get("logging", {})
-        log_level_str = logging_config.get("level", "INFO").lower()
-        log_level = self.LOG_LEVELS.get(log_level_str, logging.INFO)
-        log_format = logging_config.get("format", "json").lower()
-        # Set up formatters based on format type
-        if log_format == "json":
-            self._enable_structlog = True
-            formatter = self._create_json_formatter()
-        else:
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-        if logging_config.get("ui", {}).get("enabled", True):
-            if self._event_bus_manager:
-                event_handler = EventBusLogHandler(self._event_bus_manager)
-                event_handler.addFilter(ExcludeLoggerFilter('event_bus'))
-                event_handler.setLevel(log_level)
-                event_handler.setFormatter(formatter)
-                self._root_logger.addHandler(event_handler)
-                self._handlers.append(event_handler)
-
-    def _on_config_changed(self, key: str, value: Any) -> None:
-        """Handle configuration changes for logging.
+    async def set_event_bus_manager(self, event_bus_manager: Any) -> None:
+        """Set the event bus manager and configure the event handler.
 
         Args:
-            key: The configuration key that changed.
-            value: The new value.
+            event_bus_manager: The event bus manager
         """
-        if not key.startswith("logging."):
+        self._event_bus_manager = event_bus_manager
+        logging_config = await self._config_manager.get('logging', {})
+
+        log_level_str = logging_config.get('level', 'INFO').lower()
+        log_level = self.LOG_LEVELS.get(log_level_str, logging.INFO)
+
+        log_format = logging_config.get('format', 'json').lower()
+
+        if log_format == 'json':
+            formatter = self._create_json_formatter()
+        else:
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+        if logging_config.get('ui', {}).get('enabled', True) and self._event_bus_manager:
+            self._event_bus_manager_handler = EventBusManagerLogHandler(self._event_bus_manager)
+            self._event_bus_manager_handler.addFilter(ExcludeLoggerFilter('event_bus_manager'))
+            self._event_bus_handler.setLevel(log_level)
+            self._event_bus_handler.setFormatter(formatter)
+            self._root_logger.addHandler(self._event_bus_handler)
+            self._handlers.append(self._event_bus_handler)
+
+            # Start processing log events
+            await self._event_bus_handler.start_processing()
+
+    async def _on_config_changed(self, key: str, value: Any) -> None:
+        """Handle configuration changes.
+
+        Args:
+            key: The configuration key that changed
+            value: The new value
+        """
+        if not key.startswith('logging.'):
             return
 
-        # Get the specific part that changed
-        sub_key = key.split(".", 1)[1] if "." in key else ""
+        sub_key = key.split('.', 1)[1] if '.' in key else ''
 
-        if sub_key == "level" or key == "logging":
-            # Update the root logger level
-            log_level_str = value.lower() if isinstance(value, str) else "info"
+        if sub_key == 'level' or key == 'logging':
+            # Update root logger level
+            log_level_str = value.lower() if isinstance(value, str) else 'info'
             log_level = self.LOG_LEVELS.get(log_level_str, logging.INFO)
+
             if self._root_logger:
                 self._root_logger.setLevel(log_level)
-
-                # Also update file handler if it exists
                 if self._file_handler:
                     self._file_handler.setLevel(log_level)
 
-        elif sub_key.startswith("console.") and self._console_handler:
-            if sub_key.endswith(".level"):
-                # Update console handler level
-                log_level_str = value.lower() if isinstance(value, str) else "info"
+        elif sub_key.startswith('console.') and self._console_handler:
+            # Update console handler
+            if sub_key.endswith('.level'):
+                log_level_str = value.lower() if isinstance(value, str) else 'info'
                 log_level = self.LOG_LEVELS.get(log_level_str, logging.INFO)
                 self._console_handler.setLevel(log_level)
 
-            elif sub_key.endswith(".enabled"):
-                # Enable/disable console handler
+            elif sub_key.endswith('.enabled'):
                 if not value and self._console_handler in self._root_logger.handlers:
                     self._root_logger.removeHandler(self._console_handler)
                 elif value and self._console_handler not in self._root_logger.handlers:
                     self._root_logger.addHandler(self._console_handler)
 
-        elif sub_key.startswith("file.") and self._file_handler:
-            if sub_key.endswith(".level"):
-                # Update file handler level
-                log_level_str = value.lower() if isinstance(value, str) else "info"
+        elif sub_key.startswith('file.') and self._file_handler:
+            # Update file handler
+            if sub_key.endswith('.level'):
+                log_level_str = value.lower() if isinstance(value, str) else 'info'
                 log_level = self.LOG_LEVELS.get(log_level_str, logging.INFO)
                 self._file_handler.setLevel(log_level)
 
-            elif sub_key.endswith(".enabled"):
-                # Enable/disable file handler
+            elif sub_key.endswith('.enabled'):
                 if not value and self._file_handler in self._root_logger.handlers:
                     self._root_logger.removeHandler(self._file_handler)
                 elif value and self._file_handler not in self._root_logger.handlers:
                     self._root_logger.addHandler(self._file_handler)
 
-        # In a more complete implementation, we'd handle database and ELK handler
-        # configuration changes as well
+    def _sync_shutdown(self) -> None:
+        """Synchronous shutdown for atexit registration."""
+        if not self._initialized:
+            return
 
-    def shutdown(self) -> None:
-        """Shut down the Logging Manager.
+        if sys.version_info >= (3, 7):
+            # Create a new event loop for the shutdown process
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self.shutdown())
+            finally:
+                loop.close()
+        else:
+            # Fallback for Python 3.6
+            self._sync_shutdown_fallback()
 
-        Closes all log handlers and performs any necessary cleanup.
+    def _sync_shutdown_fallback(self) -> None:
+        """Fallback synchronous shutdown implementation."""
+        if self._root_logger:
+            self._root_logger.info(
+                'Shutting down Logging Manager (sync fallback)',
+                extra={'manager': 'AsyncLoggingManager', 'event': 'shutdown'}
+            )
+
+        for handler in self._handlers:
+            try:
+                handler.flush()
+                handler.close()
+            except Exception:
+                pass
+
+        self._initialized = False
+        self._healthy = False
+
+    async def shutdown(self) -> None:
+        """Shut down the logging manager asynchronously.
+
+        Closes and flushes all handlers.
 
         Raises:
-            ManagerShutdownError: If shutdown fails.
+            ManagerShutdownError: If shutdown fails
         """
         if not self._initialized:
             return
 
         try:
-            # Log shutdown
             if self._root_logger:
                 self._root_logger.info(
-                    "Shutting down Logging Manager",
-                    extra={"manager": "LoggingManager", "event": "shutdown"},
+                    'Shutting down Logging Manager',
+                    extra={'manager': 'AsyncLoggingManager', 'event': 'shutdown'}
                 )
 
-            # Close all handlers
+            # Stop event bus handler first
+            if self._event_bus_handler:
+                await self._event_bus_handler.stop_processing()
+                self._root_logger.removeHandler(self._event_bus_handler)
+                self._event_bus_handler.close()
+
+            # Close other handlers
             for handler in self._handlers:
-                if isinstance(handler, EventBusLogHandler):
-                    self._root_logger.removeHandler(handler)
-                    handler.close()
                 try:
                     handler.flush()
                     handler.close()
                 except Exception:
-                    # Just continue if a handler fails to close
                     pass
 
             # Unregister config listener
-            self._config_manager.unregister_listener("logging", self._on_config_changed)
+            if self._config_manager and hasattr(self._config_manager, 'unregister_listener'):
+                await self._config_manager.unregister_listener('logging', self._on_config_changed)
 
-            # Unregister atexit handler
-            atexit.unregister(self.shutdown)
+            # Unregister from atexit
+            try:
+                atexit.unregister(self._sync_shutdown)
+            except Exception:
+                pass
 
             self._initialized = False
             self._healthy = False
 
         except Exception as e:
             raise ManagerShutdownError(
-                f"Failed to shut down LoggingManager: {str(e)}",
-                manager_name=self.name,
+                f'Failed to shut down AsyncLoggingManager: {str(e)}',
+                manager_name=self.name
             ) from e
 
     def status(self) -> Dict[str, Any]:
-        """Get the status of the Logging Manager.
+        """Get the status of the logging manager.
 
         Returns:
-            Dict[str, Any]: Status information about the Logging Manager.
+            Dictionary with status information
         """
         status = super().status()
 
         if self._initialized:
-            status.update(
-                {
-                    "log_directory": str(self._log_directory)
-                    if self._log_directory
-                    else None,
-                    "handlers": {
-                        "console": self._console_handler is not None
-                        and self._console_handler in self._root_logger.handlers
-                        if self._root_logger
-                        else False,
-                        "file": self._file_handler is not None
-                        and self._file_handler in self._root_logger.handlers
-                        if self._root_logger
-                        else False,
-                        "database": self._database_handler is not None,
-                        "elk": self._elk_handler is not None,
-                    },
-                    "structured_logging": self._enable_structlog,
-                }
-            )
+            status.update({
+                'log_directory': str(self._log_directory) if self._log_directory else None,
+                'handlers': {
+                    'console': self._console_handler is not None and
+                               self._console_handler in self._root_logger.handlers
+                    if self._root_logger else False,
+                    'file': self._file_handler is not None and
+                            self._file_handler in self._root_logger.handlers
+                    if self._root_logger else False,
+                    'database': self._database_handler is not None,
+                    'elk': self._elk_handler is not None,
+                    'event_bus_manager': self._event_bus_manager_handler is not None
+                },
+                'structured_logging': self._enable_structlog
+            })
 
         return status

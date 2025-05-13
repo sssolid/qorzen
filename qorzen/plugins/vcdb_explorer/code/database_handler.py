@@ -60,7 +60,7 @@ class DatabaseHandler:
     def __init__(
             self,
             database_manager: DatabaseManager,
-            event_bus: EventBusManager,
+            event_bus_manager: EventBusManager,
             thread_manager: ThreadManager,
             logger: logging.Logger
     ) -> None:
@@ -69,7 +69,7 @@ class DatabaseHandler:
 
         Args:
             database_manager: Database manager for connection handling
-            event_bus: Event bus for inter-component communication
+            event_bus_manager: Event bus for inter-component communication
             thread_manager: Thread manager for background tasks
             logger: Logger for this component
         """
@@ -106,13 +106,13 @@ class DatabaseHandler:
         }
 
         # Subscribe to events
-        self._event_bus.subscribe(
+        self._event_bus_manager.subscribe(
             event_type=VCdbEventType.filter_changed(),
             callback=self._on_filter_changed,
             subscriber_id='vcdb_explorer_handler'
         )
 
-        self._event_bus.subscribe(
+        self._event_bus_manager.subscribe(
             event_type=VCdbEventType.query_execute(),
             callback=self._on_query_execute,
             subscriber_id='vcdb_explorer_handler'
@@ -214,7 +214,7 @@ class DatabaseHandler:
 
         try:
             # Original shutdown code...
-            self._event_bus.unsubscribe(subscriber_id='vcdb_explorer_handler')
+            self._event_bus_manager.unsubscribe(subscriber_id='vcdb_explorer_handler')
 
             if self._db_manager and self._db_manager.has_connection(self.CONNECTION_NAME):
                 try:
@@ -285,7 +285,7 @@ class DatabaseHandler:
 
         # Define error handler for failed tasks
         def _on_failed(err_msg: str = '<thread error>') -> None:
-            self._event_bus.publish(
+            self._event_bus_manager.publish(
                 event_type=VCdbEventType.query_results(),
                 source='vcdb_explorer',
                 payload={
@@ -374,7 +374,7 @@ class DatabaseHandler:
                 return {"success": False, "error": str(e)}
 
         # Publish results through event bus
-        self._event_bus.publish(
+        self._event_bus_manager.publish(
             event_type=VCdbEventType.filters_refreshed(),
             source='vcdb_explorer',
             payload={
@@ -404,7 +404,7 @@ class DatabaseHandler:
 
         # If there was an error, publish the error
         if 'error' in data:
-            self._event_bus.publish(
+            self._event_bus_manager.publish(
                 event_type=VCdbEventType.query_results(),
                 source='vcdb_explorer',
                 payload={

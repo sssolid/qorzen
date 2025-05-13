@@ -37,7 +37,7 @@ class EventMonitorPlugin:
 
     def initialize(
             self,
-            event_bus: Any,
+            event_bus_manager: Any,
             logger_provider: Any,
             config_provider: Any,
             file_manager: Any,
@@ -58,11 +58,11 @@ class EventMonitorPlugin:
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to relevant events."""
-        if not self.event_bus:
+        if not self.event_bus_manager:
             return
 
         # Subscribe to all events by using wildcard
-        subscription_id = self.event_bus.subscribe(
+        subscription_id = self.event_bus_manager.subscribe(
             event_type="*",
             callback=self._on_any_event,
             subscriber_id="event_monitor_all"
@@ -70,7 +70,7 @@ class EventMonitorPlugin:
         self._event_subscriptions.append(subscription_id)
 
         # Subscribe to UI ready event specifically to add our UI
-        subscription_id = self.event_bus.subscribe(
+        subscription_id = self.event_bus_manager.subscribe(
             event_type="ui/ready",
             callback=self._on_ui_ready,
             subscriber_id="event_monitor_ui"
@@ -320,7 +320,7 @@ class EventMonitorPlugin:
 
         try:
             self.logger.info("Manually sending UI ready event")
-            self.event_bus.publish(
+            self.event_bus_manager.publish(
                 event_type="ui/ready",
                 source="event_monitor",
                 payload={"main_window": self._main_window}
@@ -372,9 +372,9 @@ class EventMonitorPlugin:
             self.logger.info("Shutting down Event Monitor plugin")
 
             # Unsubscribe from events
-            if self.event_bus:
+            if self.event_bus_manager:
                 for subscription_id in self._event_subscriptions:
-                    self.event_bus.unsubscribe(subscription_id)
+                    self.event_bus_manager.unsubscribe(subscription_id)
 
             self.initialized = False
             self.logger.info("Event Monitor plugin shut down")

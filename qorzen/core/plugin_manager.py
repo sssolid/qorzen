@@ -172,7 +172,7 @@ class PluginManager(QorzenManager):
         self._application_core = application_core
         self._config_manager = config_manager
         self._logger = logger_manager.get_logger('plugin_manager')
-        self._event_bus = event_bus_manager
+        self._event_bus_manager = event_bus_manager
         self._file_manager = file_manager
         self._task_manager = task_manager
         self._plugin_isolation = plugin_isolation_manager
@@ -208,8 +208,8 @@ class PluginManager(QorzenManager):
             self._logger.info('Initializing plugin manager')
 
             # Setup error handler
-            if hasattr(self._event_bus, 'error_handler'):
-                self._error_handler = self._event_bus.error_handler
+            if hasattr(self._event_bus_manager, 'error_handler'):
+                self._error_handler = self._event_bus_manager.error_handler
 
             # Load configuration
             plugin_config = self._config_manager.get('plugins', {})
@@ -223,31 +223,31 @@ class PluginManager(QorzenManager):
             os.makedirs(self._plugin_dir, exist_ok=True)
 
             # Register event listeners
-            await self._event_bus.subscribe(
+            await self._event_bus_manager.subscribe(
                 event_type='plugin/installed',
                 callback=self._on_plugin_installed,
                 subscriber_id='plugin_manager'
             )
 
-            await self._event_bus.subscribe(
+            await self._event_bus_manager.subscribe(
                 event_type='plugin/uninstalled',
                 callback=self._on_plugin_uninstalled,
                 subscriber_id='plugin_manager'
             )
 
-            await self._event_bus.subscribe(
+            await self._event_bus_manager.subscribe(
                 event_type='plugin/enabled',
                 callback=self._on_plugin_enabled,
                 subscriber_id='plugin_manager'
             )
 
-            await self._event_bus.subscribe(
+            await self._event_bus_manager.subscribe(
                 event_type='plugin/disabled',
                 callback=self._on_plugin_disabled,
                 subscriber_id='plugin_manager'
             )
 
-            await self._event_bus.subscribe(
+            await self._event_bus_manager.subscribe(
                 event_type='ui/ready',
                 callback=self._on_ui_ready,
                 subscriber_id='plugin_manager'
@@ -269,7 +269,7 @@ class PluginManager(QorzenManager):
             self._logger.info(f'Plugin manager initialized with {len(self._plugins)} plugins discovered')
 
             # Publish initialization event
-            await self._event_bus.publish(
+            await self._event_bus_manager.publish(
                 event_type='plugin_manager/initialized',
                 source='plugin_manager',
                 payload={'plugin_count': len(self._plugins)}
@@ -708,7 +708,7 @@ class PluginManager(QorzenManager):
                 plugin_info.load_time = time.time()
 
             # Publish plugin loaded event
-            await self._event_bus.publish(
+            await self._event_bus_manager.publish(
                 event_type='plugin/loaded',
                 source='plugin_manager',
                 payload={
@@ -739,7 +739,7 @@ class PluginManager(QorzenManager):
             )
 
             # Publish plugin error event
-            await self._event_bus.publish(
+            await self._event_bus_manager.publish(
                 event_type='plugin/error',
                 source='plugin_manager',
                 payload={
@@ -1126,7 +1126,7 @@ class PluginManager(QorzenManager):
                 plugin_info.instance = None
 
             # Publish plugin unloaded event
-            await self._event_bus.publish(
+            await self._event_bus_manager.publish(
                 event_type='plugin/unloaded',
                 source='plugin_manager',
                 payload={'plugin_id': plugin_id, 'name': plugin_info.name}
@@ -1146,7 +1146,7 @@ class PluginManager(QorzenManager):
             )
 
             # Publish plugin error event
-            await self._event_bus.publish(
+            await self._event_bus_manager.publish(
                 event_type='plugin/error',
                 source='plugin_manager',
                 payload={
@@ -1224,7 +1224,7 @@ class PluginManager(QorzenManager):
                 plugin_info.state = PluginState.DISCOVERED
 
         # Publish plugin enabled event
-        await self._event_bus.publish(
+        await self._event_bus_manager.publish(
             event_type='plugin/enabled',
             source='plugin_manager',
             payload={'plugin_id': plugin_id, 'name': plugin_info.name}
@@ -1295,7 +1295,7 @@ class PluginManager(QorzenManager):
             plugin_info.state = PluginState.DISABLED
 
         # Publish plugin disabled event
-        await self._event_bus.publish(
+        await self._event_bus_manager.publish(
             event_type='plugin/disabled',
             source='plugin_manager',
             payload={'plugin_id': plugin_id, 'name': plugin_info.name}
@@ -1354,7 +1354,7 @@ class PluginManager(QorzenManager):
             )
 
             # Publish plugin error event
-            await self._event_bus.publish(
+            await self._event_bus_manager.publish(
                 event_type='plugin/error',
                 source='plugin_manager',
                 payload={
@@ -1633,7 +1633,7 @@ class PluginManager(QorzenManager):
                     )
 
             # Unregister event listeners
-            await self._event_bus.unsubscribe(subscriber_id='plugin_manager')
+            await self._event_bus_manager.unsubscribe(subscriber_id='plugin_manager')
 
             # Unregister configuration listener
             self._config_manager.unregister_listener('plugins', self._on_config_changed)

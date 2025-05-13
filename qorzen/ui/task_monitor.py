@@ -98,12 +98,12 @@ class TaskProgressWidget(QFrame):
 class TaskMonitorWidget(QWidget):
     """Widget to display and monitor running tasks."""
 
-    def __init__(self, event_bus: Any, parent: Optional[QWidget] = None):
+    def __init__(self, event_bus_manager: Any, parent: Optional[QWidget] = None):
         """
         Initialize the task monitor widget.
 
         Args:
-            event_bus: The event bus for subscribing to task events
+            event_bus_manager: The event bus for subscribing to task events
             parent: The parent widget
         """
         super().__init__(parent)
@@ -147,36 +147,36 @@ class TaskMonitorWidget(QWidget):
     def _subscribe_to_events(self) -> None:
         """Subscribe to task-related events."""
         # Make sure the event_bus is not None
-        if not self.event_bus:
+        if not self.event_bus_manager:
             return
 
         try:
             # Subscribe to task events
-            self.event_bus.subscribe(
+            self.event_bus_manager.subscribe(
                 event_type='task/started',
                 callback=self._on_task_started,
                 subscriber_id='task_monitor_widget_started'
             )
 
-            self.event_bus.subscribe(
+            self.event_bus_manager.subscribe(
                 event_type='task/progress',
                 callback=self._on_task_progress,
                 subscriber_id='task_monitor_widget_progress'
             )
 
-            self.event_bus.subscribe(
+            self.event_bus_manager.subscribe(
                 event_type='task/completed',
                 callback=self._on_task_completed,
                 subscriber_id='task_monitor_widget_completed'
             )
 
-            self.event_bus.subscribe(
+            self.event_bus_manager.subscribe(
                 event_type='task/failed',
                 callback=self._on_task_failed,
                 subscriber_id='task_monitor_widget_failed'
             )
 
-            self.event_bus.subscribe(
+            self.event_bus_manager.subscribe(
                 event_type='task/cancelled',
                 callback=self._on_task_cancelled,
                 subscriber_id='task_monitor_widget_cancelled'
@@ -327,9 +327,9 @@ class TaskMonitorWidget(QWidget):
     def cleanup(self) -> None:
         """Clean up resources and unsubscribe from events."""
         # Unsubscribe from events
-        if self.event_bus:
-            self.event_bus.unsubscribe(subscriber_id='task_monitor_widget_started')
-            self.event_bus.unsubscribe(subscriber_id='task_monitor_widget_progress')
-            self.event_bus.unsubscribe(subscriber_id='task_monitor_widget_completed')
-            self.event_bus.unsubscribe(subscriber_id='task_monitor_widget_failed')
-            self.event_bus.unsubscribe(subscriber_id='task_monitor_widget_cancelled')
+        if self.event_bus_manager:
+            self.event_bus_manager.unsubscribe(subscriber_id='task_monitor_widget_started')
+            self.event_bus_manager.unsubscribe(subscriber_id='task_monitor_widget_progress')
+            self.event_bus_manager.unsubscribe(subscriber_id='task_monitor_widget_completed')
+            self.event_bus_manager.unsubscribe(subscriber_id='task_monitor_widget_failed')
+            self.event_bus_manager.unsubscribe(subscriber_id='task_monitor_widget_cancelled')

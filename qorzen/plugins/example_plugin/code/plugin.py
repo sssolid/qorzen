@@ -72,7 +72,7 @@ class ExamplePlugin(QObject):
 
     def initialize(
         self,
-        event_bus: Any,
+        event_bus_manager: Any,
         logger_provider: Any,
         config_provider: Any,
         file_manager: Any,
@@ -83,7 +83,7 @@ class ExamplePlugin(QObject):
         Initialize the plugin with the provided managers.
 
         Args:
-            event_bus: Event bus manager for pub/sub communication
+            event_bus_manager: Event bus manager for pub/sub communication
             logger_provider: Logger provider for plugin-specific loggers
             config_provider: Configuration provider for settings
             file_manager: File manager for file operations
@@ -109,7 +109,7 @@ class ExamplePlugin(QObject):
         self._initialized = True
 
         # Publish an event to signal initialization
-        self.event_bus.publish(
+        self.event_bus_manager.publish(
             event_type="example_plugin/initialized",
             source="example_plugin",
             payload={"version": self.version}
@@ -145,28 +145,28 @@ class ExamplePlugin(QObject):
     def _register_event_listeners(self) -> None:
         """Register plugin as a listener for various events."""
         # UI-related events
-        self.event_bus.subscribe(
+        self.event_bus_manager.subscribe(
             event_type="ui/ready",
             callback=self._on_ui_ready,
             subscriber_id="example_plugin"
         )
 
         # Configuration changes
-        self.event_bus.subscribe(
+        self.event_bus_manager.subscribe(
             event_type="config/changed",
             callback=self._on_config_changed,
             subscriber_id="example_plugin"
         )
 
         # Subscribe to other plugins' events
-        self.event_bus.subscribe(
+        self.event_bus_manager.subscribe(
             event_type="*/initialized",
             callback=self._on_plugin_initialized,
             subscriber_id="example_plugin"
         )
 
         # Custom events for this plugin
-        self.event_bus.subscribe(
+        self.event_bus_manager.subscribe(
             event_type="example_plugin/transform_text",
             callback=self._on_transform_text_event,
             subscriber_id="example_plugin"
@@ -659,7 +659,7 @@ class ExamplePlugin(QObject):
             self.text_output.setText(result)
 
             # Also publish an event
-            self.event_bus.publish(
+            self.event_bus_manager.publish(
                 event_type="example_plugin/transform_text",
                 source="example_plugin",
                 payload={
@@ -687,7 +687,7 @@ class ExamplePlugin(QObject):
                 payload = {"message": self.event_payload.text()}
 
             # Publish the event
-            self.event_bus.publish(
+            self.event_bus_manager.publish(
                 event_type=event_type,
                 source="example_plugin",
                 payload=payload
@@ -763,7 +763,7 @@ class ExamplePlugin(QObject):
         self.logger.info(f"Applied theme: {theme}")
 
         # Publish event about settings change
-        self.event_bus.publish(
+        self.event_bus_manager.publish(
             event_type="example_plugin/settings_changed",
             source="example_plugin",
             payload={"settings": self._config}
@@ -1067,8 +1067,8 @@ class ExamplePlugin(QObject):
         self.logger.info("Shutting down Example Plugin")
 
         # Unsubscribe from events
-        if self.event_bus:
-            self.event_bus.unsubscribe(subscriber_id="example_plugin")
+        if self.event_bus_manager:
+            self.event_bus_manager.unsubscribe(subscriber_id="example_plugin")
 
         # Clean up resources (if any)
 

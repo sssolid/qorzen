@@ -75,7 +75,7 @@ class BasePlugin(QObject):
 
         # Services - will be initialized later
         self._service_locator: Optional[ServiceLocator] = None
-        self._event_bus: Optional['EventBusManager'] = None
+        self._event_bus_manager: Optional['EventBusManager'] = None
         self._logger: Optional[Any] = None
         self._config: Optional['ConfigManager'] = None
         self._file_manager: Optional['FileManager'] = None

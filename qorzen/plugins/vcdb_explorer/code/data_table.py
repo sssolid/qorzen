@@ -603,7 +603,7 @@ class DataTableWidget(QWidget):
     def __init__(
             self,
             database_handler: DatabaseHandler,
-            event_bus: EventBusManager,
+            event_bus_manager: EventBusManager,
             logger: logging.Logger,
             parent: Optional[QWidget] = None
     ) -> None:
@@ -611,7 +611,7 @@ class DataTableWidget(QWidget):
 
         Args:
             database_handler: Database handler for queries
-            event_bus: Event bus for communication
+            event_bus_manager: Event bus for communication
             logger: Logger instance
             parent: Parent widget
         """
@@ -756,7 +756,7 @@ class DataTableWidget(QWidget):
         self._update_pagination_ui()
 
         # Subscribe to query results events
-        self._event_bus.subscribe(
+        self._event_bus_manager.subscribe(
             event_type=VCdbEventType.query_results(),
             callback=self._on_query_results,
             subscriber_id=self._callback_id
@@ -765,7 +765,7 @@ class DataTableWidget(QWidget):
     def __del__(self) -> None:
         """Clean up event subscriptions."""
         try:
-            self._event_bus.unsubscribe(subscriber_id=self._callback_id)
+            self._event_bus_manager.unsubscribe(subscriber_id=self._callback_id)
         except Exception:
             pass
 

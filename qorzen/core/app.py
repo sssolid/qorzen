@@ -182,13 +182,13 @@ class ApplicationCore:
 
         config_manager = self.get_manager('config_manager')
         logging_manager = self.get_manager('logging_manager')
-        event_bus = self.get_manager('event_bus_manager')
+        event_bus_manager = self.get_manager('event_bus_manager')
         concurrency_manager = self.get_manager('concurrency_manager')
 
         resource_monitoring_manager = ResourceMonitoringManager(
             config_manager,
             logging_manager,
-            event_bus,
+            event_bus_manager,
             concurrency_manager
         )
         # Register with dependencies
@@ -221,14 +221,14 @@ class ApplicationCore:
 
         config_manager = self.get_manager('config_manager')
         logging_manager = self.get_manager('logging_manager')
-        event_bus = self.get_manager('event_bus_manager')
-        database = self.get_manager('database_manager')
+        event_bus_manager = self.get_manager('event_bus_manager')
+        database_manager = self.get_manager('database_manager')
 
         security_manager = SecurityManager(
             config_manager,
             logging_manager,
-            event_bus,
-            database
+            event_bus_manager,
+            database_manager
         )
         # Register with dependencies
         self._dependency_manager.register_manager(
@@ -244,15 +244,15 @@ class ApplicationCore:
 
         config_manager = self.get_manager('config_manager')
         logging_manager = self.get_manager('logging_manager')
-        security = self.get_manager('security_manager')
-        event_bus = self.get_manager('event_bus_manager')
+        security_manager = self.get_manager('security_manager')
+        event_bus_manager = self.get_manager('event_bus_manager')
         concurrency_manager = self.get_manager('concurrency_manager')
 
         api_manager = APIManager(
             config_manager,
             logging_manager,
-            security,
-            event_bus,
+            security_manager,
+            event_bus_manager,
             concurrency_manager
         )
         # Register with dependencies
@@ -290,12 +290,12 @@ class ApplicationCore:
         """Initialize the task manager."""
         config_manager = self.get_manager('config_manager')
         logging_manager = self.get_manager('logging_manager')
-        event_bus = self.get_manager('event_bus_manager')
+        event_bus_manager = self.get_manager('event_bus_manager')
         concurrency_manager = self.get_manager('concurrency_manager')
 
         task_manager = TaskManager(
             concurrency_manager,
-            event_bus,
+            event_bus_manager,
             logging_manager,
             config_manager
         )
@@ -333,7 +333,7 @@ class ApplicationCore:
 
         config_manager = self.get_manager('config_manager')
         logging_manager = self.get_manager('logging_manager')
-        event_bus = self.get_manager('event_bus_manager')
+        event_bus_manager = self.get_manager('event_bus_manager')
         file_manager = self.get_manager('file_manager')
         task_manager = self.get_manager('task_manager')
         plugin_isolation = self.get_manager('plugin_isolation_manager')
@@ -342,7 +342,7 @@ class ApplicationCore:
             application_core=self,
             config_manager=config_manager,
             logger_manager=logging_manager,
-            event_bus_manager=event_bus,
+            event_bus_manager=event_bus_manager,
             file_manager=file_manager,
             task_manager=task_manager,
             plugin_isolation_manager=plugin_isolation
@@ -427,10 +427,10 @@ class ApplicationCore:
         self._ui_integration = ui_integration
 
         # Notify the event bus
-        event_bus = self.get_manager('event_bus_manager')
-        if event_bus and self._initialized:
+        event_bus_manager = self.get_manager('event_bus_manager')
+        if event_bus_manager and self._initialized:
             asyncio.create_task(
-                event_bus.publish(
+                event_bus_manager.publish(
                     event_type='ui/ready',
                     source='app_core',
                     payload={'ui_integration': ui_integration}

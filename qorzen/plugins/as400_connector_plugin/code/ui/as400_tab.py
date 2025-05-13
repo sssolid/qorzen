@@ -65,7 +65,7 @@ class AS400Tab(QWidget):
 
     def __init__(
             self,
-            event_bus: Any,
+            event_bus_manager: Any,
             logger: Any,
             config: Any,
             file_manager: Any = None,
@@ -77,7 +77,7 @@ class AS400Tab(QWidget):
         Initialize the AS400 tab.
 
         Args:
-            event_bus: The event bus manager for event handling
+            event_bus_manager: The event bus manager for event handling
             logger: Logger for logging events
             config: Configuration manager for settings
             file_manager: Optional file manager for file operations

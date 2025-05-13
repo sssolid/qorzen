@@ -44,7 +44,7 @@ class AS400ConnectorPlugin(BasePlugin):
         self._menu: Optional[QMenu] = None
         self._actions: List[Any] = []
 
-    def initialize(self, event_bus: Any, logger_provider: Any, config_provider: Any, file_manager: Any = None,
+    def initialize(self, event_bus_manager: Any, logger_provider: Any, config_provider: Any, file_manager: Any = None,
                    thread_manager: Any = None, database_manager: Any = None, security_manager: Any = None, **kwargs: Any) -> None:
         self._event_bus = event_bus
         self._logger = logger_provider.get_logger(f'plugin.{self.name}')
@@ -63,7 +63,7 @@ class AS400ConnectorPlugin(BasePlugin):
             except Exception as e:
                 self._logger.warning(f'Failed to create plugin data directory: {str(e)}')
 
-        self._event_bus.subscribe(
+        self._event_bus_manager.subscribe(
             event_type='config/changed',
             callback=self._on_config_changed,
             subscriber_id=f'{self.name}_config_subscriber'
@@ -71,7 +71,7 @@ class AS400ConnectorPlugin(BasePlugin):
 
         self._initialized = True
         self._logger.info(f'{self.name} plugin initialized')
-        self._event_bus.publish(
+        self._event_bus_manager.publish(
             event_type='plugin/initialized',
             source=self.name,
             payload={'plugin_name': self.name, 'version': self.version, 'has_ui': True}
@@ -205,11 +205,11 @@ class AS400ConnectorPlugin(BasePlugin):
                     menu.deleteLater()
                 elif action and action.parent():
                     action.parent().removeAction(action)
-        if self._event_bus:
+        if self._event_bus_manager:
             if self._subscriber_id:
-                self._event_bus.unsubscribe(self._subscriber_id)
-            self._event_bus.unsubscribe(f'{self.name}_config_subscriber')
-            self._event_bus.publish(event_type='plugin/shutdown', source=self.name, payload={'plugin_name': self.name},
+                self._event_bus_manager.unsubscribe(self._subscriber_id)
+            self._event_bus_manager.unsubscribe(f'{self.name}_config_subscriber')
+            self._event_bus_manager.publish(event_type='plugin/shutdown', source=self.name, payload={'plugin_name': self.name},
                                     synchronous=True)
         self._initialized = False
         self._logger.info(f'{self.name} plugin shut down')

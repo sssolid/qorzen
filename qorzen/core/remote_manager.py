@@ -814,13 +814,13 @@ class RemoteServicesManager(QorzenManager):
                     )
 
             # Subscribe to service-related events
-            self._event_bus.subscribe(
+            self._event_bus_manager.subscribe(
                 event_type="remote_service/register",
                 callback=self._on_service_register_event,
                 subscriber_id="remote_manager",
             )
 
-            self._event_bus.subscribe(
+            self._event_bus_manager.subscribe(
                 event_type="remote_service/unregister",
                 callback=self._on_service_unregister_event,
                 subscriber_id="remote_manager",
@@ -947,7 +947,7 @@ class RemoteServicesManager(QorzenManager):
         )
 
         # Publish service registered event
-        self._event_bus.publish(
+        self._event_bus_manager.publish(
             event_type="remote_service/registered",
             source="remote_manager",
             payload={
@@ -982,7 +982,7 @@ class RemoteServicesManager(QorzenManager):
         self._logger.info(f"Unregistered service '{service_name}'")
 
         # Publish service unregistered event
-        self._event_bus.publish(
+        self._event_bus_manager.publish(
             event_type="remote_service/unregistered",
             source="remote_manager",
             payload={"service_name": service_name},
@@ -1112,7 +1112,7 @@ class RemoteServicesManager(QorzenManager):
             )
 
             # Publish health check event
-            self._event_bus.publish(
+            self._event_bus_manager.publish(
                 event_type="remote_service/health_check",
                 source="remote_manager",
                 payload={
@@ -1413,7 +1413,7 @@ class RemoteServicesManager(QorzenManager):
                 self._services.clear()
 
             # Unregister from event bus
-            self._event_bus.unsubscribe("remote_manager")
+            self._event_bus_manager.unsubscribe("remote_manager")
 
             # Unregister config listener
             self._config_manager.unregister_listener(

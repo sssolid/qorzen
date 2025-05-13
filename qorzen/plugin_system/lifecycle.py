@@ -32,7 +32,7 @@ class PluginInterface(Protocol):
     version: str
     description: str
 
-    def initialize(self, event_bus: Any, logger_provider: Any, config_provider: Any,
+    def initialize(self, event_bus_manager: Any, logger_provider: Any, config_provider: Any,
                    file_manager: Any, thread_manager: Any, **kwargs: Any) -> None:
         """Initialize the plugin with required services."""
         ...

@@ -92,7 +92,7 @@ class TaskManager(QorzenManager):
         """
         super().__init__(name='task_manager')
         self._concurrency_manager = concurrency_manager
-        self._event_bus = event_bus_manager
+        self._event_bus_manager = event_bus_manager
         self._logger = logger_manager.get_logger('task_manager')
         self._config_manager = config_manager
 
@@ -669,7 +669,7 @@ class TaskManager(QorzenManager):
             task_id: ID of the task
             task_info: Task information
         """
-        if not self._event_bus or not hasattr(self._event_bus, 'publish'):
+        if not self._event_bus_manager or not hasattr(self._event_bus_manager, 'publish'):
             return
 
         # Create event payload
@@ -708,7 +708,7 @@ class TaskManager(QorzenManager):
                 pass
 
         # Publish the event
-        await self._event_bus.publish(
+        await self._event_bus_manager.publish(
             event_type=event_type,
             source='task_manager',
             payload=payload

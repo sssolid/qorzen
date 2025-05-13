@@ -156,7 +156,7 @@ class {plugin_name.replace("-", "_").title()}Plugin:
 
     def initialize(
         self,
-        event_bus: Any,
+        event_bus_manager: Any,
         logger_provider: Any,
         config_provider: Any,
         file_manager: Any,
@@ -165,7 +165,7 @@ class {plugin_name.replace("-", "_").title()}Plugin:
         """Initialize the plugin with the provided managers.
 
         Args:
-            event_bus: Event bus manager for subscribing to and publishing events
+            event_bus_manager: Event bus manager for subscribing to and publishing events
             logger_provider: Logger provider for creating plugin-specific loggers
             config_provider: Configuration provider for accessing application config
             file_manager: File manager for file operations
@@ -181,7 +181,7 @@ class {plugin_name.replace("-", "_").title()}Plugin:
         self.initialized = True
 
         # Subscribe to events
-        self.event_bus.subscribe(
+        self.event_bus_manager.subscribe(
             event_type="ui/ready",
             callback=self._on_ui_ready,
             subscriber_id="{plugin_name}"
@@ -206,8 +206,8 @@ class {plugin_name.replace("-", "_").title()}Plugin:
 
         This method is called when the plugin is being unloaded.
         """
-        if self.event_bus:
-            self.event_bus.unsubscribe("{plugin_name}")
+        if self.event_bus_manager:
+            self.event_bus_manager.unsubscribe("{plugin_name}")
 
         if self.logger:
             self.logger.info(f"{display_name} plugin shutting down")
@@ -334,7 +334,7 @@ class Test{plugin_name.replace("-", "_").title()}Plugin(unittest.TestCase):
         """Test plugin initialization."""
         self.assertTrue(self.plugin.initialized)
         self.logger.info.assert_called()
-        self.event_bus.subscribe.assert_called()
+        self.event_bus_manager.subscribe.assert_called()
 
 
 if __name__ == "__main__":

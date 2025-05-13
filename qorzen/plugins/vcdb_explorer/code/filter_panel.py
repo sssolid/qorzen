@@ -286,7 +286,7 @@ class FilterPanel(QGroupBox):
             self,
             panel_id: str,
             database_handler: DatabaseHandler,
-            event_bus: EventBusManager,
+            event_bus_manager: EventBusManager,
             logger: logging.Logger,
             parent: Optional[QWidget] = None
     ) -> None:
@@ -295,7 +295,7 @@ class FilterPanel(QGroupBox):
         Args:
             panel_id: Unique panel identifier
             database_handler: Database handler for filter values
-            event_bus: Event bus for communication
+            event_bus_manager: Event bus for communication
             logger: Logger instance
             parent: Parent widget
         """
@@ -360,7 +360,7 @@ class FilterPanel(QGroupBox):
                 self._add_filter(filter_def['id'], filter_def['name'])
 
         # Subscribe to filter refresh events
-        self._event_bus.subscribe(
+        self._event_bus_manager.subscribe(
             event_type=VCdbEventType.filters_refreshed(),
             callback=self._on_filters_refreshed,
             subscriber_id=f'filter_panel_{panel_id}'
@@ -369,7 +369,7 @@ class FilterPanel(QGroupBox):
     def __del__(self) -> None:
         """Clean up event subscriptions."""
         try:
-            self._event_bus.unsubscribe(subscriber_id=f'filter_panel_{self._panel_id}')
+            self._event_bus_manager.unsubscribe(subscriber_id=f'filter_panel_{self._panel_id}')
         except Exception:
             pass
 
@@ -496,7 +496,7 @@ class FilterPanel(QGroupBox):
 
         # Publish event via event bus for other components
         self._logger.debug(f'Publishing filter changed event: auto_populate={self._auto_populate_filters}')
-        self._event_bus.publish(
+        self._event_bus_manager.publish(
             event_type=VCdbEventType.filter_changed(),
             source='vcdb_explorer_filter_panel',
             payload={
@@ -535,7 +535,7 @@ class FilterPanel(QGroupBox):
                     # Trigger a refresh for each filter type
                     for filter_type, values in self._current_values.items():
                         self._logger.debug(f'Publishing filter changed event for {filter_type}: {values}')
-                        self._event_bus.publish(
+                        self._event_bus_manager.publish(
                             event_type=VCdbEventType.filter_changed(),
                             source='vcdb_explorer_filter_panel',
                             payload={
@@ -549,7 +549,7 @@ class FilterPanel(QGroupBox):
                 else:
                     # No filters set, still trigger a refresh
                     self._logger.debug('No current filter values, sending empty refresh')
-                    self._event_bus.publish(
+                    self._event_bus_manager.publish(
                         event_type=VCdbEventType.filter_changed(),
                         source='vcdb_explorer_filter_panel',
                         payload={
@@ -616,7 +616,7 @@ class FilterPanelManager(QWidget):
     def __init__(
             self,
             database_handler: DatabaseHandler,
-            event_bus: EventBusManager,
+            event_bus_manager: EventBusManager,
             logger: logging.Logger,
             max_panels: int = 5,
             parent: Optional[QWidget] = None
@@ -625,7 +625,7 @@ class FilterPanelManager(QWidget):
 
         Args:
             database_handler: Database handler for filter values
-            event_bus: Event bus for communication
+            event_bus_manager: Event bus for communication
             logger: Logger instance
             max_panels: Maximum number of panels allowed
             parent: Parent widget
@@ -664,7 +664,7 @@ class FilterPanelManager(QWidget):
         self._layout.addWidget(self._tab_widget)
 
         # Subscribe to filter refresh events
-        self._event_bus.subscribe(
+        self._event_bus_manager.subscribe(
             event_type=VCdbEventType.filters_refreshed(),
             callback=self._on_filters_refreshed,
             subscriber_id='filter_panel_manager'
@@ -676,7 +676,7 @@ class FilterPanelManager(QWidget):
     def __del__(self) -> None:
         """Clean up event subscriptions."""
         try:
-            self._event_bus.unsubscribe(subscriber_id='filter_panel_manager')
+            self._event_bus_manager.unsubscribe(subscriber_id='filter_panel_manager')
         except Exception:
             pass
 

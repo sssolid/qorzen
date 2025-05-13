@@ -28,7 +28,7 @@ from .filter_panel import FilterPanelManager
 
 
 class VCdbExplorerWidget(QWidget):
-    def __init__(self, database_handler: DatabaseHandler, event_bus: EventBusManager,
+    def __init__(self, database_handler: DatabaseHandler, event_bus_manager: EventBusManager,
                  thread_manager: ThreadManager, logger: logging.Logger,
                  export_settings: Dict[str, Any], parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -46,7 +46,7 @@ class VCdbExplorerWidget(QWidget):
         self._layout.addWidget(title)
 
         self._exporter = DataExporter(logger)
-        self._event_bus.subscribe(
+        self._event_bus_manager.subscribe(
             event_type=VCdbEventType.filters_refreshed(),
             callback=self._on_filters_refreshed,
             subscriber_id='vcdb_explorer_widget'
@@ -57,7 +57,7 @@ class VCdbExplorerWidget(QWidget):
 
     def __del__(self) -> None:
         try:
-            self._event_bus.unsubscribe(subscriber_id='vcdb_explorer_widget')
+            self._event_bus_manager.unsubscribe(subscriber_id='vcdb_explorer_widget')
         except Exception:
             pass
 
@@ -200,7 +200,7 @@ class VCdbExplorerPlugin(BasePlugin):
         self._main_widget: Optional[VCdbExplorerWidget] = None
         self._database_handler: Optional[DatabaseHandler] = None
         self._logger: Optional[logging.Logger] = None
-        self._event_bus: Optional[EventBusManager] = None
+        self._event_bus_manager: Optional[EventBusManager] = None
         self._thread_manager: Optional[ThreadManager] = None
         self._db_config: Dict[str, Any] = {}
         self._ui_config: Dict[str, Any] = {}
@@ -208,7 +208,7 @@ class VCdbExplorerPlugin(BasePlugin):
         self._connection_registered = False
         self._icon_path: Optional[str] = None
 
-    def initialize(self, application_core: Any, event_bus: EventBusManager, logger_provider: LoggingManager,
+    def initialize(self, application_core: Any, event_bus_manager: EventBusManager, logger_provider: LoggingManager,
                    config_provider: ConfigManager, file_manager: FileManager,
                    thread_manager: ThreadManager, database_manager: DatabaseManager,
                    remote_services_manager: RemoteServicesManager, security_manager: SecurityManager,
@@ -255,7 +255,7 @@ class VCdbExplorerPlugin(BasePlugin):
                 self._connection_registered = False
 
         # Subscribe to events
-        self._event_bus.subscribe(
+        self._event_bus_manager.subscribe(
             event_type='vcdb_explorer:log_message',
             callback=self._on_log_message,
             subscriber_id='vcdb_explorer_plugin'
@@ -551,8 +551,8 @@ class VCdbExplorerPlugin(BasePlugin):
         set_plugin_state(self.name, PluginLifecycleState.DISABLING)
 
         # Unsubscribe from events
-        if self._event_bus:
-            self._event_bus.unsubscribe(subscriber_id='vcdb_explorer_plugin')
+        if self._event_bus_manager:
+            self._event_bus_manager.unsubscribe(subscriber_id='vcdb_explorer_plugin')
 
         # Shut down database connection
         if self._database_handler and self._connection_registered:

@@ -1,9 +1,11 @@
 from __future__ import annotations
+
+import asyncio
 import concurrent.futures
 import queue
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, cast, Awaitable
 
 from qorzen.core.base import QorzenManager
 from qorzen.core.event_model import Event, EventSubscription, EventHandler, EventType
@@ -11,73 +13,85 @@ from qorzen.utils.exceptions import EventBusError, ManagerInitializationError, M
 
 
 class EventBusManager(QorzenManager):
-    """Manager for the application event bus.
+    """Asynchronous event bus manager for the application.
 
-    This manager handles event publishing and subscription, allowing components
-    to communicate via a pub/sub pattern.
+    This manager handles event subscription, publication, and routing
+    in an asynchronous manner. It supports filtering, prioritization,
+    and main thread dispatching.
+
+    Attributes:
+        _config_manager: The configuration manager
+        _logger: The logger instance
+        _thread_manager: The thread manager
+        _max_queue_size: Maximum size of the event queue
+        _publish_timeout: Timeout for event publishing
+        _subscriptions: Dictionary of event subscriptions
+        _event_queue: Queue for pending events
+        _running: Flag indicating whether the manager is running
+        _stop_event: Event to signal workers to stop
     """
 
-    def __init__(self, config_manager: Any, logger_manager: Any, thread_manager: Any) -> None:
+    def __init__(
+            self,
+            config_manager: Any,
+            logger_manager: Any,
+            thread_manager: Any
+    ) -> None:
         """Initialize the event bus manager.
 
         Args:
-            config_manager: Configuration manager
-            logger_manager: Logger manager
+            config_manager: The configuration manager
+            logger_manager: The logging manager
+            thread_manager: The thread management system
         """
         super().__init__(name='event_bus_manager')
         self._config_manager = config_manager
         self._logger_manager = logger_manager
-        self._logger = logger_manager.get_logger('event_bus')
+        self._logger = logger_manager.get_logger('event_bus_manager')
         self._thread_manager = thread_manager
 
-        # Threading and queuing
-        self._thread_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        self._max_queue_size = 1000
-        self._publish_timeout = 5.0
+        self._max_queue_size: int = 1000
+        self._publish_timeout: float = 5.0
 
-        # Subscriptions
+        # Subscriptions are keyed by event_type, then by subscriber_id
         self._subscriptions: Dict[str, Dict[str, EventSubscription]] = {}
-        self._subscription_lock = threading.RLock()
+        self._subscription_lock = asyncio.Lock()
 
-        # Event queue
-        self._event_queue: Optional[queue.Queue] = None
-        self._worker_threads: List[threading.Thread] = []
-        self._running = False
-        self._stop_event = threading.Event()
+        # Event processing queue and task management
+        self._event_queue: Optional[asyncio.Queue[Tuple[Event, List[EventSubscription]]]] = None
+        self._worker_tasks: List[asyncio.Task] = []
+        self._running: bool = False
+        self._stop_event = asyncio.Event()
 
-    def initialize(self) -> None:
-        """Initialize the event bus manager.
+    async def initialize(self) -> None:
+        """Initialize the event bus manager asynchronously.
+
+        Sets up the event queue and worker tasks.
 
         Raises:
             ManagerInitializationError: If initialization fails
         """
         try:
-            # Load configuration
-            event_bus_config = self._config_manager.get('event_bus_manager', {})
+            event_bus_config = await self._config_manager.get('event_bus_manager', {})
+
             thread_pool_size = event_bus_config.get('thread_pool_size', 4)
             self._max_queue_size = event_bus_config.get('max_queue_size', 1000)
             self._publish_timeout = event_bus_config.get('publish_timeout', 5.0)
 
-            # Initialize thread pool and event queue
-            self._thread_pool = concurrent.futures.ThreadPoolExecutor(
-                max_workers=thread_pool_size,
-                thread_name_prefix='event-worker'
-            )
-            self._event_queue = queue.Queue(maxsize=self._max_queue_size)
+            # Create the event queue
+            self._event_queue = asyncio.Queue(maxsize=self._max_queue_size)
+
+            # Start event worker tasks
             self._running = True
-
-            # Start worker threads
             for i in range(thread_pool_size):
-                worker = threading.Thread(
-                    target=self._event_worker,
-                    name=f'event-worker-{i}',
-                    daemon=True
+                worker = asyncio.create_task(
+                    self._event_worker(i),
+                    name=f'event-worker-{i}'
                 )
-                worker.start()
-                self._worker_threads.append(worker)
+                self._worker_tasks.append(worker)
 
-            # Register for configuration changes
-            self._config_manager.register_listener('event_bus', self._on_config_changed)
+            # Register configuration listener
+            await self._config_manager.register_listener('event_bus_manager', self._on_config_changed)
 
             self._logger.info('Event Bus Manager initialized')
             self._initialized = True
@@ -86,67 +100,113 @@ class EventBusManager(QorzenManager):
         except Exception as e:
             self._logger.error(f'Failed to initialize Event Bus Manager: {str(e)}')
             raise ManagerInitializationError(
-                f'Failed to initialize EventBusManager: {str(e)}',
+                f'Failed to initialize AsyncEventBusManager: {str(e)}',
                 manager_name=self.name
             ) from e
 
-    # In event_bus_manager.py
-    def _event_worker(self) -> None:
+    async def _event_worker(self, worker_id: int) -> None:
+        """Worker task for processing events from the queue.
+
+        Args:
+            worker_id: ID of the worker task
+        """
+        self._logger.debug(f"Event worker {worker_id} started")
+
         while self._running and (not self._stop_event.is_set()):
             try:
-                event, subscriptions = self._event_queue.get(timeout=0.1)
+                # Get an event from the queue with timeout
                 try:
-                    # Check if this event needs main thread handling
+                    event, subscriptions = await asyncio.wait_for(
+                        self._event_queue.get(),
+                        timeout=0.1  # Short timeout allows for stopping
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                try:
+                    # Process the event
                     needs_main_thread = EventType.requires_main_thread(event.event_type)
+                    tasks = []
 
                     for subscription in subscriptions:
                         try:
-                            # Process UI-related events on the main thread
+                            callback = subscription.callback
+
                             if needs_main_thread and self._thread_manager:
-                                self._thread_manager.run_on_main_thread(
-                                    lambda s=subscription, e=event: s.callback(e)
+                                # Run on main thread - this is async now
+                                await self._thread_manager.run_on_main_thread(
+                                    lambda s=subscription, e=event: callback(e)
                                 )
                             else:
-                                # Process other events normally
-                                subscription.callback(event)
+                                # Check if the callback is a coroutine function
+                                if asyncio.iscoroutinefunction(callback):
+                                    # Create a task for each async callback
+                                    task = asyncio.create_task(
+                                        callback(event),
+                                        name=f"event-handler-{event.event_type}-{subscription.subscriber_id}"
+                                    )
+                                    tasks.append(task)
+                                else:
+                                    # For synchronous callbacks, run directly
+                                    callback(event)
                         except Exception as e:
-                            self._logger.error(f'Error in event handler for {event.event_type}: {str(e)}',
-                                               extra={'event_id': event.event_id,
-                                                      'subscription_id': subscription.subscriber_id,
-                                                      'error': str(e)})
-                finally:
-                    self._event_queue.task_done()
-            except queue.Empty:
-                continue
-            except Exception as e:
-                self._logger.error(f'Unexpected error in event worker: {str(e)}')
+                            self._logger.error(
+                                f'Error in event handler for {event.event_type}: {str(e)}',
+                                extra={
+                                    'event_id': event.event_id,
+                                    'subscription_id': subscription.subscriber_id,
+                                    'error': str(e)
+                                }
+                            )
 
-    def publish(self, event_type: Union[EventType, str], source: str,
-                payload: Optional[Dict[str, Any]] = None,
-                correlation_id: Optional[str] = None,
-                synchronous: bool = False) -> str:
-        """Publish an event to the event bus.
+                    # Wait for all async tasks to complete
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+
+                finally:
+                    # Mark the task as done even if there was an error
+                    self._event_queue.task_done()
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._logger.error(f'Unexpected error in event worker {worker_id}: {str(e)}')
+
+        self._logger.debug(f"Event worker {worker_id} stopped")
+
+    async def publish(
+            self,
+            event_type: Union[EventType, str],
+            source: str,
+            payload: Optional[Dict[str, Any]] = None,
+            correlation_id: Optional[str] = None,
+            synchronous: bool = False
+    ) -> str:
+        """Publish an event asynchronously.
 
         Args:
-            event_type: Type of the event (enum or string)
+            event_type: Type of the event
             source: Source of the event
-            payload: Event payload data
-            correlation_id: ID for tracking related events
-            synchronous: If True, process event synchronously
+            payload: Event data
+            correlation_id: ID for correlating related events
+            synchronous: Whether to process the event synchronously
 
         Returns:
             The event ID
 
         Raises:
-            EventBusError: If the event cannot be published
+            EventBusError: If publishing fails
         """
         if not self._initialized:
-            raise EventBusError('Cannot publish events before initialization',
-                                event_type=str(event_type))
+            raise EventBusError(
+                'Cannot publish events before initialization',
+                event_type=str(event_type)
+            )
 
-        # Create the event
         if isinstance(event_type, EventType):
             event_type = event_type.value
+
+        # Create the event
         event = Event.create(
             event_type=event_type,
             source=source,
@@ -154,8 +214,8 @@ class EventBusManager(QorzenManager):
             correlation_id=correlation_id
         )
 
-        # Find matching subscriptions
-        matching_subs = self._get_matching_subscriptions(event)
+        # Get matching subscriptions
+        matching_subs = await self._get_matching_subscriptions(event)
 
         if not matching_subs:
             self._logger.debug(
@@ -164,29 +224,43 @@ class EventBusManager(QorzenManager):
             )
             return event.event_id
 
-        # Process the event
         if synchronous:
-            self._process_event_sync(event, matching_subs)
+            # Process event synchronously
+            await self._process_event_sync(event, matching_subs)
         else:
             try:
                 if self._event_queue is None:
-                    raise EventBusError('Event queue is not initialized',
-                                        event_type=str(event_type))
+                    raise EventBusError(
+                        'Event queue is not initialized',
+                        event_type=str(event_type)
+                    )
 
-                self._event_queue.put(
-                    (event, matching_subs),
-                    block=True,
-                    timeout=self._publish_timeout
-                )
-            except queue.Full:
+                # Put the event in the queue with timeout
+                try:
+                    await asyncio.wait_for(
+                        self._event_queue.put((event, matching_subs)),
+                        timeout=self._publish_timeout
+                    )
+                except asyncio.TimeoutError:
+                    self._logger.error(
+                        f'Event queue is full, cannot publish event {event.event_type}',
+                        extra={'event_id': event.event_id}
+                    )
+                    raise EventBusError(
+                        f'Event queue is full, cannot publish event {event.event_type}',
+                        event_type=str(event_type)
+                    )
+            except EventBusError:
+                raise
+            except Exception as e:
                 self._logger.error(
-                    f'Event queue is full, cannot publish event {event.event_type}',
+                    f'Error publishing event {event.event_type}: {str(e)}',
                     extra={'event_id': event.event_id}
                 )
                 raise EventBusError(
-                    f'Event queue is full, cannot publish event {event.event_type}',
+                    f'Error publishing event {event.event_type}: {str(e)}',
                     event_type=str(event_type)
-                )
+                ) from e
 
         self._logger.debug(
             f'Published event {event.event_type}',
@@ -200,16 +274,31 @@ class EventBusManager(QorzenManager):
 
         return event.event_id
 
-    def _process_event_sync(self, event: Event, subscriptions: List[EventSubscription]) -> None:
+    async def _process_event_sync(
+            self,
+            event: Event,
+            subscriptions: List[EventSubscription]
+    ) -> None:
         """Process an event synchronously.
 
         Args:
             event: The event to process
-            subscriptions: List of matching subscriptions
+            subscriptions: List of subscriptions to notify
         """
+        tasks = []
+
         for subscription in subscriptions:
             try:
-                subscription.callback(event)
+                callback = subscription.callback
+
+                # Check if callback is async
+                if asyncio.iscoroutinefunction(callback):
+                    # Schedule the coroutine
+                    task = asyncio.create_task(callback(event))
+                    tasks.append(task)
+                else:
+                    # Run sync callback
+                    callback(event)
             except Exception as e:
                 self._logger.error(
                     f'Error in event handler for {event.event_type}: {str(e)}',
@@ -220,17 +309,24 @@ class EventBusManager(QorzenManager):
                     }
                 )
 
-    def subscribe(self, event_type: Union[EventType, str],
-                  callback: EventHandler,
-                  subscriber_id: Optional[str] = None,
-                  filter_criteria: Optional[Dict[str, Any]] = None) -> str:
-        """Subscribe to events.
+        # Wait for all async tasks if there are any
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def subscribe(
+            self,
+            event_type: Union[EventType, str],
+            callback: EventHandler,
+            subscriber_id: Optional[str] = None,
+            filter_criteria: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Subscribe to an event type asynchronously.
 
         Args:
             event_type: Type of events to subscribe to
-            callback: Function to call when an event occurs
-            subscriber_id: Optional ID for the subscriber
-            filter_criteria: Optional criteria to filter events
+            callback: Callback function or coroutine for handling events
+            subscriber_id: ID of the subscriber (generated if not provided)
+            filter_criteria: Optional criteria for filtering events
 
         Returns:
             The subscriber ID
@@ -239,20 +335,19 @@ class EventBusManager(QorzenManager):
             EventBusError: If subscription fails
         """
         if not self._initialized:
-            raise EventBusError('Cannot subscribe to events before initialization',
-                                event_type=str(event_type))
+            raise EventBusError(
+                'Cannot subscribe to events before initialization',
+                event_type=str(event_type)
+            )
 
-        # Convert EventType enum to string if needed
         if isinstance(event_type, EventType):
             event_type_str = event_type.value
         else:
             event_type_str = event_type
 
-        # Generate subscriber ID if not provided
         if subscriber_id is None:
             subscriber_id = str(uuid.uuid4())
 
-        # Create subscription
         subscription = EventSubscription(
             subscriber_id=subscriber_id,
             event_type=event_type_str,
@@ -260,8 +355,7 @@ class EventBusManager(QorzenManager):
             filter_criteria=filter_criteria
         )
 
-        # Add to subscriptions
-        with self._subscription_lock:
+        async with self._subscription_lock:
             if event_type_str not in self._subscriptions:
                 self._subscriptions[event_type_str] = {}
 
@@ -269,28 +363,28 @@ class EventBusManager(QorzenManager):
 
         self._logger.debug(
             f'Subscription added for {event_type_str}',
-            extra={
-                'subscriber_id': subscriber_id,
-                'has_filter': filter_criteria is not None
-            }
+            extra={'subscriber_id': subscriber_id, 'has_filter': filter_criteria is not None}
         )
 
         return subscriber_id
 
-    def unsubscribe(self, subscriber_id: str, event_type: Optional[Union[EventType, str]] = None) -> bool:
-        """Unsubscribe from events.
+    async def unsubscribe(
+            self,
+            subscriber_id: str,
+            event_type: Optional[Union[EventType, str]] = None
+    ) -> bool:
+        """Unsubscribe from events asynchronously.
 
         Args:
-            subscriber_id: The subscriber ID to unsubscribe
-            event_type: Optional event type to unsubscribe from
+            subscriber_id: ID of the subscriber
+            event_type: Optional specific event type to unsubscribe from
 
         Returns:
-            True if unsubscribed successfully, False otherwise
+            True if unsubscribed, False otherwise
         """
         if not self._initialized:
             return False
 
-        # Convert EventType enum to string if needed
         event_type_str = None
         if event_type is not None:
             if isinstance(event_type, EventType):
@@ -299,7 +393,8 @@ class EventBusManager(QorzenManager):
                 event_type_str = event_type
 
         removed = False
-        with self._subscription_lock:
+
+        async with self._subscription_lock:
             if event_type_str is not None:
                 # Unsubscribe from specific event type
                 if event_type_str in self._subscriptions and subscriber_id in self._subscriptions[event_type_str]:
@@ -321,12 +416,14 @@ class EventBusManager(QorzenManager):
                             del self._subscriptions[evt_type]
 
         if removed:
-            self._logger.debug(f"Unsubscribed {subscriber_id} from {event_type_str or 'all events'}")
+            self._logger.debug(
+                f"Unsubscribed {subscriber_id} from {event_type_str or 'all events'}"
+            )
 
         return removed
 
-    def _get_matching_subscriptions(self, event: Event) -> List[EventSubscription]:
-        """Get subscriptions matching an event.
+    async def _get_matching_subscriptions(self, event: Event) -> List[EventSubscription]:
+        """Get subscriptions matching an event asynchronously.
 
         Args:
             event: The event to match
@@ -336,8 +433,8 @@ class EventBusManager(QorzenManager):
         """
         matching: List[EventSubscription] = []
 
-        with self._subscription_lock:
-            # Check for subscriptions to this event type
+        async with self._subscription_lock:
+            # Check for exact event type matches
             if event.event_type in self._subscriptions:
                 for subscription in self._subscriptions[event.event_type].values():
                     if subscription.matches_event(event):
@@ -351,29 +448,31 @@ class EventBusManager(QorzenManager):
 
         return matching
 
-    def _on_config_changed(self, key: str, value: Any) -> None:
-        """Handle configuration changes.
+    async def _on_config_changed(self, key: str, value: Any) -> None:
+        """Handle configuration changes asynchronously.
 
         Args:
-            key: Configuration key
-            value: New configuration value
+            key: The configuration key that changed
+            value: The new value
         """
-        if key == 'event_bus.max_queue_size':
+        if key == 'event_bus_manager.max_queue_size':
             self._logger.warning(
                 'Cannot change event queue size at runtime, restart required',
                 extra={'current_size': self._max_queue_size, 'new_size': value}
             )
-        elif key == 'event_bus.publish_timeout':
+        elif key == 'event_bus_manager.publish_timeout':
             self._publish_timeout = float(value)
-            self._logger.info(f'Updated event publish timeout to {self._publish_timeout} seconds')
-        elif key == 'event_bus.thread_pool_size':
+            self._logger.info(
+                f'Updated event publish timeout to {self._publish_timeout} seconds'
+            )
+        elif key == 'event_bus_manager.thread_pool_size':
             self._logger.warning(
-                'Cannot change thread pool size at runtime, restart required',
-                extra={'current_size': len(self._worker_threads), 'new_size': value}
+                'Cannot change worker pool size at runtime, restart required',
+                extra={'current_size': len(self._worker_tasks), 'new_size': value}
             )
 
-    def shutdown(self) -> None:
-        """Shut down the event bus manager.
+    async def shutdown(self) -> None:
+        """Shut down the event bus manager asynchronously.
 
         Raises:
             ManagerShutdownError: If shutdown fails
@@ -384,29 +483,36 @@ class EventBusManager(QorzenManager):
         try:
             self._logger.info('Shutting down Event Bus Manager')
 
-            # Stop event processing
+            # Stop accepting new events
             self._running = False
             self._stop_event.set()
 
-            # Wait for event queue to empty
+            # Wait for queue to be processed
             if self._event_queue is not None:
                 try:
-                    self._event_queue.join(timeout=5.0)
-                except Exception:
-                    pass
+                    await asyncio.wait_for(self._event_queue.join(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    self._logger.warning('Event queue not fully processed during shutdown')
+                except Exception as e:
+                    self._logger.error(f'Error waiting for event queue: {str(e)}')
 
-            # Shut down thread pool
-            if self._thread_pool is not None:
-                self._thread_pool.shutdown(wait=True, cancel_futures=True)
+            # Cancel all worker tasks
+            for task in self._worker_tasks:
+                task.cancel()
+
+            # Wait for all tasks to be cancelled
+            if self._worker_tasks:
+                await asyncio.gather(*self._worker_tasks, return_exceptions=True)
+
+            self._worker_tasks.clear()
 
             # Clear subscriptions
-            with self._subscription_lock:
+            async with self._subscription_lock:
                 self._subscriptions.clear()
 
-            # Unregister from configuration changes
-            self._config_manager.unregister_listener('event_bus', self._on_config_changed)
+            # Unregister config listener
+            await self._config_manager.unregister_listener('event_bus_manager', self._on_config_changed)
 
-            # Update state
             self._initialized = False
             self._healthy = False
 
@@ -415,7 +521,7 @@ class EventBusManager(QorzenManager):
         except Exception as e:
             self._logger.error(f'Failed to shut down Event Bus Manager: {str(e)}')
             raise ManagerShutdownError(
-                f'Failed to shut down EventBusManager: {str(e)}',
+                f'Failed to shut down AsyncEventBusManager: {str(e)}',
                 manager_name=self.name
             ) from e
 
@@ -428,15 +534,21 @@ class EventBusManager(QorzenManager):
         status = super().status()
 
         if self._initialized:
-            with self._subscription_lock:
-                total_subscriptions = sum((len(subs) for subs in self._subscriptions.values()))
-                unique_subscribers: Set[str] = set()
+            # Get subscription stats
+            total_subscriptions = 0
+            unique_subscribers: Set[str] = set()
 
-                for subs in self._subscriptions.values():
-                    unique_subscribers.update(subs.keys())
+            for subs in self._subscriptions.values():
+                total_subscriptions += len(subs)
+                unique_subscribers.update(subs.keys())
 
-            queue_size = self._event_queue.qsize() if self._event_queue else 0
-            queue_full = queue_size >= self._max_queue_size if self._event_queue else False
+            # Get queue stats
+            queue_size = 0
+            queue_full = False
+
+            if self._event_queue:
+                queue_size = self._event_queue.qsize()
+                queue_full = self._event_queue.full()
 
             status.update({
                 'subscriptions': {
@@ -449,8 +561,8 @@ class EventBusManager(QorzenManager):
                     'capacity': self._max_queue_size,
                     'full': queue_full
                 },
-                'threads': {
-                    'worker_count': len(self._worker_threads),
+                'workers': {
+                    'count': len(self._worker_tasks),
                     'running': self._running
                 }
             })

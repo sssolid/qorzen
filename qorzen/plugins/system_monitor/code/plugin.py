@@ -200,7 +200,7 @@ class SystemMonitorPlugin(BasePlugin):
 
     def initialize(
             self,
-            event_bus: Any,
+            event_bus_manager: Any,
             logger_provider: Any,
             config_provider: Any,
             file_manager: Any,
@@ -210,7 +210,7 @@ class SystemMonitorPlugin(BasePlugin):
         """Initialize the plugin with required components.
 
         Args:
-            event_bus: The event bus.
+            event_bus_manager: The event bus.
             logger_provider: The logger provider.
             config_provider: The configuration provider.
             file_manager: The file manager.
@@ -232,7 +232,7 @@ class SystemMonitorPlugin(BasePlugin):
         self._load_config()
 
         # Subscribe to system started event
-        self._event_bus.subscribe(
+        self._event_bus_manager.subscribe(
             event_type=EventType.SYSTEM_STARTED,
             callback=self._on_system_started,
             subscriber_id=f'{self.name}_system_started'
@@ -326,8 +326,8 @@ class SystemMonitorPlugin(BasePlugin):
 
     def _publish_metrics(self) -> None:
         """Publish metrics to the event bus."""
-        if self._event_bus:
-            self._event_bus.publish(
+        if self._event_bus_manager:
+            self._event_bus_manager.publish(
                 event_type=f'{self.name}/metrics',
                 source=self.name,
                 payload=self._metrics.copy()
@@ -419,8 +419,8 @@ class SystemMonitorPlugin(BasePlugin):
         report = '\n'.join([f'{k.upper()}: {v:.1f}%' for k, v in self._metrics.items()])
         self._logger.info(f'System Report:\n{report}')
 
-        if self._event_bus:
-            self._event_bus.publish(
+        if self._event_bus_manager:
+            self._event_bus_manager.publish(
                 event_type=f'{self.name}/report',
                 source=self.name,
                 payload={
@@ -440,8 +440,8 @@ class SystemMonitorPlugin(BasePlugin):
             self._monitor_thread.join(timeout=2.0)
 
         # Unsubscribe from events
-        if self._event_bus:
-            self._event_bus.unsubscribe(f'{self.name}_system_started')
+        if self._event_bus_manager:
+            self._event_bus_manager.unsubscribe(f'{self.name}_system_started')
 
         # Clear references to UI components
         self._toolbar = None

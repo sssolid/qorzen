@@ -151,18 +151,18 @@ class ErrorHandler:
 
     def __init__(
             self,
-            event_bus: Any,
+            event_bus_manager: Any,
             logger_manager: Any,
             config_manager: Optional[Any] = None
     ) -> None:
         """Initialize the error handler.
 
         Args:
-            event_bus: Event bus manager
+            event_bus_manager: Event bus manager
             logger_manager: Logger manager
             config_manager: Optional config manager
         """
-        self._event_bus = event_bus
+        self._event_bus_manager = event_bus_manager
         self._logger = logger_manager.get_logger('error_handler')
         self._config_manager = config_manager
 
@@ -515,7 +515,7 @@ class ErrorHandler:
         }.get(error_info.severity, 'error/unknown')
 
         # Publish the event
-        await self._event_bus.publish(
+        await self._event_bus_manager.publish(
             event_type=event_type,
             source='error_handler',
             payload=payload

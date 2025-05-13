@@ -87,8 +87,8 @@ class DataExplorerPlugin(BasePlugin):
         self.register_task('detect_trends', self._detect_trends_task, long_running=True,
                            description='Detect trends in data')
 
-        if self._event_bus:
-            self._event_bus.subscribe(event_type='system/shutdown', callback=self._handle_system_shutdown,
+        if self._event_bus_manager:
+            self._event_bus_manager.subscribe(event_type='system/shutdown', callback=self._handle_system_shutdown,
                                       subscriber_id=f'{self.name}_system_shutdown')
 
         if self._logger:
@@ -782,7 +782,7 @@ class DataExplorerPlugin(BasePlugin):
             with self._plugin_lock:
                 self._running_tasks.add(task_id)
 
-            if self._event_bus:
+            if self._event_bus_manager:
                 def on_task_completion(event: Any) -> None:
                     if event.payload.get('task_id') == task_id:
                         with self._plugin_lock:
@@ -793,11 +793,11 @@ class DataExplorerPlugin(BasePlugin):
                                 lambda: QTimer.singleShot(2000, lambda: self._hide_status_label())
                             )
 
-                        if self._event_bus:
-                            self._event_bus.unsubscribe(subscriber_id=f'{self.name}_task_{task_id}')
+                        if self._event_bus_manager:
+                            self._event_bus_manager.unsubscribe(subscriber_id=f'{self.name}_task_{task_id}')
 
                 for event_type in ['task/completed', 'task/failed', 'task/cancelled']:
-                    self._event_bus.subscribe(
+                    self._event_bus_manager.subscribe(
                         event_type=event_type,
                         callback=on_task_completion,
                         subscriber_id=f'{self.name}_task_{task_id}'
@@ -826,9 +826,9 @@ class DataExplorerPlugin(BasePlugin):
 
         self.shutdown_started.emit()
 
-        if hasattr(self, '_event_bus') and self._event_bus:
+        if hasattr(self, '_event_bus_manager') and self._event_bus_manager:
             subscriber_id = f'{self.name}_system_shutdown'
-            self._event_bus.unsubscribe(subscriber_id=subscriber_id)
+            self._event_bus_manager.unsubscribe(subscriber_id=subscriber_id)
 
         with self._plugin_lock:
             for task_id in list(self._running_tasks):

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import contextlib
+import asyncio
 import functools
-import threading
+import os
 import time
-from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple, TypeVar, Union, cast
+from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional, Set, TypeVar, Union, cast, Callable, Awaitable, AsyncGenerator
 
 import sqlalchemy
 from sqlalchemy import URL, Connection, Engine, MetaData, create_engine, event, select
@@ -20,21 +21,35 @@ R = TypeVar('R')
 
 
 class Base(DeclarativeBase):
-    """Base class for SQLAlchemy models."""
+    """Base class for SQLAlchemy models.
 
-    metadata = MetaData(
-        naming_convention={
-            'ix': 'ix_%(column_0_label)s',
-            'uq': 'uq_%(table_name)s_%(column_0_name)s',
-            'ck': 'ck_%(table_name)s_%(constraint_name)s',
-            'fk': 'fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s',
-            'pk': 'pk_%(table_name)s'
-        }
-    )
+    This provides a common metadata instance with naming conventions for all models.
+    """
+    metadata = MetaData(naming_convention={
+        'ix': 'ix_%(column_0_label)s',
+        'uq': 'uq_%(table_name)s_%(column_0_name)s',
+        'ck': 'ck_%(table_name)s_%(constraint_name)s',
+        'fk': 'fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s',
+        'pk': 'pk_%(table_name)s'
+    })
 
 
 class DatabaseConnectionConfig:
-    """Configuration for a database connection."""
+    """Configuration for a database connection.
+
+    Attributes:
+        name: Name of the connection
+        db_type: Database type (postgresql, mysql, etc.)
+        host: Database host
+        port: Database port
+        database: Database name
+        user: Database user
+        password: Database password
+        pool_size: Connection pool size
+        max_overflow: Maximum overflow connections
+        pool_recycle: Connection recycle time in seconds
+        echo: Whether to echo SQL statements
+    """
 
     def __init__(
             self,
@@ -53,16 +68,16 @@ class DatabaseConnectionConfig:
         """Initialize database connection configuration.
 
         Args:
-            name: The name of the connection
-            db_type: The database type (postgresql, mysql, sqlite, etc.)
-            host: The database host
-            port: The database port
-            database: The database name
-            user: The database user
-            password: The database password
-            pool_size: The connection pool size
-            max_overflow: The maximum overflow connections
-            pool_recycle: The connection recycle time in seconds
+            name: Name of the connection
+            db_type: Database type (postgresql, mysql, etc.)
+            host: Database host
+            port: Database port
+            database: Database name
+            user: Database user
+            password: Database password
+            pool_size: Connection pool size
+            max_overflow: Maximum overflow connections
+            pool_recycle: Connection recycle time in seconds
             echo: Whether to echo SQL statements
         """
         self.name = name
@@ -79,13 +94,28 @@ class DatabaseConnectionConfig:
 
 
 class DatabaseConnection:
-    """A database connection instance."""
+    """Database connection manager.
+
+    This class manages both synchronous and asynchronous connections
+    to a database and provides session factories.
+
+    Attributes:
+        config: Connection configuration
+        engine: Synchronous SQLAlchemy engine
+        async_engine: Asynchronous SQLAlchemy engine
+        session_factory: Factory for creating synchronous sessions
+        async_session_factory: Factory for creating asynchronous sessions
+        initialized: Whether the connection is initialized
+        healthy: Whether the connection is healthy
+        active_sessions: Set of active synchronous sessions
+        active_async_sessions: Set of active asynchronous sessions
+    """
 
     def __init__(self, config: DatabaseConnectionConfig) -> None:
         """Initialize a database connection.
 
         Args:
-            config: The connection configuration
+            config: Connection configuration
         """
         self.config = config
         self.engine: Optional[Engine] = None
@@ -95,31 +125,40 @@ class DatabaseConnection:
         self.initialized = False
         self.healthy = False
         self.active_sessions: Set[Session] = set()
-        self.active_sessions_lock = threading.RLock()
+        self.active_async_sessions: Set[AsyncSession] = set()
+        self.active_sessions_lock = asyncio.Lock()
         self.queries_total = 0
         self.queries_failed = 0
         self.query_times: List[float] = []
-        self.metrics_lock = threading.RLock()
+        self.metrics_lock = asyncio.Lock()
 
 
 class DatabaseManager(QorzenManager):
-    """Manager for database connections and operations."""
+    """Asynchronous database manager.
+
+    This manager provides access to database connections and sessions,
+    supporting both synchronous and asynchronous operations.
+
+    Attributes:
+        _config_manager: Configuration manager
+        _logger: Logger instance
+        _default_connection: Default database connection
+        _connections: Dictionary of database connections
+    """
 
     def __init__(self, config_manager: Any, logger_manager: Any) -> None:
         """Initialize the database manager.
 
         Args:
-            config_manager: The configuration manager
-            logger_manager: The logger manager
+            config_manager: Configuration manager
+            logger_manager: Logging manager
         """
         super().__init__(name='database_manager')
         self._config_manager = config_manager
         self._logger = logger_manager.get_logger('database_manager')
-
         self._default_connection: Optional[DatabaseConnection] = None
         self._connections: Dict[str, DatabaseConnection] = {}
-        self._connections_lock = threading.RLock()
-
+        self._connections_lock = asyncio.Lock()
         self._db_type: str = 'postgresql'
         self._db_url: Optional[str] = None
         self._db_async_url: Optional[str] = None
@@ -128,12 +167,18 @@ class DatabaseManager(QorzenManager):
         self._pool_recycle: int = 3600
         self._echo: bool = False
 
-    def initialize(self) -> None:
-        """Initialize the database manager."""
-        try:
-            db_config = self._config_manager.get('database_manager', {})
+    async def initialize(self) -> None:
+        """Initialize the database manager asynchronously.
 
-            # Configure the default connection
+        Sets up database connections based on configuration.
+
+        Raises:
+            ManagerInitializationError: If initialization fails
+        """
+        try:
+            db_config = await self._config_manager.get('database_manager', {})
+
+            # Get database configuration
             self._db_type = db_config.get('type', 'postgresql').lower()
             host = db_config.get('host', 'localhost')
             port = db_config.get('port', self._get_default_port(self._db_type))
@@ -145,7 +190,7 @@ class DatabaseManager(QorzenManager):
             self._pool_recycle = db_config.get('pool_recycle', 3600)
             self._echo = db_config.get('echo', False)
 
-            # Create and initialize the default connection
+            # Create default connection config
             default_config = DatabaseConnectionConfig(
                 name='default',
                 db_type=self._db_type,
@@ -160,12 +205,14 @@ class DatabaseManager(QorzenManager):
                 echo=self._echo
             )
 
-            with self._connections_lock:
+            # Initialize the default connection
+            async with self._connections_lock:
                 self._default_connection = DatabaseConnection(default_config)
                 self._connections['default'] = self._default_connection
-                self._init_connection(self._default_connection)
+                await self._init_connection(self._default_connection)
 
-            self._config_manager.register_listener('database', self._on_config_changed)
+            # Register configuration listener
+            await self._config_manager.register_listener('database', self._on_config_changed)
 
             self._logger.info(
                 f'Database Manager initialized with {self._db_type} database',
@@ -178,22 +225,24 @@ class DatabaseManager(QorzenManager):
         except Exception as e:
             self._logger.error(f'Failed to initialize Database Manager: {str(e)}')
             raise ManagerInitializationError(
-                f'Failed to initialize DatabaseManager: {str(e)}',
+                f'Failed to initialize AsyncDatabaseManager: {str(e)}',
                 manager_name=self.name
             ) from e
 
-    def _init_connection(self, connection: DatabaseConnection) -> None:
+    async def _init_connection(self, connection: DatabaseConnection) -> None:
         """Initialize a database connection.
+
+        Sets up both synchronous and asynchronous engines and session factories.
 
         Args:
             connection: The connection to initialize
 
         Raises:
-            DatabaseError: If there's an error initializing the connection
+            Exception: If connection initialization fails
         """
         config = connection.config
 
-        # Build the connection URLs
+        # Create database URLs
         if config.db_type == 'sqlite':
             db_url = f'sqlite:///{config.database}'
             db_async_url = f'sqlite+aiosqlite:///{config.database}'
@@ -219,7 +268,7 @@ class DatabaseManager(QorzenManager):
             else:
                 db_async_url = None
 
-        # Create the engine
+        # Create synchronous engine
         connection.engine = create_engine(
             db_url,
             pool_size=config.pool_size,
@@ -228,7 +277,7 @@ class DatabaseManager(QorzenManager):
             echo=config.echo
         )
 
-        # Create async engine if supported
+        # Create asynchronous engine if supported
         if db_async_url:
             connection.async_engine = create_async_engine(
                 db_async_url,
@@ -251,7 +300,7 @@ class DatabaseManager(QorzenManager):
                 class_=AsyncSession
             )
 
-        # Add event listeners for metrics
+        # Set up query metrics
         event.listen(
             connection.engine,
             'before_cursor_execute',
@@ -270,25 +319,25 @@ class DatabaseManager(QorzenManager):
         connection.initialized = True
         connection.healthy = True
 
-    def register_connection(self, config: DatabaseConnectionConfig) -> None:
+    async def register_connection(self, config: DatabaseConnectionConfig) -> None:
         """Register a new database connection.
 
         Args:
-            config: The connection configuration
+            config: Connection configuration
 
         Raises:
-            DatabaseError: If there's an error registering the connection
+            DatabaseError: If registration fails
         """
         if not self._initialized:
             raise DatabaseError('Database Manager not initialized')
 
-        with self._connections_lock:
+        async with self._connections_lock:
             if config.name in self._connections:
                 raise DatabaseError(f'Connection with name {config.name} already exists')
 
             connection = DatabaseConnection(config)
             try:
-                self._init_connection(connection)
+                await self._init_connection(connection)
                 self._connections[config.name] = connection
                 self._logger.info(
                     f'Registered new database connection: {config.name}',
@@ -308,17 +357,17 @@ class DatabaseManager(QorzenManager):
                     f'Failed to register database connection {config.name}: {str(e)}'
                 ) from e
 
-    def unregister_connection(self, name: str) -> bool:
+    async def unregister_connection(self, name: str) -> bool:
         """Unregister a database connection.
 
         Args:
-            name: The name of the connection to unregister
+            name: Name of the connection to unregister
 
         Returns:
             True if the connection was unregistered, False otherwise
 
         Raises:
-            DatabaseError: If attempting to unregister the default connection
+            DatabaseError: If unregistration fails
         """
         if not self._initialized:
             return False
@@ -326,14 +375,14 @@ class DatabaseManager(QorzenManager):
         if name == 'default':
             raise DatabaseError('Cannot unregister the default connection')
 
-        with self._connections_lock:
+        async with self._connections_lock:
             if name not in self._connections:
                 return False
 
             connection = self._connections[name]
 
-            # Close all active sessions
-            with connection.active_sessions_lock:
+            # Close active sessions
+            async with connection.active_sessions_lock:
                 for session in list(connection.active_sessions):
                     try:
                         session.close()
@@ -341,60 +390,68 @@ class DatabaseManager(QorzenManager):
                         pass
                 connection.active_sessions.clear()
 
-            # Dispose the engines
+                for session in list(connection.active_async_sessions):
+                    try:
+                        await session.close()
+                    except Exception:
+                        pass
+                connection.active_async_sessions.clear()
+
+            # Dispose engines
             if connection.engine:
                 connection.engine.dispose()
 
-            # Remove the connection
+            if connection.async_engine:
+                await connection.async_engine.dispose()
+
             del self._connections[name]
 
             self._logger.info(f'Unregistered database connection: {name}')
             return True
 
-    def has_connection(self, name: str) -> bool:
+    async def has_connection(self, name: str) -> bool:
         """Check if a connection exists.
-    
+
         Args:
-            name: The name of the connection to check
-    
+            name: Name of the connection
+
         Returns:
             True if the connection exists, False otherwise
         """
-        with self._connections_lock:
+        async with self._connections_lock:
             return name in self._connections
 
-    def get_connection_names(self) -> List[str]:
-        """Get the names of all registered connections.
-    
+    async def get_connection_names(self) -> List[str]:
+        """Get the names of all connections.
+
         Returns:
-            A list of connection names
+            List of connection names
         """
-        with self._connections_lock:
+        async with self._connections_lock:
             return list(self._connections.keys())
 
-    def _get_connection(self, connection_name: Optional[str] = None) -> DatabaseConnection:
+    async def _get_connection(self, connection_name: Optional[str] = None) -> DatabaseConnection:
         """Get a database connection.
 
         Args:
-            connection_name: The name of the connection to get, or None for the default
+            connection_name: Name of the connection, or None for default
 
         Returns:
             The database connection
 
         Raises:
-            DatabaseError: If the connection doesn't exist or is not initialized
+            DatabaseError: If the connection is not found or not initialized
         """
         if not self._initialized:
             raise DatabaseError('Database Manager not initialized')
 
         name = connection_name or 'default'
 
-        with self._connections_lock:
+        async with self._connections_lock:
             if name not in self._connections:
                 raise DatabaseError(f'Database connection {name} not found')
 
             connection = self._connections[name]
-
             if not connection.initialized:
                 raise DatabaseError(f'Database connection {name} not initialized')
 
@@ -404,10 +461,10 @@ class DatabaseManager(QorzenManager):
         """Get the default port for a database type.
 
         Args:
-            db_type: The database type
+            db_type: Database type
 
         Returns:
-            The default port
+            Default port for the database type
         """
         default_ports = {
             'postgresql': 5432,
@@ -419,27 +476,32 @@ class DatabaseManager(QorzenManager):
         }
         return default_ports.get(db_type, 0)
 
-    @contextlib.contextmanager
-    def session(self, connection_name: Optional[str] = None) -> Generator[Session, None, None]:
-        """Get a database session.
+    @asynccontextmanager
+    async def session(
+            self,
+            connection_name: Optional[str] = None
+    ) -> AsyncGenerator[Session, None]:
+        """Get a synchronous session for a connection.
 
         Args:
-            connection_name: The name of the connection to use, or None for the default
+            connection_name: Name of the connection, or None for default
 
         Yields:
             A SQLAlchemy session
 
         Raises:
-            DatabaseError: If there's an error getting the session
+            DatabaseError: If the session cannot be created
         """
-        connection = self._get_connection(connection_name)
+        connection = await self._get_connection(connection_name)
 
         if not connection.session_factory:
-            raise DatabaseError(f'Session factory not initialized for connection {connection.config.name}')
+            raise DatabaseError(
+                f'Session factory not initialized for connection {connection.config.name}'
+            )
 
         session = connection.session_factory()
 
-        with connection.active_sessions_lock:
+        async with connection.active_sessions_lock:
             connection.active_sessions.add(session)
 
         try:
@@ -447,102 +509,135 @@ class DatabaseManager(QorzenManager):
             session.commit()
         except SQLAlchemyError as e:
             session.rollback()
-            with connection.metrics_lock:
+            async with connection.metrics_lock:
                 connection.queries_failed += 1
             self._logger.error(f'Database error: {str(e)}')
             raise DatabaseError(f'Database error: {str(e)}') from e
         except Exception as e:
             session.rollback()
-            with connection.metrics_lock:
+            async with connection.metrics_lock:
                 connection.queries_failed += 1
             self._logger.error(f'Error during database operation: {str(e)}')
             raise
         finally:
             session.close()
-            with connection.active_sessions_lock:
+            async with connection.active_sessions_lock:
                 connection.active_sessions.discard(session)
 
-    async def async_session(self, connection_name: Optional[str] = None) -> AsyncSession:
-        """Get an async database session.
+    @asynccontextmanager
+    async def async_session(
+            self,
+            connection_name: Optional[str] = None
+    ) -> AsyncGenerator[AsyncSession, None]:
+        """Get an asynchronous session for a connection.
 
         Args:
-            connection_name: The name of the connection to use, or None for the default
+            connection_name: Name of the connection, or None for default
 
-        Returns:
-            An async SQLAlchemy session
+        Yields:
+            A SQLAlchemy async session
 
         Raises:
-            DatabaseError: If there's an error getting the session
+            DatabaseError: If the session cannot be created
         """
-        connection = self._get_connection(connection_name)
+        connection = await self._get_connection(connection_name)
 
         if not connection.async_session_factory:
-            raise DatabaseError(f'Async session factory not initialized for connection {connection.config.name}')
+            raise DatabaseError(
+                f'Async session factory not initialized for connection {connection.config.name}'
+            )
 
-        return connection.async_session_factory()
+        session = connection.async_session_factory()
 
-    def execute(
+        async with connection.active_sessions_lock:
+            connection.active_async_sessions.add(session)
+
+        try:
+            yield session
+            await session.commit()
+        except SQLAlchemyError as e:
+            await session.rollback()
+            async with connection.metrics_lock:
+                connection.queries_failed += 1
+            self._logger.error(f'Database error: {str(e)}')
+            raise DatabaseError(f'Database error: {str(e)}') from e
+        except Exception as e:
+            await session.rollback()
+            async with connection.metrics_lock:
+                connection.queries_failed += 1
+            self._logger.error(f'Error during database operation: {str(e)}')
+            raise
+        finally:
+            await session.close()
+            async with connection.active_sessions_lock:
+                connection.active_async_sessions.discard(session)
+
+    async def execute(
             self,
             statement: Any,
             connection_name: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Execute a database statement.
+        """Execute a SQLAlchemy statement synchronously.
 
         Args:
-            statement: The statement to execute
-            connection_name: The name of the connection to use, or None for the default
+            statement: SQLAlchemy statement to execute
+            connection_name: Name of the connection, or None for default
 
         Returns:
-            A list of result rows as dictionaries
+            List of result rows as dictionaries
 
         Raises:
-            DatabaseError: If there's an error executing the statement
+            DatabaseError: If execution fails
         """
-        connection = self._get_connection(connection_name)
+        connection = await self._get_connection(connection_name)
 
         if not connection.engine:
-            raise DatabaseError(f'Engine not initialized for connection {connection.config.name}')
+            raise DatabaseError(
+                f'Engine not initialized for connection {connection.config.name}'
+            )
 
         try:
             with connection.engine.connect() as conn:
                 result = conn.execute(statement)
                 return [dict(row._mapping) for row in result]
         except SQLAlchemyError as e:
-            with connection.metrics_lock:
+            async with connection.metrics_lock:
                 connection.queries_failed += 1
             self._logger.error(f'Database error: {str(e)}')
             raise DatabaseError(f'Database error: {str(e)}') from e
 
-    def execute_raw(
+    async def execute_raw(
             self,
             sql: str,
             params: Optional[Dict[str, Any]] = None,
             connection_name: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Execute a raw SQL statement.
+        """Execute a raw SQL statement synchronously.
 
         Args:
-            sql: The SQL statement to execute
+            sql: SQL statement to execute
             params: Parameters for the statement
-            connection_name: The name of the connection to use, or None for the default
+            connection_name: Name of the connection, or None for default
 
         Returns:
-            A list of result rows as dictionaries
+            List of result rows as dictionaries
 
         Raises:
-            DatabaseError: If there's an error executing the statement
+            DatabaseError: If execution fails
         """
-        connection = self._get_connection(connection_name)
+        connection = await self._get_connection(connection_name)
 
         if not connection.engine:
-            raise DatabaseError(f'Engine not initialized for connection {connection.config.name}')
+            raise DatabaseError(
+                f'Engine not initialized for connection {connection.config.name}'
+            )
 
         try:
             with connection.engine.connect() as conn:
                 result = conn.execute(sqlalchemy.text(sql), params or {})
                 return [dict(row._mapping) for row in result]
         except SQLAlchemyError as e:
-            with connection.metrics_lock:
+            async with connection.metrics_lock:
                 connection.queries_failed += 1
             self._logger.error(f'Database error: {str(e)}')
             raise DatabaseError(f'Database error: {str(e)}', query=sql) from e
@@ -552,51 +647,55 @@ class DatabaseManager(QorzenManager):
             statement: Any,
             connection_name: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Execute a database statement asynchronously.
+        """Execute a SQLAlchemy statement asynchronously.
 
         Args:
-            statement: The statement to execute
-            connection_name: The name of the connection to use, or None for the default
+            statement: SQLAlchemy statement to execute
+            connection_name: Name of the connection, or None for default
 
         Returns:
-            A list of result rows as dictionaries
+            List of result rows as dictionaries
 
         Raises:
-            DatabaseError: If there's an error executing the statement
+            DatabaseError: If execution fails
         """
-        connection = self._get_connection(connection_name)
+        connection = await self._get_connection(connection_name)
 
         if not connection.async_engine:
-            raise DatabaseError(f'Async engine not initialized for connection {connection.config.name}')
+            raise DatabaseError(
+                f'Async engine not initialized for connection {connection.config.name}'
+            )
 
         try:
             async with connection.async_engine.connect() as conn:
                 result = await conn.execute(statement)
                 return [dict(row._mapping) for row in result]
         except SQLAlchemyError as e:
-            with connection.metrics_lock:
+            async with connection.metrics_lock:
                 connection.queries_failed += 1
             self._logger.error(f'Database error: {str(e)}')
             raise DatabaseError(f'Database error: {str(e)}') from e
         except Exception as e:
-            with connection.metrics_lock:
+            async with connection.metrics_lock:
                 connection.queries_failed += 1
             self._logger.error(f'Error during async database operation: {str(e)}')
             raise
 
-    def create_tables(self, connection_name: Optional[str] = None) -> None:
-        """Create database tables for the Base metadata.
+    async def create_tables(self, connection_name: Optional[str] = None) -> None:
+        """Create all tables for a connection synchronously.
 
         Args:
-            connection_name: The name of the connection to use, or None for the default
+            connection_name: Name of the connection, or None for default
 
         Raises:
-            DatabaseError: If there's an error creating the tables
+            DatabaseError: If table creation fails
         """
-        connection = self._get_connection(connection_name)
+        connection = await self._get_connection(connection_name)
 
         if not connection.engine:
-            raise DatabaseError(f'Engine not initialized for connection {connection.config.name}')
+            raise DatabaseError(
+                f'Engine not initialized for connection {connection.config.name}'
+            )
 
         try:
             Base.metadata.create_all(connection.engine)
@@ -606,18 +705,20 @@ class DatabaseManager(QorzenManager):
             raise DatabaseError(f'Failed to create tables: {str(e)}') from e
 
     async def create_tables_async(self, connection_name: Optional[str] = None) -> None:
-        """Create database tables for the Base metadata asynchronously.
+        """Create all tables for a connection asynchronously.
 
         Args:
-            connection_name: The name of the connection to use, or None for the default
+            connection_name: Name of the connection, or None for default
 
         Raises:
-            DatabaseError: If there's an error creating the tables
+            DatabaseError: If table creation fails
         """
-        connection = self._get_connection(connection_name)
+        connection = await self._get_connection(connection_name)
 
         if not connection.async_engine:
-            raise DatabaseError(f'Async engine not initialized for connection {connection.config.name}')
+            raise DatabaseError(
+                f'Async engine not initialized for connection {connection.config.name}'
+            )
 
         try:
             async with connection.async_engine.begin() as conn:
@@ -627,17 +728,17 @@ class DatabaseManager(QorzenManager):
             self._logger.error(f'Failed to create tables asynchronously: {str(e)}')
             raise DatabaseError(f'Failed to create tables asynchronously: {str(e)}') from e
 
-    def check_connection(self, connection_name: Optional[str] = None) -> bool:
-        """Check if a database connection is healthy.
+    async def check_connection(self, connection_name: Optional[str] = None) -> bool:
+        """Check if a connection is working.
 
         Args:
-            connection_name: The name of the connection to check, or None for the default
+            connection_name: Name of the connection, or None for default
 
         Returns:
-            True if the connection is healthy, False otherwise
+            True if the connection is working, False otherwise
         """
         try:
-            connection = self._get_connection(connection_name)
+            connection = await self._get_connection(connection_name)
 
             if not connection.engine:
                 return False
@@ -649,32 +750,32 @@ class DatabaseManager(QorzenManager):
         except (DatabaseError, SQLAlchemyError):
             return False
 
-    def get_engine(self, connection_name: Optional[str] = None) -> Optional[Engine]:
-        """Get the database engine for a connection.
+    async def get_engine(self, connection_name: Optional[str] = None) -> Optional[Engine]:
+        """Get the synchronous engine for a connection.
 
         Args:
-            connection_name: The name of the connection, or None for the default
+            connection_name: Name of the connection, or None for default
 
         Returns:
-            The database engine, or None if not available
+            The SQLAlchemy engine, or None if not available
         """
         try:
-            connection = self._get_connection(connection_name)
+            connection = await self._get_connection(connection_name)
             return connection.engine
         except DatabaseError:
             return None
 
-    def get_async_engine(self, connection_name: Optional[str] = None) -> Optional[AsyncEngine]:
-        """Get the async database engine for a connection.
+    async def get_async_engine(self, connection_name: Optional[str] = None) -> Optional[AsyncEngine]:
+        """Get the asynchronous engine for a connection.
 
         Args:
-            connection_name: The name of the connection, or None for the default
+            connection_name: Name of the connection, or None for default
 
         Returns:
-            The async database engine, or None if not available
+            The SQLAlchemy async engine, or None if not available
         """
         try:
-            connection = self._get_connection(connection_name)
+            connection = await self._get_connection(connection_name)
             return connection.async_engine
         except DatabaseError:
             return None
@@ -691,14 +792,16 @@ class DatabaseManager(QorzenManager):
     ) -> None:
         """Event handler for before cursor execute.
 
+        Records the start time of a query for metrics.
+
         Args:
-            conn: The connection
-            cursor: The cursor
-            statement: The SQL statement
-            parameters: The parameters
-            context: The context
-            executemany: Whether this is an executemany operation
-            connection: The database connection
+            conn: Connection
+            cursor: Cursor
+            statement: SQL statement
+            parameters: Statement parameters
+            context: Context object
+            executemany: Whether this is an executemany call
+            connection: Database connection
         """
         context._query_start_time = time.time()
 
@@ -714,18 +817,40 @@ class DatabaseManager(QorzenManager):
     ) -> None:
         """Event handler for after cursor execute.
 
+        Records query metrics.
+
         Args:
-            conn: The connection
-            cursor: The cursor
-            statement: The SQL statement
-            parameters: The parameters
-            context: The context
-            executemany: Whether this is an executemany operation
-            connection: The database connection
+            conn: Connection
+            cursor: Cursor
+            statement: SQL statement
+            parameters: Statement parameters
+            context: Context object
+            executemany: Whether this is an executemany call
+            connection: Database connection
         """
         query_time = time.time() - context._query_start_time
 
-        with connection.metrics_lock:
+        # We need to use run_coroutine_threadsafe here since this is called from a sync context
+        loop = asyncio.get_event_loop()
+        asyncio.run_coroutine_threadsafe(
+            self._update_query_metrics(connection, query_time, statement),
+            loop
+        )
+
+    async def _update_query_metrics(
+            self,
+            connection: DatabaseConnection,
+            query_time: float,
+            statement: str
+    ) -> None:
+        """Update query metrics asynchronously.
+
+        Args:
+            connection: Database connection
+            query_time: Query execution time
+            statement: SQL statement
+        """
+        async with connection.metrics_lock:
             connection.queries_total += 1
             connection.query_times.append(query_time)
 
@@ -742,12 +867,12 @@ class DatabaseManager(QorzenManager):
                     }
                 )
 
-    def _on_config_changed(self, key: str, value: Any) -> None:
-        """Event handler for configuration changes.
+    async def _on_config_changed(self, key: str, value: Any) -> None:
+        """Handle configuration changes.
 
         Args:
-            key: The configuration key
-            value: The new value
+            key: Configuration key
+            value: New value
         """
         if key.startswith('database.'):
             self._logger.warning(
@@ -755,19 +880,24 @@ class DatabaseManager(QorzenManager):
                 extra={'key': key}
             )
 
-    def shutdown(self) -> None:
-        """Shut down the database manager."""
+    async def shutdown(self) -> None:
+        """Shut down the database manager asynchronously.
+
+        Closes all connections and releases resources.
+
+        Raises:
+            ManagerShutdownError: If shutdown fails
+        """
         if not self._initialized:
             return
 
         try:
             self._logger.info('Shutting down Database Manager')
 
-            # Close all connections
-            with self._connections_lock:
+            async with self._connections_lock:
                 for name, connection in list(self._connections.items()):
-                    # Close all active sessions
-                    with connection.active_sessions_lock:
+                    # Close active sessions
+                    async with connection.active_sessions_lock:
                         for session in list(connection.active_sessions):
                             try:
                                 session.close()
@@ -775,15 +905,26 @@ class DatabaseManager(QorzenManager):
                                 pass
                         connection.active_sessions.clear()
 
-                    # Dispose the engines
+                        for session in list(connection.active_async_sessions):
+                            try:
+                                await session.close()
+                            except Exception:
+                                pass
+                        connection.active_async_sessions.clear()
+
+                    # Dispose engines
                     if connection.engine:
                         connection.engine.dispose()
+
+                    if connection.async_engine:
+                        await connection.async_engine.dispose()
 
                     self._logger.debug(f'Closed database connection: {name}')
 
                 self._connections.clear()
 
-            self._config_manager.unregister_listener('database', self._on_config_changed)
+            # Unregister config listener
+            await self._config_manager.unregister_listener('database', self._on_config_changed)
 
             self._initialized = False
             self._healthy = False
@@ -793,7 +934,7 @@ class DatabaseManager(QorzenManager):
         except Exception as e:
             self._logger.error(f'Failed to shut down Database Manager: {str(e)}')
             raise ManagerShutdownError(
-                f'Failed to shut down DatabaseManager: {str(e)}',
+                f'Failed to shut down AsyncDatabaseManager: {str(e)}',
                 manager_name=self.name
             ) from e
 
@@ -801,63 +942,72 @@ class DatabaseManager(QorzenManager):
         """Get the status of the database manager.
 
         Returns:
-            A dictionary with status information
+            Dictionary with status information
         """
         status = super().status()
 
         if self._initialized:
+            # Get sync connection status info
             connection_statuses = {}
 
-            with self._connections_lock:
-                for name, connection in self._connections.items():
-                    pool_status = {}
+            for name, connection in self._connections.items():
+                pool_status = {}
 
-                    if connection.engine:
-                        try:
-                            pool = connection.engine.pool
-                            pool_status = {
-                                'size': pool.size(),
-                                'checkedin': pool.checkedin(),
-                                'checkedout': pool.checkedout(),
-                                'overflow': getattr(pool, 'overflow', 0)
-                            }
-                        except Exception:
-                            pool_status = {'error': 'Failed to get pool status'}
-
-                    with connection.metrics_lock:
-                        query_stats = {
-                            'total': connection.queries_total,
-                            'failed': connection.queries_failed,
-                            'success_rate': (
-                                (connection.queries_total - connection.queries_failed)
-                                / connection.queries_total * 100
-                                if connection.queries_total > 0 else 100.0
-                            )
+                if connection.engine:
+                    try:
+                        pool = connection.engine.pool
+                        pool_status = {
+                            'size': pool.size(),
+                            'checkedin': pool.checkedin(),
+                            'checkedout': pool.checkedout(),
+                            'overflow': getattr(pool, 'overflow', 0)
                         }
+                    except Exception:
+                        pool_status = {'error': 'Failed to get pool status'}
 
-                        if connection.query_times:
-                            avg_time = sum(connection.query_times) / len(connection.query_times)
-                            max_time = max(connection.query_times)
-                            query_stats.update({
-                                'avg_time_ms': round(avg_time * 1000, 2),
-                                'max_time_ms': round(max_time * 1000, 2),
-                                'last_queries': len(connection.query_times)
-                            })
+                query_stats = {
+                    'total': connection.queries_total,
+                    'failed': connection.queries_failed,
+                    'success_rate': (
+                        (connection.queries_total - connection.queries_failed)
+                        / connection.queries_total * 100
+                        if connection.queries_total > 0 else 100.0
+                    )
+                }
 
-                    connection_ok = self.check_connection(name)
+                if connection.query_times:
+                    avg_time = sum(connection.query_times) / len(connection.query_times)
+                    max_time = max(connection.query_times)
+                    query_stats.update({
+                        'avg_time_ms': round(avg_time * 1000, 2),
+                        'max_time_ms': round(max_time * 1000, 2),
+                        'last_queries': len(connection.query_times)
+                    })
 
-                    connection_statuses[name] = {
-                        'database': {
-                            'type': connection.config.db_type,
-                            'connection_ok': connection_ok,
-                            'async_supported': connection.async_engine is not None
-                        },
-                        'pool': pool_status,
-                        'sessions': {
-                            'active': len(connection.active_sessions)
-                        },
-                        'queries': query_stats
-                    }
+                # We'll use a sync version of check_connection for status
+                # This is safe because it's only for status reporting
+                connection_ok = False
+                try:
+                    if connection.engine:
+                        with connection.engine.connect() as conn:
+                            conn.execute(sqlalchemy.text('SELECT 1'))
+                            connection_ok = True
+                except Exception:
+                    pass
+
+                connection_statuses[name] = {
+                    'database': {
+                        'type': connection.config.db_type,
+                        'connection_ok': connection_ok,
+                        'async_supported': connection.async_engine is not None
+                    },
+                    'pool': pool_status,
+                    'sessions': {
+                        'active_sync': len(connection.active_sessions),
+                        'active_async': len(connection.active_async_sessions)
+                    },
+                    'queries': query_stats
+                }
 
             status.update({
                 'connections': connection_statuses,

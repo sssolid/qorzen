@@ -251,7 +251,7 @@ class MainWindow(QMainWindow):
         self._app_core = app_core
         self._config_manager = app_core.get_manager('config_manager')
         self._logging_manager = app_core.get_manager('logging_manager')
-        self._event_bus = app_core.get_manager('event_bus_manager')
+        self._event_bus_manager = app_core.get_manager('event_bus_manager')
         self._plugin_manager = app_core.get_manager('plugin_manager')
         self._monitoring_manager = app_core.get_manager('resource_monitoring_manager')
 
@@ -268,8 +268,8 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._subscribe_to_events()
 
-        from ..core.plugin_error_handler import PluginErrorHandler
-        self._plugin_error_handler = PluginErrorHandler(self._event_bus, self._plugin_manager, self)
+        from ..core.error_handler import ErrorHandler
+        self._plugin_error_handler = ErrorHandler(self._event_bus_manager, self._plugin_manager, self)
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._update_status)
         self._update_timer.start(5000)
@@ -385,16 +385,16 @@ class MainWindow(QMainWindow):
         self.panel_layout.add_page(logs_view, 'logs', QIcon(':/ui_icons/library-books.svg'), 'Logs', 'system')
 
     def _subscribe_to_events(self) -> None:
-        if not self._event_bus:
+        if not self._event_bus_manager:
             return
 
-        self._event_bus.subscribe(
+        self._event_bus_manager.subscribe(
             event_type='plugin/loaded',
             callback=self._on_plugin_loaded_event,
             subscriber_id='ui_plugin_loaded'
         )
 
-        self._event_bus.subscribe(
+        self._event_bus_manager.subscribe(
             event_type='plugin/unloaded',
             callback=self._on_plugin_unloaded_event,
             subscriber_id='ui_plugin_unloaded'
@@ -574,9 +574,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:
         self._update_timer.stop()
 
-        if self._event_bus:
-            self._event_bus.unsubscribe(subscriber_id='ui_plugin_loaded')
-            self._event_bus.unsubscribe(subscriber_id='ui_plugin_unloaded')
+        if self._event_bus_manager:
+            self._event_bus_manager.unsubscribe(subscriber_id='ui_plugin_loaded')
+            self._event_bus_manager.unsubscribe(subscriber_id='ui_plugin_unloaded')
 
         if hasattr(self, '_plugin_error_handler') and self._plugin_error_handler:
             self._plugin_error_handler.cleanup()

@@ -335,18 +335,18 @@ class LogsView(QWidget):
 
     def __init__(
             self,
-            event_bus: Any,
+            event_bus_manager: Any,
             parent: Optional[QWidget] = None
     ) -> None:
         """Initialize the logs view.
 
         Args:
-            event_bus: The event bus
+            event_bus_manager: The event bus
             parent: The parent widget
         """
         super().__init__(parent)
 
-        self._event_bus = event_bus
+        self._event_bus_manager = event_bus_manager
         self._log_subscription_id = None
 
         # Set up UI
@@ -452,10 +452,10 @@ class LogsView(QWidget):
 
     def _subscribe_to_log_events(self) -> None:
         """Subscribe to log events from the event bus."""
-        if not self._event_bus:
+        if not self._event_bus_manager:
             return
 
-        self._log_subscription_id = self._event_bus.subscribe(
+        self._log_subscription_id = self._event_bus_manager.subscribe(
             event_type='log/event',
             callback=self._on_log_event,
             subscriber_id='logs_view'
@@ -597,7 +597,7 @@ class LogsView(QWidget):
             event: The event
         """
         # Unsubscribe from log events
-        if self._event_bus and self._log_subscription_id:
-            self._event_bus.unsubscribe(subscriber_id=self._log_subscription_id)
+        if self._event_bus_manager and self._log_subscription_id:
+            self._event_bus_manager.unsubscribe(subscriber_id=self._log_subscription_id)
 
         super().closeEvent(event)
