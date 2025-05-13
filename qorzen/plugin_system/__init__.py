@@ -12,7 +12,7 @@ from qorzen.plugin_system.dependency import DependencyResolver
 from qorzen.plugin_system.signing import PluginVerifier
 
 # Import new async functionality
-from qorzen.plugin_system.interface import AsyncPluginInterface, BasePlugin
+from qorzen.plugin_system.interface import PluginInterface, BasePlugin
 from qorzen.plugin_system.lifecycle import (
     PluginLifecycleState, LifecycleManager,
     get_lifecycle_manager, set_thread_manager, set_plugin_manager, 

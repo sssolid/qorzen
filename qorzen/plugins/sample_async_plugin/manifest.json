@@ -9,7 +9,6 @@
   },
   "logo_path": null,
   "license": "MIT",
-  "logo_path": "logo.png",
   "homepage": "https://example.com/plugins/sample_async_plugin",
   "capabilities": [
     "ui.extend",
@@ -17,7 +16,7 @@
     "event.publish"
   ],
   "dependencies": [],
-  "entry_point": "plugin.py",
+  "entry_point": "code/plugin.py",
   "min_core_version": "0.1.0",
   "tags": ["sample", "async", "example"],
   "uuid": "cae8f2d5-4cff-4a0b-a2c0-98e6b9c093d6"

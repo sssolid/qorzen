@@ -63,42 +63,52 @@ class BasePlugin(QObject):
         self._registered_tasks: Set[str] = set()
         self._ui_registry = None
 
-    async def initialize(self, application_core: Any) -> None:
-        """
-        Initialize the plugin asynchronously with the application core.
-
-        Args:
-            application_core: The main application core instance
-        """
+    async def initialize(self, application_core: Any, **kwargs: Any) -> None:
         async with self._lock:
             if self._initialized:
                 return
 
-            self._application_core = application_core
+            try:
+                self._application_core = application_core
 
-            # Get all required managers from the application core
-            self._event_bus_manager = application_core.get_manager('event_bus_manager')
-            logger_manager = application_core.get_manager('logging_manager')
-            if logger_manager:
-                self._logger = logger_manager.get_logger(self.name)
-            self._config_manager = application_core.get_manager('config_manager')
-            self._file_manager = application_core.get_manager('file_manager')
-            self._thread_manager = application_core.get_manager('concurrency_manager')
-            self._database_manager = application_core.get_manager('database_manager')
-            self._remote_service_manager = application_core.get_manager('remote_services')
-            self._security_manager = application_core.get_manager('security_manager')
-            self._api_manager = application_core.get_manager('api_manager')
-            self._cloud_manager = application_core.get_manager('cloud_manager')
-            self._task_manager = application_core.get_manager('task_manager')
+                # Get essential managers
+                if hasattr(application_core, 'get_manager'):
+                    self._event_bus_manager = application_core.get_manager('event_bus_manager')
 
-            # Initialize UI component registry
-            from qorzen.plugin_system.ui_registry import UIComponentRegistry
-            self._ui_registry = UIComponentRegistry(self.name, thread_manager=self._thread_manager)
+                    logger_manager = application_core.get_manager('logging_manager')
+                    if logger_manager:
+                        self._logger = logger_manager.get_logger(self.name)
+                        if self._logger:
+                            self._logger.debug(f"Plugin {self.name} v{self.version} initializing...")
 
-            self._initialized = True
+                    self._config_manager = application_core.get_manager('config_manager')
+                    self._file_manager = application_core.get_manager('file_manager')
+                    self._thread_manager = application_core.get_manager('concurrency_manager')
+                    self._database_manager = application_core.get_manager('database_manager')
+                    self._remote_service_manager = application_core.get_manager('remote_services')
+                    self._security_manager = application_core.get_manager('security_manager')
+                    self._api_manager = application_core.get_manager('api_manager')
+                    self._cloud_manager = application_core.get_manager('cloud_manager')
+                    self._task_manager = application_core.get_manager('task_manager')
 
-            if self._logger:
-                self._logger.info(f"{self.name} v{self.version} initialized successfully")
+                # Initialize UI registry
+                try:
+                    from qorzen.plugin_system.ui_registry import UIComponentRegistry
+                    self._ui_registry = UIComponentRegistry(self.name, thread_manager=self._thread_manager)
+                except (ImportError, Exception) as e:
+                    if self._logger:
+                        self._logger.warning(f"Could not initialize UI registry: {str(e)}")
+                    self._ui_registry = None
+
+                self._initialized = True
+
+                if self._logger:
+                    self._logger.info(f'{self.name} v{self.version} initialized successfully')
+
+            except Exception as e:
+                if self._logger:
+                    self._logger.error(f"Error during plugin initialization: {str(e)}", exc_info=True)
+                raise
 
     async def on_ui_ready(self, ui_integration: Any) -> None:
         """

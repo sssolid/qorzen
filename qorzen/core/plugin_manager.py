@@ -64,6 +64,7 @@ class PluginManifest:
             version=data.get('version', '0.1.0'),
             description=data.get('description', ''),
             author=data.get('author', 'Unknown'),
+            logo_path=data.get('logo_path', ''),
             homepage=data.get('homepage'),
             license=data.get('license'),
             min_core_version=data.get('min_core_version'),
@@ -79,20 +80,45 @@ class PluginManifest:
 
     @classmethod
     def load(cls, path: Union[str, pathlib.Path]) -> Optional[PluginManifest]:
-        """Load a manifest from a file.
-
-        Args:
-            path: Path to the manifest file
-
-        Returns:
-            Plugin manifest or None if loading fails
-        """
         try:
             import json
+            import logging
+            logger = logging.getLogger("plugin_manifest")
+
+            # Check if the file exists
+            path_obj = pathlib.Path(path)
+            if not path_obj.exists():
+                logger.debug(f"Manifest file does not exist: {path}")
+                return None
+
+            # Read and parse the file
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+
+            # Handle author field that might be a dictionary or string
+            if "author" in data and isinstance(data["author"], dict):
+                author_dict = data["author"]
+                if "name" in author_dict:
+                    data["author"] = author_dict["name"]
+
+            # Handle logo_path that might be null
+            if "logo_path" in data and data["logo_path"] is None:
+                data["logo_path"] = ""
+
+            # Required fields check
+            required_fields = ["name", "display_name", "version", "description", "author"]
+            for field in required_fields:
+                if field not in data or not data[field]:
+                    logger.warning(f"Missing required field in manifest: {field}")
+
             return cls.from_dict(data)
-        except Exception:
+        except json.JSONDecodeError as e:
+            logger = logging.getLogger("plugin_manifest")
+            logger.error(f"Invalid JSON in manifest file {path}: {str(e)}")
+            return None
+        except Exception as e:
+            logger = logging.getLogger("plugin_manifest")
+            logger.error(f"Error loading manifest from {path}: {str(e)}")
             return None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -365,11 +391,6 @@ class PluginManager(QorzenManager):
             self._logger.error(f'Failed to discover directory plugins: {str(e)}', exc_info=True)
 
     async def _discover_plugin_from_manifest(self, plugin_dir: pathlib.Path) -> None:
-        """Discover a plugin from a manifest file.
-
-        Args:
-            plugin_dir: Directory containing the plugin
-        """
         manifest_file = plugin_dir / 'manifest.json'
         try:
             manifest = PluginManifest.load(manifest_file)
@@ -377,26 +398,26 @@ class PluginManager(QorzenManager):
                 self._logger.warning(f'Failed to load manifest from {manifest_file}')
                 return
 
-            plugin_id = f"manifest_{manifest.name}"
+            # Generate a stable plugin ID based on the manifest name
+            plugin_id = f'manifest_{manifest.name}'
 
-            # Look for entry point module
             entry_point = manifest.entry_point
             entry_path = plugin_dir / entry_point
+            entry_exists = entry_path.exists()
+
+            self._logger.debug(
+                f"Discovered plugin from manifest: {manifest.name}, entry point: {entry_point}, exists: {entry_exists}")
 
             if not entry_path.exists() and '.' in entry_point:
-                # Try as a module path instead of a file path
-                module_name = f"{plugin_dir.name}.{entry_point}"
+                # This might be a module reference
+                module_name = f'{plugin_dir.name}.{entry_point}'
                 try:
                     importlib.import_module(module_name)
-                    # If we got here, the module exists
                 except ImportError:
-                    self._logger.warning(
-                        f"Failed to import module {module_name} for plugin {manifest.name}",
-                        extra={'plugin': manifest.name, 'module': module_name}
-                    )
+                    self._logger.warning(f'Failed to import module {module_name} for plugin {manifest.name}',
+                                         extra={'plugin': manifest.name, 'module': module_name})
                     return
 
-            # Create plugin info
             plugin_info = PluginInfo(
                 plugin_id=plugin_id,
                 name=manifest.name,
@@ -418,92 +439,73 @@ class PluginManager(QorzenManager):
                 }
             )
 
-            # Store plugin info
             async with self._plugins_lock:
                 self._plugins[plugin_id] = plugin_info
                 self._plugin_paths[plugin_id] = str(plugin_dir)
 
-            self._logger.debug(
-                f"Discovered plugin '{plugin_info.name}' from manifest",
-                extra={
-                    'plugin_id': plugin_id,
-                    'version': plugin_info.version,
-                    'path': str(plugin_dir)
-                }
-            )
+            self._logger.debug(f"Discovered plugin '{plugin_info.name}' from manifest",
+                               extra={'plugin_id': plugin_id, 'version': plugin_info.version, 'path': str(plugin_dir)})
         except Exception as e:
-            self._logger.error(
-                f"Failed to discover plugin from manifest in {plugin_dir.name}: {str(e)}",
-                extra={'directory': str(plugin_dir)}
-            )
+            self._logger.error(f'Failed to discover plugin from manifest in {plugin_dir.name}: {str(e)}',
+                               extra={'directory': str(plugin_dir)}, exc_info=True)
 
     async def _discover_plugin_from_module(self, plugin_dir: pathlib.Path) -> None:
-        """Discover a plugin from a Python module.
-
-        Args:
-            plugin_dir: Directory containing the plugin
-        """
         init_file = plugin_dir / '__init__.py'
         plugin_file = plugin_dir / 'plugin.py'
-
-        if not init_file.exists() and not plugin_file.exists():
+        if not init_file.exists() and (not plugin_file.exists()):
             return
-
         try:
             module_name = plugin_dir.name
-
             if init_file.exists():
                 module = importlib.import_module(module_name)
             elif plugin_file.exists():
-                spec = importlib.util.spec_from_file_location(
-                    f'{module_name}.plugin',
-                    plugin_file
-                )
+                spec = importlib.util.spec_from_file_location(f'{module_name}.plugin', plugin_file)
                 if not spec or not spec.loader:
                     return
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
             else:
                 return
-
-            # Find the plugin class
             plugin_class = None
-            for _, obj in inspect.getmembers(module, inspect.isclass):
-                if hasattr(obj, 'name') and hasattr(obj, 'version') and hasattr(obj, 'description'):
-                    plugin_class = obj
-                    break
+
+            # First check if the module has an __all__ attribute, which tells us what it exports
+            if hasattr(module, '__all__'):
+                for name in module.__all__:
+                    obj = getattr(module, name)
+                    if inspect.isclass(obj) and hasattr(obj, 'name') and hasattr(obj, 'version') and hasattr(obj,
+                                                                                                             'description'):
+                        plugin_class = obj
+                        break
+
+            # If we didn't find a plugin class from __all__, check all members of the module
+            if not plugin_class:
+                for name, obj in module.__dict__.items():
+                    if inspect.isclass(obj) and hasattr(obj, 'name') and hasattr(obj, 'version') and hasattr(obj,
+                                                                                                             'description'):
+                        plugin_class = obj
+                        break
+
+            # If we still didn't find a plugin class, fall back to the original approach
+            if not plugin_class:
+                for _, obj in inspect.getmembers(module, inspect.isclass):
+                    if hasattr(obj, 'name') and hasattr(obj, 'version') and hasattr(obj, 'description'):
+                        plugin_class = obj
+                        break
 
             if not plugin_class:
                 return
 
-            plugin_id = f"module_{module_name}"
-
-            # Create plugin info from class attributes
-            plugin_info = await self._extract_plugin_metadata(
-                plugin_class=plugin_class,
-                default_name=module_name,
-                plugin_id=plugin_id,
-                path=str(plugin_dir)
-            )
-
-            # Store plugin info
+            plugin_id = f'module_{module_name}'
+            plugin_info = await self._extract_plugin_metadata(plugin_class=plugin_class, default_name=module_name,
+                                                              plugin_id=plugin_id, path=str(plugin_dir))
             async with self._plugins_lock:
                 self._plugins[plugin_id] = plugin_info
                 self._plugin_paths[plugin_id] = str(plugin_dir)
-
-            self._logger.debug(
-                f"Discovered plugin '{plugin_info.name}' from module",
-                extra={
-                    'plugin_id': plugin_id,
-                    'version': plugin_info.version,
-                    'path': str(plugin_dir)
-                }
-            )
+            self._logger.debug(f"Discovered plugin '{plugin_info.name}' from module",
+                               extra={'plugin_id': plugin_id, 'version': plugin_info.version, 'path': str(plugin_dir)})
         except Exception as e:
-            self._logger.error(
-                f"Failed to discover plugin from module in {plugin_dir.name}: {str(e)}",
-                extra={'directory': str(plugin_dir)}
-            )
+            self._logger.error(f'Failed to discover plugin from module in {plugin_dir.name}: {str(e)}',
+                               extra={'directory': str(plugin_dir)})
 
     async def _discover_installed_plugins(self) -> None:
         """Discover plugins that have been installed via packages."""
@@ -651,65 +653,46 @@ class PluginManager(QorzenManager):
         return result
 
     async def load_plugin(self, plugin_id: str) -> bool:
-        """Load a plugin.
-
-        Args:
-            plugin_id: ID of the plugin to load
-
-        Returns:
-            True if the plugin was loaded successfully, False otherwise
-
-        Raises:
-            PluginError: If loading fails
-        """
         if not self._initialized:
             raise PluginError('Plugin manager not initialized')
-
         async with self._plugins_lock:
             if plugin_id not in self._plugins:
                 raise PluginError(f"Plugin '{plugin_id}' not found")
-
             plugin_info = self._plugins[plugin_id]
+            self._logger.debug(f"Starting to load plugin '{plugin_id}' (current state: {plugin_info.state})")
 
-            # Check if already loaded
             if plugin_info.state in (PluginState.ACTIVE, PluginState.LOADING):
                 self._logger.debug(f"Plugin '{plugin_id}' is already loaded or loading")
                 return True
 
-            # Check if disabled
             if self._is_plugin_disabled(plugin_info.name):
                 self._logger.info(f"Plugin '{plugin_id}' is disabled, skipping load")
                 plugin_info.state = PluginState.DISABLED
                 return False
 
-            # Mark as loading
             plugin_info.state = PluginState.LOADING
 
-        # Create error boundary for plugin loading
-        error_boundary = create_error_boundary(
-            source='plugin_loading',
-            plugin_id=plugin_id
-        ) if self._error_handler else None
-
+        error_boundary = create_error_boundary(source='plugin_loading',
+                                               plugin_id=plugin_id) if self._error_handler else None
         try:
-            # Load dependencies first
+            self._logger.debug(f"Loading dependencies for plugin '{plugin_id}'")
             await self._load_plugin_dependencies(plugin_id)
 
-            # Load the plugin
             if plugin_info.manifest:
+                self._logger.debug(f"Loading plugin '{plugin_id}' from manifest")
                 success = await self._load_plugin_from_manifest(plugin_id)
             else:
+                self._logger.debug(f"Loading plugin '{plugin_id}' from module")
                 success = await self._load_plugin_from_module(plugin_id)
 
             if not success:
+                self._logger.warning(f"Failed to load plugin '{plugin_id}'")
                 return False
 
-            # Mark as active
             async with self._plugins_lock:
                 plugin_info.state = PluginState.ACTIVE
                 plugin_info.load_time = time.time()
 
-            # Publish plugin loaded event
             await self._event_bus_manager.publish(
                 event_type='plugin/loaded',
                 source='plugin_manager',
@@ -722,25 +705,16 @@ class PluginManager(QorzenManager):
                 }
             )
 
-            self._logger.info(
-                f"Loaded plugin '{plugin_info.name}' v{plugin_info.version}",
-                extra={'plugin_id': plugin_id}
-            )
-
+            self._logger.info(f"Loaded plugin '{plugin_info.name}' v{plugin_info.version}",
+                              extra={'plugin_id': plugin_id})
             return True
         except Exception as e:
-            # Mark as failed
+            self._logger.error(f"Failed to load plugin '{plugin_id}': {str(e)}",
+                               extra={'plugin_id': plugin_id, 'error': str(e)}, exc_info=True)
             async with self._plugins_lock:
                 plugin_info.state = PluginState.FAILED
                 plugin_info.error = str(e)
 
-            self._logger.error(
-                f"Failed to load plugin '{plugin_id}': {str(e)}",
-                extra={'plugin_id': plugin_id, 'error': str(e)},
-                exc_info=True
-            )
-
-            # Publish plugin error event
             await self._event_bus_manager.publish(
                 event_type='plugin/error',
                 source='plugin_manager',
@@ -799,17 +773,6 @@ class PluginManager(QorzenManager):
                 )
 
     async def _load_plugin_from_manifest(self, plugin_id: str) -> bool:
-        """Load a plugin from a manifest file.
-
-        Args:
-            plugin_id: ID of the plugin
-
-        Returns:
-            True if the plugin was loaded successfully, False otherwise
-
-        Raises:
-            PluginError: If loading fails
-        """
         async with self._plugins_lock:
             plugin_info = self._plugins[plugin_id]
             manifest = plugin_info.manifest
@@ -818,75 +781,115 @@ class PluginManager(QorzenManager):
         if not manifest or not plugin_path:
             raise PluginError(f"Plugin '{plugin_id}' has no manifest or path")
 
-        # Check path exists
         plugin_dir = pathlib.Path(plugin_path)
         if not plugin_dir.exists():
-            raise PluginError(f"Plugin directory not found: {plugin_path}")
+            raise PluginError(f'Plugin directory not found: {plugin_path}')
 
-        # Get entry point module
         entry_point = manifest.entry_point
+        self._logger.debug(f"Loading plugin '{plugin_id}' with entry point: {entry_point}")
+
+        # Normalize the entry point path
         entry_path = None
+        module = None
 
-        # Check if entry point is a file path or module path
         if entry_point.endswith('.py'):
-            entry_path = plugin_dir / entry_point
-            if not entry_path.exists():
-                raise PluginError(f"Entry point file not found: {entry_point}")
+            # Handle direct file references (like code/plugin.py)
+            if '/' in entry_point or '\\' in entry_point:
+                # This is a subdirectory path
+                entry_path = plugin_dir / entry_point.replace('/', os.sep).replace('\\', os.sep)
+                if not entry_path.exists():
+                    raise PluginError(f'Entry point file not found: {entry_path}')
 
-            # Import from file
-            spec = importlib.util.spec_from_file_location(
-                f"plugin_{plugin_id}",
-                entry_path
-            )
-            if not spec or not spec.loader:
-                raise PluginError(f"Failed to create module spec for {entry_path}")
-
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-        else:
-            # Import as module
-            if '.' in entry_point:
-                # Relative to plugin dir
-                module_name = f"{plugin_dir.name}.{entry_point}"
+                module_name = f"{plugin_dir.name}.{entry_point.replace('/', '.').replace('\\', '.').replace('.py', '')}"
+                try:
+                    # First try importing as a module
+                    module = importlib.import_module(module_name)
+                    self._logger.debug(f"Imported plugin module: {module_name}")
+                except ImportError:
+                    # Fall back to loading from file
+                    self._logger.debug(f"Module import failed, loading directly from file: {entry_path}")
+                    spec = importlib.util.spec_from_file_location(f'plugin_{plugin_id}', entry_path)
+                    if not spec or not spec.loader:
+                        raise PluginError(f'Failed to create module spec for {entry_path}')
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
             else:
-                # Direct module name
+                # This is a direct file in the plugin root
+                entry_path = plugin_dir / entry_point
+                if not entry_path.exists():
+                    raise PluginError(f'Entry point file not found: {entry_point}')
+
+                spec = importlib.util.spec_from_file_location(f'plugin_{plugin_id}', entry_path)
+                if not spec or not spec.loader:
+                    raise PluginError(f'Failed to create module spec for {entry_path}')
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+        else:
+            # Handle module references
+            if '.' in entry_point:
+                module_name = f'{plugin_dir.name}.{entry_point}'
+            else:
                 module_name = entry_point
 
             try:
                 module = importlib.import_module(module_name)
+                self._logger.debug(f"Imported plugin module: {module_name}")
             except ImportError as e:
-                raise PluginError(f"Failed to import plugin module: {str(e)}") from e
+                raise PluginError(f'Failed to import plugin module: {str(e)}') from e
+
+        if not module:
+            raise PluginError(f'Failed to load module for plugin {plugin_id}')
 
         # Find the plugin class
         plugin_class = None
-        for name, obj in inspect.getmembers(module, inspect.isclass):
-            if hasattr(obj, "name") and hasattr(obj, "version"):
-                plugin_class = obj
-                break
+
+        # First check if the module has an __all__ attribute
+        if hasattr(module, '__all__'):
+            for name in module.__all__:
+                if name in module.__dict__:
+                    obj = module.__dict__[name]
+                    if inspect.isclass(obj) and hasattr(obj, 'name') and hasattr(obj, 'version'):
+                        plugin_class = obj
+                        self._logger.debug(f"Found plugin class from __all__: {name}")
+                        break
+
+        # If we didn't find a plugin class from __all__, check all classes in the module
+        if not plugin_class:
+            for name, obj in inspect.getmembers(module, inspect.isclass):
+                if hasattr(obj, 'name') and hasattr(obj, 'version'):
+                    plugin_class = obj
+                    self._logger.debug(f"Found plugin class: {name}")
+                    break
 
         if not plugin_class:
-            raise PluginError(f"No plugin class found in {entry_point}")
+            raise PluginError(f'No plugin class found in {entry_point}')
 
-        # Create an instance
-        plugin_instance = plugin_class()
+        # Create plugin instance
+        try:
+            self._logger.debug(f"Creating instance of plugin class: {plugin_class.__name__}")
+            plugin_instance = plugin_class()
 
-        # Initialize the plugin
-        if hasattr(plugin_instance, "initialize"):
-            await self._initialize_plugin(plugin_instance, plugin_id)
+            # Initialize if needed
+            if hasattr(plugin_instance, 'initialize'):
+                self._logger.debug(f"Initializing plugin: {plugin_id}")
+                await self._initialize_plugin(plugin_instance, plugin_id)
 
-        # Store the instance
-        async with self._plugins_lock:
-            self._plugin_instances[plugin_id] = plugin_instance
+            async with self._plugins_lock:
+                self._plugin_instances[plugin_id] = plugin_instance
 
-        # Set up UI integration if needed
-        if manifest.ui_integration and hasattr(plugin_instance, "setup_ui"):
-            # Setup UI if it's ready, otherwise wait for UI ready event
-            if self._ui_ready.is_set():
-                await self._setup_plugin_ui(plugin_id)
-            else:
-                self._ui_plugins.add(plugin_id)
+            # Setup UI if needed
+            if manifest.ui_integration and hasattr(plugin_instance, 'setup_ui'):
+                if self._ui_ready.is_set():
+                    self._logger.debug(f"Setting up UI for plugin: {plugin_id}")
+                    await self._setup_plugin_ui(plugin_id)
+                else:
+                    self._logger.debug(f"UI not ready, queuing plugin for UI setup: {plugin_id}")
+                    self._ui_plugins.add(plugin_id)
 
-        return True
+            return True
+        except Exception as e:
+            self._logger.error(f"Error initializing plugin {plugin_id}: {str(e)}", exc_info=True)
+            raise PluginError(f"Failed to initialize plugin {plugin_id}: {str(e)}") from e
 
     async def _load_plugin_from_module(self, plugin_id: str) -> bool:
         """Load a plugin from a Python module.
@@ -1218,8 +1221,8 @@ class PluginManager(QorzenManager):
                 self._disabled_plugins.remove(plugin_name)
 
             # Update configuration
-            self._config_manager.set('plugins.enabled', self._enabled_plugins)
-            self._config_manager.set('plugins.disabled', self._disabled_plugins)
+            await self._config_manager.set('plugins.enabled', self._enabled_plugins)
+            await self._config_manager.set('plugins.disabled', self._disabled_plugins)
 
             # Update plugin state
             if plugin_info.state == PluginState.DISABLED:
@@ -1290,8 +1293,8 @@ class PluginManager(QorzenManager):
                 self._disabled_plugins.append(plugin_name)
 
             # Update configuration
-            self._config_manager.set('plugins.enabled', self._enabled_plugins)
-            self._config_manager.set('plugins.disabled', self._disabled_plugins)
+            await self._config_manager.set('plugins.enabled', self._enabled_plugins)
+            await self._config_manager.set('plugins.disabled', self._disabled_plugins)
 
             # Update plugin state
             plugin_info.state = PluginState.DISABLED
