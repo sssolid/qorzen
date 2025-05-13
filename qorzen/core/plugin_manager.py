@@ -210,9 +210,10 @@ class PluginManager(QorzenManager):
             # Setup error handler
             if hasattr(self._event_bus_manager, 'error_handler'):
                 self._error_handler = self._event_bus_manager.error_handler
+                self._error_handler.initialize()
 
             # Load configuration
-            plugin_config = self._config_manager.get('plugins', {})
+            plugin_config = await self._config_manager.get('plugins', {})
             plugin_dir = plugin_config.get('directory', 'plugins')
             self._plugin_dir = pathlib.Path(plugin_dir)
             self._auto_load = plugin_config.get('autoload', True)
@@ -254,7 +255,7 @@ class PluginManager(QorzenManager):
             )
 
             # Register configuration listener
-            self._config_manager.register_listener('plugins', self._on_config_changed)
+            await self._config_manager.register_listener('plugins', self._on_config_changed)
 
             # Discover plugins
             await self._discover_plugins()
@@ -1636,7 +1637,7 @@ class PluginManager(QorzenManager):
             await self._event_bus_manager.unsubscribe(subscriber_id='plugin_manager')
 
             # Unregister configuration listener
-            self._config_manager.unregister_listener('plugins', self._on_config_changed)
+            await self._config_manager.unregister_listener('plugins', self._on_config_changed)
 
             # Clear plugin data
             async with self._plugins_lock:

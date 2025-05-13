@@ -171,23 +171,24 @@ class ErrorHandler:
         self._error_strategies: Dict[str, Callable[[ErrorInfo], bool]] = {}
         self._error_lock = asyncio.Lock()
 
+        self._max_errors = 1000
+        self._default_severity_handling = {
+            ErrorSeverity.LOW: True,
+            ErrorSeverity.MEDIUM: True,
+            ErrorSeverity.HIGH: False,
+            ErrorSeverity.CRITICAL: False
+        }
+
+    async def initialize(self) -> None:
         # Configure settings
-        if config_manager:
-            error_config = config_manager.get('error_handling', {})
+        if self._config_manager:
+            error_config = await self._config_manager.get('error_handling', {})
             self._max_errors = error_config.get('max_errors', 1000)
             self._default_severity_handling = {
                 ErrorSeverity.LOW: error_config.get('handle_low', True),
                 ErrorSeverity.MEDIUM: error_config.get('handle_medium', True),
                 ErrorSeverity.HIGH: error_config.get('handle_high', False),
                 ErrorSeverity.CRITICAL: error_config.get('handle_critical', False)
-            }
-        else:
-            self._max_errors = 1000
-            self._default_severity_handling = {
-                ErrorSeverity.LOW: True,
-                ErrorSeverity.MEDIUM: True,
-                ErrorSeverity.HIGH: False,
-                ErrorSeverity.CRITICAL: False
             }
 
     async def handle_error(

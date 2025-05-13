@@ -59,7 +59,7 @@ class ConcurrencyManager(QorzenManager):
             ManagerInitializationError: If initialization fails
         """
         try:
-            thread_config = self._config_manager.get('thread_pool', {})
+            thread_config = await self._config_manager.get('thread_pool', {})
             self._max_workers = thread_config.get('worker_threads', 4)
             self._max_io_workers = thread_config.get('io_threads', 8)
             self._max_process_workers = thread_config.get('process_workers', max(1, (os.cpu_count() or 2) - 1))
@@ -85,7 +85,7 @@ class ConcurrencyManager(QorzenManager):
             # Store the main thread's event loop
             self._main_thread_loop = asyncio.get_running_loop()
 
-            self._config_manager.register_listener('thread_pool', self._on_config_changed)
+            await self._config_manager.register_listener('thread_pool', self._on_config_changed)
             self._logger.info(f'Concurrency Manager initialized with {self._max_workers} workers')
             self._initialized = True
             self._healthy = True
@@ -119,7 +119,7 @@ class ConcurrencyManager(QorzenManager):
             if self._process_pool:
                 self._process_pool.shutdown(wait=True)
 
-            self._config_manager.unregister_listener('thread_pool', self._on_config_changed)
+            await self._config_manager.unregister_listener('thread_pool', self._on_config_changed)
             self._initialized = False
             self._healthy = False
             self._logger.info('Concurrency Manager shut down successfully')

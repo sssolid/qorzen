@@ -398,7 +398,7 @@ class PluginIsolationManager(QorzenManager):
             self._logger.info("Initializing plugin isolation manager")
 
             # Get configuration
-            plugin_config = self._config_manager.get("plugins", {})
+            plugin_config = await self._config_manager.get("plugins", {})
             isolation_config = plugin_config.get("isolation", {})
 
             # Set default isolation level

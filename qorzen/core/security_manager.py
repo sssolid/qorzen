@@ -140,7 +140,7 @@ class SecurityManager(QorzenManager):
         super().__init__(name='security_manager')
         self._config_manager = config_manager
         self._logger = logger_manager.get_logger('security_manager')
-        self._event_bus = event_bus_manager
+        self._event_bus_manager = event_bus_manager
         self._db_manager = db_manager
 
         # Password hashing

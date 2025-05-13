@@ -22,11 +22,11 @@ class ConfigSchema(BaseModel):
     """
     database: Dict[str, Any] = Field(
         default_factory=lambda: {
-            'type': 'postgresql',
+            'type': 'sqlite',
             'host': 'localhost',
             'port': 5432,
             'name': 'qorzen',
-            'user': 'postgres',
+            'user': 'username',
             'password': '',
             'pool_size': 5,
             'max_overflow': 10,

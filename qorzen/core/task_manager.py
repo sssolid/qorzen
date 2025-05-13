@@ -116,12 +116,12 @@ class TaskManager(QorzenManager):
             self._logger.info('Initializing task manager')
 
             # Load configuration
-            task_config = self._config_manager.get('tasks', {})
+            task_config = await self._config_manager.get('tasks', {})
             self._max_concurrent_tasks = task_config.get('max_concurrent_tasks', 20)
             self._keep_completed_tasks = task_config.get('keep_completed_tasks', 100)
             self._task_timeout = task_config.get('default_timeout', 300.0)
 
-            self._config_manager.register_listener('tasks', self._on_config_changed)
+            await self._config_manager.register_listener('tasks', self._on_config_changed)
 
             self._initialized = True
             self._healthy = True
@@ -166,7 +166,7 @@ class TaskManager(QorzenManager):
                     except Exception as e:
                         self._logger.warning(f'Error cancelling future for task {task_id}: {e}')
 
-            self._config_manager.unregister_listener('tasks', self._on_config_changed)
+            await self._config_manager.unregister_listener('tasks', self._on_config_changed)
             self._initialized = False
             self._healthy = False
             self._logger.info('Task manager shut down successfully')

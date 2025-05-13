@@ -176,7 +176,7 @@ class DatabaseManager(QorzenManager):
             ManagerInitializationError: If initialization fails
         """
         try:
-            db_config = await self._config_manager.get('database_manager', {})
+            db_config = await self._config_manager.get('database', {})
 
             # Get database configuration
             self._db_type = db_config.get('type', 'postgresql').lower()
