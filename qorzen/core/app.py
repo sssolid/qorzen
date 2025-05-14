@@ -477,12 +477,9 @@ class ApplicationCore:
 
     def setup_signal_handlers(self) -> None:
         """Set up signal handlers for graceful shutdown."""
+        # Register SIGINT handler (Ctrl+C) only on unix:
         if sys.platform != 'win32':
-            # Register SIGTERM handler
-            signal.signal(signal.SIGTERM, lambda sig, frame: asyncio.create_task(self._signal_handler(sig)))
-
-        # Register SIGINT handler (Ctrl+C)
-        signal.signal(signal.SIGINT, lambda sig, frame: asyncio.create_task(self._signal_handler(sig)))
+            signal.signal(signal.SIGINT, lambda sig, frame: asyncio.create_task(self._signal_handler(sig)))
 
     async def _signal_handler(self, sig: int) -> None:
         """Handle termination signals.

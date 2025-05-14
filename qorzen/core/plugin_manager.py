@@ -13,6 +13,7 @@ from enum import Enum, auto
 from typing import Any, Dict, List, Optional, Set, Type, Union, cast, Tuple
 from qorzen.core.base import QorzenManager
 from qorzen.core.error_handler import ErrorHandler, ErrorSeverity, create_error_boundary
+from qorzen.plugin_system import BasePlugin
 from qorzen.plugin_system.plugin_state_manager import PluginStateManager
 from qorzen.utils.exceptions import PluginError, ManagerInitializationError, ManagerShutdownError
 
@@ -731,10 +732,12 @@ class PluginManager(QorzenManager):
                         break
 
         if not plugin_class:
+            # new
             for name, obj in inspect.getmembers(module, inspect.isclass):
-                if hasattr(obj, 'name') and hasattr(obj, 'version'):
+                # pick only subclasses of BasePlugin, excluding BasePlugin itself
+                if issubclass(obj, BasePlugin) and obj is not BasePlugin:
                     plugin_class = obj
-                    self._logger.debug(f'Found plugin class: {name}')
+                    self._logger.debug(f'Found plugin subclass: {name}')
                     break
 
         if not plugin_class:

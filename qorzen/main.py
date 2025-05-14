@@ -7,7 +7,6 @@ import sys
 import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
-import qorzen.plugin_debug
 
 
 async def setup_environment() -> None:

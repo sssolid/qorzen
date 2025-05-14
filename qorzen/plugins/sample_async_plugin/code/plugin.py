@@ -34,15 +34,19 @@ class SampleAsyncPlugin(BasePlugin):
             if self._logger:
                 self._logger.info(f'{self.name} v{self.version} initializing...')
 
-            if self._task_manager:
-                await self.register_task('increment_counter', self._increment_counter)
-                await self.register_task('get_counter', self._get_counter)
+            # if self._task_manager:
+            #     await self.register_task('increment_counter', self._increment_counter)
+            #     await self.register_task('get_counter', self._get_counter)
 
             # Store the UI integration if available
             self._ui_integration = application_core.get_ui_integration()
 
             # Start the timer with safe error handling
-            self._timer_task = asyncio.create_task(self._timer_loop())
+            self._timer_task = await self._task_manager.submit_async_task(
+                func=self._timer_loop,
+                name='plugin_timer_loop',
+                plugin_id=self.plugin_id,
+            )
 
             if self._logger:
                 self._logger.info(f'{self.name} initialized successfully')
@@ -204,15 +208,8 @@ class SampleAsyncPlugin(BasePlugin):
             self._logger.info(f'{self.name} shutting down...')
 
         # Cancel timer task if running
-        if self._timer_task and not self._timer_task.done():
-            self._timer_task.cancel()
-            try:
-                await self._timer_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                if self._logger:
-                    self._logger.warning(f'Error canceling timer task: {str(e)}')
+        if self._timer_task:
+            await self._task_manager.cancel_task(self._timer_task)
 
         # Call parent shutdown
         try:

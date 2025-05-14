@@ -34,10 +34,6 @@ from qorzen.utils.exceptions import UIError
 
 
 class MainWindowPluginHandler:
-    """
-    Helper class to manage plugin state transitions in the UI to prevent race conditions.
-    """
-
     def __init__(self, main_window: Any, plugin_manager: Any, logger: Any):
         self._main_window = main_window
         self._plugin_manager = plugin_manager
@@ -47,7 +43,6 @@ class MainWindowPluginHandler:
 
     async def handle_plugin_state_change(self, plugin_id: str, enable: bool) -> None:
         from qorzen.core.plugin_manager import PluginState
-
         if plugin_id not in self._state_change_locks:
             self._state_change_locks[plugin_id] = asyncio.Lock()
 
@@ -57,7 +52,6 @@ class MainWindowPluginHandler:
                 return
 
             self._processing_plugins.add(plugin_id)
-
             try:
                 plugins = await self._plugin_manager.get_plugins()
                 if plugin_id not in plugins:
@@ -68,61 +62,54 @@ class MainWindowPluginHandler:
                 current_state = plugin_info.state
                 is_active = current_state in (PluginState.ACTIVE, PluginState.LOADING)
 
-                if enable and is_active or (not enable and (not is_active)):
+                if (enable and is_active) or (not enable and not is_active):
                     self._logger.debug(
                         f"Skipping redundant state change for plugin '{plugin_id}' (already {('enabled' if is_active else 'disabled')})")
                     return
 
-                self._main_window.update_plugin_state_ui(plugin_id, 'loading' if enable else 'disabling')
+                # Use plugin name (not ID) when updating UI
+                self._main_window.update_plugin_state_ui(plugin_info.name, 'loading' if enable else 'disabling')
 
-                # Fixed: Proper sequence of operations with no sleeps
                 if enable:
-                    # First enable the plugin (adds to enabled list)
                     await self._plugin_manager.enable_plugin(plugin_id)
-                    # Then load the plugin
                     await self._plugin_manager.load_plugin(plugin_id)
                 else:
-                    # First unload the plugin
                     await self._plugin_manager.unload_plugin(plugin_id)
-                    # Then disable it (adds to disabled list)
                     await self._plugin_manager.disable_plugin(plugin_id)
 
-                # Update UI with final plugin state
                 updated_plugins = await self._plugin_manager.get_plugins()
                 if plugin_id in updated_plugins:
                     final_plugin_info = updated_plugins[plugin_id]
-                    self._main_window.update_plugin_state_ui(plugin_id, final_plugin_info.state)
-
+                    # Convert enum to string if needed
+                    state_val = final_plugin_info.state.value if hasattr(final_plugin_info.state, 'value') else str(
+                        final_plugin_info.state)
+                    # Update UI with plugin name and state
+                    self._main_window.update_plugin_state_ui(final_plugin_info.name, state_val)
             except Exception as e:
                 self._logger.error(f'Error changing plugin state: {e}',
                                    extra={'plugin_id': plugin_id, 'enable': enable, 'error': str(e)})
-                self._main_window.update_plugin_state_ui(plugin_id, 'error')
-
+                plugins = await self._plugin_manager.get_plugins()
+                if plugin_id in plugins:
+                    self._main_window.update_plugin_state_ui(plugins[plugin_id].name, 'error')
             finally:
                 self._processing_plugins.remove(plugin_id)
 
     async def handle_plugin_reload(self, plugin_id: str) -> None:
-        """
-        Safely reloads a plugin with proper state handling.
-
-        Args:
-            plugin_id: The unique identifier of the plugin
-        """
-        # Get or create lock for this specific plugin
         if plugin_id not in self._state_change_locks:
             self._state_change_locks[plugin_id] = asyncio.Lock()
 
-        # Use the lock to prevent concurrent operations on the same plugin
         async with self._state_change_locks[plugin_id]:
-            # Check if the plugin is already being processed
             if plugin_id in self._processing_plugins:
                 self._logger.debug(f"Plugin '{plugin_id}' is already being processed, skipping reload request")
                 return
 
             self._processing_plugins.add(plugin_id)
-
             try:
-                self._main_window.update_plugin_state_ui(plugin_id, 'reloading')
+                plugins = await self._plugin_manager.get_plugins()
+                if plugin_id in plugins:
+                    plugin_name = plugins[plugin_id].name
+                    self._main_window.update_plugin_state_ui(plugin_name, 'reloading')
+
                 success = await self._plugin_manager.reload_plugin(plugin_id)
 
                 if success:
@@ -130,16 +117,17 @@ class MainWindowPluginHandler:
                 else:
                     self._logger.warning(f'Failed to reload plugin: {plugin_id}')
 
-                # Get the final state and update UI
                 updated_plugins = await self._plugin_manager.get_plugins()
                 if plugin_id in updated_plugins:
                     final_plugin_info = updated_plugins[plugin_id]
-                    self._main_window.update_plugin_state_ui(plugin_id, final_plugin_info.state)
-
+                    state_val = final_plugin_info.state.value if hasattr(final_plugin_info.state, 'value') else str(
+                        final_plugin_info.state)
+                    self._main_window.update_plugin_state_ui(final_plugin_info.name, state_val)
             except Exception as e:
                 self._logger.error(f'Error reloading plugin: {e}', extra={'plugin_id': plugin_id, 'error': str(e)})
-                self._main_window.update_plugin_state_ui(plugin_id, 'error')
-
+                plugins = await self._plugin_manager.get_plugins()
+                if plugin_id in plugins:
+                    self._main_window.update_plugin_state_ui(plugins[plugin_id].name, 'error')
             finally:
                 self._processing_plugins.remove(plugin_id)
 

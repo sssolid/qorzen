@@ -239,8 +239,8 @@ class TaskMonitorWidget(QWidget):
             "task_id": "task_started",
             "result": {
                 "task_id": task_id,
-                "plugin_name": payload.get("plugin_name", "Unknown"),
-                "task_name": payload.get("task_name", "Task")
+                "plugin_name": payload.get("plugin_id"),
+                "task_name": payload.get("name", "Task")
             }
         })
 

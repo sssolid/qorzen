@@ -1,32 +1,19 @@
 from __future__ import annotations
-
 import asyncio
-import os
 from enum import Enum, auto
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Dict, List, Optional, Set, Tuple, Union, cast
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QSize, Qt, QTimer, Signal, Slot, QObject
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QSizePolicy, QSpacerItem, QSplitter, QVBoxLayout, QWidget, QFileDialog,
-    QMessageBox
+    QSizePolicy, QSpacerItem, QSplitter, QVBoxLayout, QWidget,
+    QFileDialog, QMessageBox
 )
 
-from qorzen.core.plugin_manager import PluginInfo
-from qorzen.ui.ui_component import AsyncTaskSignals
-
-
-class PluginState(Enum):
-    """Enum for possible plugin states."""
-    DISCOVERED = auto()
-    LOADED = auto()
-    ACTIVE = auto()
-    INACTIVE = auto()
-    FAILED = auto()
-    DISABLED = auto()
+from qorzen.core.plugin_manager import PluginInfo, PluginState
 
 
 class PluginCard(QFrame):
@@ -38,16 +25,14 @@ class PluginCard(QFrame):
         super().__init__(parent)
         self.plugin_id = plugin_id
         self.plugin_info = plugin_info
-        # Flag to track user-initiated state changes
         self._user_action_in_progress = False
-
         self.setFrameShape(QFrame.StyledPanel)
         self.setFrameShadow(QFrame.Raised)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         self.setMinimumHeight(120)
         self.setMaximumHeight(180)
         self._setup_ui()
-        self._update_state(plugin_info.state.value)
+        self._update_state(plugin_info.state)
 
     def _setup_ui(self) -> None:
         main_layout = QHBoxLayout(self)
@@ -67,13 +52,17 @@ class PluginCard(QFrame):
         self.name_label = QLabel(f'<b>{self.plugin_info.display_name}</b>')
         self.name_label.setStyleSheet('font-size: 14px;')
         name_layout.addWidget(self.name_label)
+
         self.version_label = QLabel(f"v{getattr(self.plugin_info.manifest, 'version', None) or '0.0.0'}")
         self.version_label.setStyleSheet('color: #666;')
         name_layout.addWidget(self.version_label)
+
         name_layout.addStretch()
+
         self.status_label = QLabel('Status: Unknown')
         self.status_label.setStyleSheet('font-weight: bold; color: #666;')
         name_layout.addWidget(self.status_label)
+
         info_layout.addLayout(name_layout)
 
         separator = QFrame()
@@ -91,6 +80,7 @@ class PluginCard(QFrame):
         info_layout.addWidget(self.author_label)
 
         info_layout.addItem(QSpacerItem(20, 10, QSizePolicy.Minimum, QSizePolicy.Expanding))
+
         main_layout.addLayout(info_layout, 1)
 
         controls_layout = QVBoxLayout()
@@ -110,6 +100,7 @@ class PluginCard(QFrame):
         controls_layout.addWidget(self.info_button)
 
         controls_layout.addStretch()
+
         main_layout.addLayout(controls_layout)
 
     def _set_plugin_logo(self) -> None:
@@ -129,43 +120,43 @@ class PluginCard(QFrame):
                 self.logo_label.setPixmap(pixmap)
                 return
 
-        # Default logo if no logo found
         self.logo_label.setText('📦')
         self.logo_label.setAlignment(Qt.AlignCenter)
         self.logo_label.setStyleSheet('font-size: 36px;')
 
     def _is_plugin_enabled(self) -> bool:
         state = self.plugin_info.state
+        return state in (PluginState.ACTIVE, PluginState.LOADING)
 
-        return state in (PluginState.ACTIVE, PluginState.LOADED)
+    def _update_state(self, state: Union[str, PluginState]) -> None:
+        # Handle both string and enum state values
+        state_str = state.value if isinstance(state, PluginState) else str(state).lower()
 
-    def _update_state(self, state: str) -> None:
-        state = state.lower()
-        if state == 'active':
+        if state_str == 'active':
             self.status_label.setText('Status: Active')
             self.status_label.setStyleSheet('font-weight: bold; color: #28a745;')
             self.setStyleSheet('QFrame { border: 1px solid #28a745; }')
-        elif state == 'loaded':
+        elif state_str == 'loaded':
             self.status_label.setText('Status: Loaded')
             self.status_label.setStyleSheet('font-weight: bold; color: #17a2b8;')
             self.setStyleSheet('QFrame { border: 1px solid #17a2b8; }')
-        elif state == 'failed':
+        elif state_str == 'failed':
             self.status_label.setText('Status: Failed')
             self.status_label.setStyleSheet('font-weight: bold; color: #dc3545;')
             self.setStyleSheet('QFrame { border: 1px solid #dc3545; }')
-        elif state == 'disabled':
+        elif state_str == 'disabled':
             self.status_label.setText('Status: Disabled')
             self.status_label.setStyleSheet('font-weight: bold; color: #6c757d;')
             self.setStyleSheet('QFrame { border: 1px solid #6c757d; }')
-        elif state == 'inactive':
+        elif state_str == 'inactive':
             self.status_label.setText('Status: Inactive')
             self.status_label.setStyleSheet('font-weight: bold; color: #fd7e14;')
             self.setStyleSheet('QFrame { border: 1px solid #fd7e14; }')
-        elif state == 'loading':
+        elif state_str == 'loading':
             self.status_label.setText('Status: Loading...')
             self.status_label.setStyleSheet('font-weight: bold; color: #17a2b8;')
             self.setStyleSheet('QFrame { border: 1px solid #17a2b8; }')
-        elif state == 'disabling':
+        elif state_str == 'disabling':
             self.status_label.setText('Status: Disabling...')
             self.status_label.setStyleSheet('font-weight: bold; color: #fd7e14;')
             self.setStyleSheet('QFrame { border: 1px solid #fd7e14; }')
@@ -174,26 +165,17 @@ class PluginCard(QFrame):
             self.status_label.setStyleSheet('font-weight: bold; color: #6c757d;')
             self.setStyleSheet('QFrame { border: 1px solid #6c757d; }')
 
-        # Only update checkbox state if not in the middle of a user action
         if not self._user_action_in_progress:
-            # Temporarily block signals to prevent triggering another state change
             self.enable_checkbox.blockSignals(True)
-            self.enable_checkbox.setChecked(state in ('active', 'loaded', 'loading'))
+            self.enable_checkbox.setChecked(state_str in ('active', 'loaded', 'loading'))
             self.enable_checkbox.blockSignals(False)
 
-        self.reload_button.setEnabled(state in ('active', 'loaded', 'failed', 'inactive'))
+        self.reload_button.setEnabled(state_str in ('active', 'loaded', 'failed', 'inactive'))
 
     def _on_toggle_state(self, checked: bool) -> None:
-        # Set flag to indicate a user-initiated action is in progress
         self._user_action_in_progress = True
-
-        # Disable checkbox until operation completes to prevent multiple clicks
         self.enable_checkbox.setEnabled(False)
-
-        # Signal the desired state change
         self.stateChangeRequested.emit(self.plugin_id, checked)
-
-        # Clear flag and re-enable checkbox after a short delay (operation should be done by then)
         QTimer.singleShot(500, self._reset_action_state)
 
     def _reset_action_state(self) -> None:
@@ -213,74 +195,68 @@ class PluginCard(QFrame):
         self.description_label.setText(
             getattr(plugin_info.manifest, 'description', None) or 'No description available.')
         self.author_label.setText(f"Author: {getattr(plugin_info.manifest, 'author', None) or 'Unknown'}")
-        self._update_state(plugin_info.metadata.get('state', 'discovered'))
+        # Fixed: get state directly from plugin_info.state instead of metadata
+        self._update_state(plugin_info.state)
+
+
+class AsyncTaskSignals(QObject):
+    started = Signal()
+    result_ready = Signal(object)
+    error = Signal(str, str)
+    finished = Signal()
 
 
 class PluginsView(QWidget):
-    """Main view for managing plugins."""
     pluginStateChangeRequested = Signal(str, bool)
     pluginReloadRequested = Signal(str)
     pluginInfoRequested = Signal(str)
 
     def __init__(self, plugin_manager: Any, parent: Optional[QWidget] = None) -> None:
-        """
-        Initialize the plugins view.
-
-        Args:
-            plugin_manager: Reference to the plugin manager
-            parent: Parent widget
-        """
         super().__init__(parent)
-        # Tasks tracking
         self._running_tasks: Dict[str, asyncio.Task] = {}
-
         self._plugin_manager = plugin_manager
         self._plugin_cards: Dict[str, PluginCard] = {}
         self._setup_ui()
         self._load_plugins()
-
-        # Setup async task signals
         self._async_signals = AsyncTaskSignals()
         self._async_signals.result_ready.connect(self._on_async_result)
         self._async_signals.error.connect(self._on_async_error)
 
+        # Set a longer refresh interval to avoid frequent state changes
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_plugins)
-        self._refresh_timer.start(5000)
+        self._refresh_timer.start(10000)  # Changed from 5000 to 10000 ms
 
     def _setup_ui(self) -> None:
-        """Set up the plugins view UI."""
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Header section
         header_widget = QWidget()
         header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(10, 10, 10, 10)
 
-        title_label = QLabel("Installed Plugins")
-        title_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        title_label = QLabel('Installed Plugins')
+        title_label.setStyleSheet('font-size: 16px; font-weight: bold;')
         header_layout.addWidget(title_label)
+
         header_layout.addStretch()
 
-        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button = QPushButton('Refresh')
         self.refresh_button.clicked.connect(self._on_refresh_clicked)
         header_layout.addWidget(self.refresh_button)
 
-        self.install_button = QPushButton("Install New")
+        self.install_button = QPushButton('Install New')
         self.install_button.clicked.connect(self._on_install_clicked)
         header_layout.addWidget(self.install_button)
 
         main_layout.addWidget(header_widget)
 
-        # Separator
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         main_layout.addWidget(separator)
 
-        # Plugins container
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
@@ -295,293 +271,157 @@ class PluginsView(QWidget):
         main_layout.addWidget(scroll_area)
 
     def _load_plugins(self) -> None:
-        """Load and display plugins from the plugin manager."""
-        self._start_async_task("load_plugins", self._async_load_plugins)
+        self._start_async_task('load_plugins', self._async_load_plugins)
 
     async def _async_load_plugins(self) -> Dict[str, PluginInfo]:
-        """
-        Asynchronously load plugins.
-
-        Returns:
-            Dictionary of plugin information
-        """
         if not self._plugin_manager:
             return {}
-
         try:
             plugins = await self._plugin_manager.get_plugins()
             return plugins
         except Exception as e:
             import traceback
-            print(f"Error loading plugins: {str(e)}")
+            print(f'Error loading plugins: {str(e)}')
             print(traceback.format_exc())
             raise
 
     def _on_async_result(self, result_data: Dict[str, Any]) -> None:
-        """
-        Handle results from async operations.
-
-        Args:
-            result_data: Result data including task_id and result
-        """
-        task_id = result_data.get("task_id", "")
-        result = result_data.get("result")
-
-        if task_id == "load_plugins":
+        task_id = result_data.get('task_id', '')
+        result = result_data.get('result')
+        if task_id == 'load_plugins':
             self._clear_plugin_cards()
             plugins = result
-            for name, info in plugins.items():
-                self._add_plugin_card(name, info)
-        elif task_id == "refresh_plugins":
+            for plugin_id, info in plugins.items():
+                self._add_plugin_card(plugin_id, info)
+        elif task_id == 'refresh_plugins':
             plugins = result
-            for name, info in plugins.items():
-                if name in self._plugin_cards:
-                    self._plugin_cards[name].update_info(info)
+            for plugin_id, info in plugins.items():
+                if plugin_id in self._plugin_cards:
+                    # Only update UI components, preserve state if it's active
+                    current_state = self._plugin_cards[plugin_id].plugin_info.state
+                    self._plugin_cards[plugin_id].update_info(info)
                 else:
-                    self._add_plugin_card(name, info)
+                    self._add_plugin_card(plugin_id, info)
 
-            # Remove plugin cards that no longer exist
-            for name in list(self._plugin_cards.keys()):
-                if name not in plugins:
-                    card = self._plugin_cards.pop(name)
+            # Remove cards for plugins that no longer exist
+            for plugin_id in list(self._plugin_cards.keys()):
+                if plugin_id not in plugins:
+                    card = self._plugin_cards.pop(plugin_id)
                     self.plugins_layout.removeWidget(card)
                     card.deleteLater()
-        elif task_id == "install_plugin":
+        elif task_id == 'install_plugin':
             success = result
             if success:
-                self._start_async_task("refresh_after_install", self._async_refresh_plugins)
+                self._start_async_task('refresh_after_install', self._async_refresh_plugins)
 
     def _on_async_error(self, error_msg: str, traceback_str: str) -> None:
-        """
-        Handle errors from async operations.
+        QMessageBox.critical(self, 'Error', f'An error occurred: {error_msg}\n\n{traceback_str}')
 
-        Args:
-            error_msg: Error message
-            traceback_str: Exception traceback
-        """
-        QMessageBox.critical(self, "Error",
-                             f"An error occurred: {error_msg}\n\n{traceback_str}")
-
-    def _add_plugin_card(self, plugin_name: str, plugin_info: PluginInfo) -> None:
-        """
-        Add a plugin card to the view.
-
-        Args:
-            plugin_name: Plugin name
-            plugin_info: Plugin information
-        """
-        card = PluginCard(plugin_name, plugin_info, self)
+    def _add_plugin_card(self, plugin_id: str, plugin_info: PluginInfo) -> None:
+        card = PluginCard(plugin_id, plugin_info, self)
         card.stateChangeRequested.connect(self._on_plugin_state_change_requested)
         card.reloadRequested.connect(self._on_plugin_reload_requested)
         card.infoRequested.connect(self._on_plugin_info_requested)
         self.plugins_layout.insertWidget(self.plugins_layout.count() - 1, card)
-        self._plugin_cards[plugin_name] = card
+        self._plugin_cards[plugin_id] = card
 
     def _clear_plugin_cards(self) -> None:
-        """Remove all plugin cards from the view."""
         for card in self._plugin_cards.values():
             self.plugins_layout.removeWidget(card)
             card.deleteLater()
         self._plugin_cards.clear()
 
     def _refresh_plugins(self) -> None:
-        """Refresh the plugin display."""
-        if "refresh_plugins" not in self._running_tasks:
-            self._start_async_task("refresh_plugins", self._async_refresh_plugins)
+        if 'refresh_plugins' not in self._running_tasks:
+            self._start_async_task('refresh_plugins', self._async_refresh_plugins)
 
     def _on_refresh_clicked(self) -> None:
-        """Handle refresh button click."""
-        # Cancel any existing refresh task
-        if "refresh_plugins" in self._running_tasks:
-            task = self._running_tasks["refresh_plugins"]
+        if 'refresh_plugins' in self._running_tasks:
+            task = self._running_tasks['refresh_plugins']
             if not task.done():
                 task.cancel()
-
-        self._start_async_task("refresh_plugins", self._async_refresh_plugins)
+        self._start_async_task('refresh_plugins', self._async_refresh_plugins)
 
     async def _async_refresh_plugins(self) -> Dict[str, PluginInfo]:
-        """
-        Asynchronously refresh plugins.
-
-        Returns:
-            Dictionary of updated plugin information
-        """
         if not self._plugin_manager:
             return {}
-
         try:
             plugins = await self._plugin_manager.get_plugins()
             return plugins
         except Exception as e:
             import traceback
-            print(f"Error refreshing plugins: {str(e)}")
+            print(f'Error refreshing plugins: {str(e)}')
             print(traceback.format_exc())
             raise
 
     def _on_install_clicked(self) -> None:
-        """Handle install button click."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Plugin Package",
-            "",
-            "Plugin Packages (*.zip *.whl *.tar.gz);;All Files (*)"
-        )
-
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Select Plugin Package', '',
+                                                   'Plugin Packages (*.zip *.whl *.tar.gz);;All Files (*)')
         if file_path:
-            self._start_async_task(
-                "install_plugin",
-                self._async_install_plugin,
-                file_path
-            )
+            self._start_async_task('install_plugin', self._async_install_plugin, file_path)
 
     async def _async_install_plugin(self, file_path: str) -> bool:
-        """
-        Asynchronously install a plugin.
-
-        Args:
-            file_path: Path to the plugin package
-
-        Returns:
-            True if installation was successful
-        """
         if not self._plugin_manager:
             return False
-
         try:
             await self._plugin_manager.install_plugin(file_path)
             return True
         except Exception as e:
-            raise Exception(f"Failed to install plugin: {str(e)}")
+            raise Exception(f'Failed to install plugin: {str(e)}')
 
     def _on_plugin_state_change_requested(self, plugin_id: str, enable: bool) -> None:
-        """
-        Handle plugin state change request.
-
-        Args:
-            plugin_id: Plugin ID
-            enable: Whether to enable the plugin
-        """
-        # Forward signal to main
         self.pluginStateChangeRequested.emit(plugin_id, enable)
 
-    def _on_plugin_reload_requested(self, plugin_name: str) -> None:
-        """
-        Handle plugin reload request.
+    def _on_plugin_reload_requested(self, plugin_id: str) -> None:
+        self.pluginReloadRequested.emit(plugin_id)
 
-        Args:
-            plugin_name: Plugin name
-        """
-        # Forward signal to main
-        self.pluginReloadRequested.emit(plugin_name)
+    def _on_plugin_info_requested(self, plugin_id: str) -> None:
+        self.pluginInfoRequested.emit(plugin_id)
 
-    def _on_plugin_info_requested(self, plugin_name: str) -> None:
-        """
-        Handle plugin info request.
-
-        Args:
-            plugin_name: Plugin name
-        """
-        # Forward signal to main
-        self.pluginInfoRequested.emit(plugin_name)
-
-    def update_plugin_state_ui(self, plugin_name: str, state: str) -> None:
-        """
-        Update the UI to reflect plugin state changes.
-        Prevents triggering additional state changes.
-
-        Args:
-            plugin_name: Name of the plugin
-            state: New state string (e.g., "active", "loading", "disabled", "error")
-        """
-        # Find the plugin card
+    def update_plugin_state_ui(self, plugin_name: str, state: Union[str, PluginState]) -> None:
+        """Update the UI state of a plugin by its name."""
         for plugin_id, card in self._plugin_cards.items():
-            if card.plugin_name == plugin_name:
-                # Update the card state without triggering additional events
-                # Temporarily disconnect signals
+            if hasattr(card, 'plugin_info') and card.plugin_info.name == plugin_name:
                 try:
                     old_signal = card.enable_checkbox.toggled.disconnect()
                 except Exception:
                     old_signal = None
 
-                # Update the UI
                 card._update_state(state)
 
-                # For checkboxes, only update if needed to avoid triggering events
-                is_active = state in ('active', 'loaded', 'loading')
+                # Convert state to string for checking if it's active
+                state_str = state.value if isinstance(state, PluginState) else str(state).lower()
+                is_active = state_str in ('active', 'loaded', 'loading')
+
                 if card.enable_checkbox.isChecked() != is_active:
                     card.enable_checkbox.setChecked(is_active)
 
-                # Reconnect signals
                 if old_signal:
                     card.enable_checkbox.toggled.connect(card._on_toggle_state)
-
                 break
 
-    def _start_async_task(
-            self,
-            task_id: str,
-            coroutine_func: Any,
-            *args: Any,
-            **kwargs: Any
-    ) -> None:
-        """
-        Start an asynchronous task.
-
-        Args:
-            task_id: Unique task identifier
-            coroutine_func: Async function to run
-            *args: Positional arguments for the function
-            **kwargs: Keyword arguments for the function
-        """
-        # Cancel existing task with same ID if it exists
-        if task_id in self._running_tasks and not self._running_tasks[task_id].done():
+    def _start_async_task(self, task_id: str, coroutine_func: Any, *args: Any, **kwargs: Any) -> None:
+        if task_id in self._running_tasks and (not self._running_tasks[task_id].done()):
             self._running_tasks[task_id].cancel()
-
-        task = asyncio.create_task(self._execute_async_task(
-            task_id, coroutine_func, *args, **kwargs
-        ))
+        task = asyncio.create_task(self._execute_async_task(task_id, coroutine_func, *args, **kwargs))
         self._running_tasks[task_id] = task
 
-    async def _execute_async_task(
-            self,
-            task_id: str,
-            coroutine_func: Any,
-            *args: Any,
-            **kwargs: Any
-    ) -> None:
-        """
-        Execute an asynchronous task and handle signals.
-
-        Args:
-            task_id: Task identifier
-            coroutine_func: Async function to run
-            *args: Positional arguments for the function
-            **kwargs: Keyword arguments for the function
-        """
+    async def _execute_async_task(self, task_id: str, coroutine_func: Any, *args: Any, **kwargs: Any) -> None:
         try:
             result = await coroutine_func(*args, **kwargs)
-            # Use QtCore.Qt.QueuedConnection for thread safety
-            self._async_signals.result_ready.emit({
-                "task_id": task_id,
-                "result": result
-            })
+            self._async_signals.result_ready.emit({'task_id': task_id, 'result': result})
         except asyncio.CancelledError:
-            # Task was cancelled, no need to emit signals
             pass
         except Exception as e:
             import traceback
             tb_str = traceback.format_exc()
             self._async_signals.error.emit(str(e), tb_str)
         finally:
-            # Clean up the task reference
             if task_id in self._running_tasks:
                 del self._running_tasks[task_id]
 
     def cleanup(self) -> None:
-        """Clean up resources when the view is closed."""
         self._refresh_timer.stop()
-
-        # Cancel all running tasks
         for task in self._running_tasks.values():
             if not task.done():
                 task.cancel()
