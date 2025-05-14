@@ -48,7 +48,7 @@ class SampleAsyncPlugin(BasePlugin):
 
             # Add menu item
             menu_id = await ui_integration.add_menu_item(
-                plugin_id=self.name,
+                plugin_id=self.plugin_id,
                 title='Sample Plugin',
                 callback=self._on_menu_clicked,
                 parent_menu='Plugins'
@@ -63,6 +63,9 @@ class SampleAsyncPlugin(BasePlugin):
         except Exception as e:
             if self._logger:
                 self._logger.error(f'Error setting up UI: {e}', exc_info=True)
+
+    async def setup_ui(self, ui_integration) -> None:
+        await self.on_ui_ready(ui_integration)
 
     async def _timer_loop(self) -> None:
         try:

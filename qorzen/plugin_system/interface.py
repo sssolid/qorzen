@@ -37,6 +37,7 @@ class BasePlugin(QObject):
     author: str = 'Unknown'
     display_name: Optional[str] = None
     dependencies: List[str] = []
+    plugin_id: str = None
 
     def __init__(self) -> None:
         """Initialize the plugin."""

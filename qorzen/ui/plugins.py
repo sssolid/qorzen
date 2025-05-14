@@ -30,14 +30,16 @@ class PluginState(Enum):
 
 
 class PluginCard(QFrame):
-    stateChangeRequested = Signal(str, bool)  # Always pass plugin_id
-    reloadRequested = Signal(str)  # Always pass plugin_id
-    infoRequested = Signal(str)  # Always pass plugin_id
+    stateChangeRequested = Signal(str, bool)
+    reloadRequested = Signal(str)
+    infoRequested = Signal(str)
 
     def __init__(self, plugin_id: str, plugin_info: PluginInfo, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.plugin_id = plugin_id  # The unique ID for all operations
+        self.plugin_id = plugin_id
         self.plugin_info = plugin_info
+        # Flag to track user-initiated state changes
+        self._user_action_in_progress = False
 
         self.setFrameShape(QFrame.StyledPanel)
         self.setFrameShadow(QFrame.Raised)
@@ -45,7 +47,7 @@ class PluginCard(QFrame):
         self.setMinimumHeight(120)
         self.setMaximumHeight(180)
         self._setup_ui()
-        self._update_state(plugin_info.metadata.get('state', 'discovered'))
+        self._update_state(plugin_info.state.value)
 
     def _setup_ui(self) -> None:
         main_layout = QHBoxLayout(self)
@@ -62,21 +64,16 @@ class PluginCard(QFrame):
         info_layout.setSpacing(5)
 
         name_layout = QHBoxLayout()
-        # Always use display_name in the UI
         self.name_label = QLabel(f'<b>{self.plugin_info.display_name}</b>')
         self.name_label.setStyleSheet('font-size: 14px;')
         name_layout.addWidget(self.name_label)
-
         self.version_label = QLabel(f"v{getattr(self.plugin_info.manifest, 'version', None) or '0.0.0'}")
         self.version_label.setStyleSheet('color: #666;')
         name_layout.addWidget(self.version_label)
-
         name_layout.addStretch()
-
         self.status_label = QLabel('Status: Unknown')
         self.status_label.setStyleSheet('font-weight: bold; color: #666;')
         name_layout.addWidget(self.status_label)
-
         info_layout.addLayout(name_layout)
 
         separator = QFrame()
@@ -94,7 +91,6 @@ class PluginCard(QFrame):
         info_layout.addWidget(self.author_label)
 
         info_layout.addItem(QSpacerItem(20, 10, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
         main_layout.addLayout(info_layout, 1)
 
         controls_layout = QVBoxLayout()
@@ -114,98 +110,109 @@ class PluginCard(QFrame):
         controls_layout.addWidget(self.info_button)
 
         controls_layout.addStretch()
-
         main_layout.addLayout(controls_layout)
 
     def _set_plugin_logo(self) -> None:
-        """Set the plugin logo or use a default icon."""
         if self.plugin_info.manifest is None:
-            self.logo_label.setText("📦")
+            self.logo_label.setText('📦')
             self.logo_label.setAlignment(Qt.AlignCenter)
-            self.logo_label.setStyleSheet("font-size: 36px;")
+            self.logo_label.setStyleSheet('font-size: 36px;')
             return
 
-        plugin_dir = Path(self.plugin_info.path)
-        relative_logo_path = self.plugin_info.manifest.logo_path
-        full_logo_path = plugin_dir / relative_logo_path
+        plugin_dir = Path(self.plugin_info.path) if self.plugin_info.path else None
+        relative_logo_path = self.plugin_info.manifest.logo_path if self.plugin_info.manifest else None
 
-        if full_logo_path and os.path.exists(full_logo_path):
-            pixmap = QPixmap(str(full_logo_path))
-            self.logo_label.setPixmap(pixmap)
+        if plugin_dir and relative_logo_path:
+            full_logo_path = plugin_dir / relative_logo_path
+            if full_logo_path.exists():
+                pixmap = QPixmap(str(full_logo_path))
+                self.logo_label.setPixmap(pixmap)
+                return
+
+        # Default logo if no logo found
+        self.logo_label.setText('📦')
+        self.logo_label.setAlignment(Qt.AlignCenter)
+        self.logo_label.setStyleSheet('font-size: 36px;')
 
     def _is_plugin_enabled(self) -> bool:
-        """Check if the plugin is enabled."""
-        state = self.plugin_info.metadata.get("state", "").lower()
-        return state in ("active", "loaded") or self.plugin_info.metadata.get("enabled", False)
+        state = self.plugin_info.metadata.get('state', '').lower()
+        return state in ('active', 'loaded') or self.plugin_info.metadata.get('enabled', False)
 
     def _update_state(self, state: str) -> None:
-        """
-        Update the plugin state display.
-
-        Args:
-            state: New plugin state
-        """
         state = state.lower()
-
-        if state == "active":
-            self.status_label.setText("Status: Active")
-            self.status_label.setStyleSheet("font-weight: bold; color: #28a745;")
-            self.setStyleSheet("QFrame { border: 1px solid #28a745; }")
-        elif state == "loaded":
-            self.status_label.setText("Status: Loaded")
-            self.status_label.setStyleSheet("font-weight: bold; color: #17a2b8;")
-            self.setStyleSheet("QFrame { border: 1px solid #17a2b8; }")
-        elif state == "failed":
-            self.status_label.setText("Status: Failed")
-            self.status_label.setStyleSheet("font-weight: bold; color: #dc3545;")
-            self.setStyleSheet("QFrame { border: 1px solid #dc3545; }")
-        elif state == "disabled":
-            self.status_label.setText("Status: Disabled")
-            self.status_label.setStyleSheet("font-weight: bold; color: #6c757d;")
-            self.setStyleSheet("QFrame { border: 1px solid #6c757d; }")
-        elif state == "inactive":
-            self.status_label.setText("Status: Inactive")
-            self.status_label.setStyleSheet("font-weight: bold; color: #fd7e14;")
-            self.setStyleSheet("QFrame { border: 1px solid #fd7e14; }")
+        if state == 'active':
+            self.status_label.setText('Status: Active')
+            self.status_label.setStyleSheet('font-weight: bold; color: #28a745;')
+            self.setStyleSheet('QFrame { border: 1px solid #28a745; }')
+        elif state == 'loaded':
+            self.status_label.setText('Status: Loaded')
+            self.status_label.setStyleSheet('font-weight: bold; color: #17a2b8;')
+            self.setStyleSheet('QFrame { border: 1px solid #17a2b8; }')
+        elif state == 'failed':
+            self.status_label.setText('Status: Failed')
+            self.status_label.setStyleSheet('font-weight: bold; color: #dc3545;')
+            self.setStyleSheet('QFrame { border: 1px solid #dc3545; }')
+        elif state == 'disabled':
+            self.status_label.setText('Status: Disabled')
+            self.status_label.setStyleSheet('font-weight: bold; color: #6c757d;')
+            self.setStyleSheet('QFrame { border: 1px solid #6c757d; }')
+        elif state == 'inactive':
+            self.status_label.setText('Status: Inactive')
+            self.status_label.setStyleSheet('font-weight: bold; color: #fd7e14;')
+            self.setStyleSheet('QFrame { border: 1px solid #fd7e14; }')
+        elif state == 'loading':
+            self.status_label.setText('Status: Loading...')
+            self.status_label.setStyleSheet('font-weight: bold; color: #17a2b8;')
+            self.setStyleSheet('QFrame { border: 1px solid #17a2b8; }')
+        elif state == 'disabling':
+            self.status_label.setText('Status: Disabling...')
+            self.status_label.setStyleSheet('font-weight: bold; color: #fd7e14;')
+            self.setStyleSheet('QFrame { border: 1px solid #fd7e14; }')
         else:
-            self.status_label.setText("Status: Discovered")
-            self.status_label.setStyleSheet("font-weight: bold; color: #6c757d;")
-            self.setStyleSheet("QFrame { border: 1px solid #6c757d; }")
+            self.status_label.setText('Status: Discovered')
+            self.status_label.setStyleSheet('font-weight: bold; color: #6c757d;')
+            self.setStyleSheet('QFrame { border: 1px solid #6c757d; }')
 
-        self.enable_checkbox.setChecked(state in ("active", "loaded"))
-        self.reload_button.setEnabled(state in ("active", "loaded", "failed", "inactive"))
+        # Only update checkbox state if not in the middle of a user action
+        if not self._user_action_in_progress:
+            # Temporarily block signals to prevent triggering another state change
+            self.enable_checkbox.blockSignals(True)
+            self.enable_checkbox.setChecked(state in ('active', 'loaded', 'loading'))
+            self.enable_checkbox.blockSignals(False)
+
+        self.reload_button.setEnabled(state in ('active', 'loaded', 'failed', 'inactive'))
 
     def _on_toggle_state(self, checked: bool) -> None:
-        # ALWAYS use the plugin_id (not name) for all operations
+        # Set flag to indicate a user-initiated action is in progress
+        self._user_action_in_progress = True
+
+        # Disable checkbox until operation completes to prevent multiple clicks
+        self.enable_checkbox.setEnabled(False)
+
+        # Signal the desired state change
         self.stateChangeRequested.emit(self.plugin_id, checked)
 
+        # Clear flag and re-enable checkbox after a short delay (operation should be done by then)
+        QTimer.singleShot(500, self._reset_action_state)
+
+    def _reset_action_state(self) -> None:
+        self._user_action_in_progress = False
+        self.enable_checkbox.setEnabled(True)
+
     def _on_reload_clicked(self) -> None:
-        # ALWAYS use the plugin_id (not name) for all operations
         self.reloadRequested.emit(self.plugin_id)
 
     def _on_info_clicked(self) -> None:
-        # ALWAYS use the plugin_id (not name) for all operations
         self.infoRequested.emit(self.plugin_id)
 
     def update_info(self, plugin_info: PluginInfo) -> None:
-        """
-        Update the plugin information display.
-
-        Args:
-            plugin_info: Updated plugin information
-        """
         self.plugin_info = plugin_info
-        self.name_label.setText(f"<b>{self.plugin_info.name}</b>")
-        self.version_label.setText(
-            f"v{getattr(plugin_info.manifest, 'version', None) or '0.0.0'}"
-        )
+        self.name_label.setText(f'<b>{self.plugin_info.display_name}</b>')
+        self.version_label.setText(f"v{getattr(plugin_info.manifest, 'version', None) or '0.0.0'}")
         self.description_label.setText(
-            getattr(plugin_info.manifest, "description", None) or "No description available."
-        )
-        self.author_label.setText(
-            f"Author: {getattr(plugin_info.manifest, 'author', None) or 'Unknown'}"
-        )
-        self._update_state(plugin_info.metadata.get("state", "discovered"))
+            getattr(plugin_info.manifest, 'description', None) or 'No description available.')
+        self.author_label.setText(f"Author: {getattr(plugin_info.manifest, 'author', None) or 'Unknown'}")
+        self._update_state(plugin_info.metadata.get('state', 'discovered'))
 
 
 class PluginsView(QWidget):
@@ -445,16 +452,16 @@ class PluginsView(QWidget):
         except Exception as e:
             raise Exception(f"Failed to install plugin: {str(e)}")
 
-    def _on_plugin_state_change_requested(self, plugin_name: str, enable: bool) -> None:
+    def _on_plugin_state_change_requested(self, plugin_id: str, enable: bool) -> None:
         """
         Handle plugin state change request.
 
         Args:
-            plugin_name: Plugin name
+            plugin_id: Plugin ID
             enable: Whether to enable the plugin
         """
         # Forward signal to main
-        self.pluginStateChangeRequested.emit(plugin_name, enable)
+        self.pluginStateChangeRequested.emit(plugin_id, enable)
 
     def _on_plugin_reload_requested(self, plugin_name: str) -> None:
         """
