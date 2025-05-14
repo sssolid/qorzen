@@ -965,13 +965,14 @@ class PluginManager(QorzenManager):
             )
 
     async def enable_plugin(self, plugin_id: str) -> bool:
-        ret = await self._state_manager.transition(plugin_id, "active")
-
-        # inside PluginManager.enable_plugin (after state transition succeeds)
+        ret = await self._state_manager.transition(plugin_id, 'active')
         name = self._plugins[plugin_id].name
+
+        # FIXED: Ensure plugin is in enabled list and not in disabled list
         if name not in self._enabled_plugins:
             self._enabled_plugins.append(name)
             await self._config_manager.set('plugins.enabled', self._enabled_plugins)
+
         if name in self._disabled_plugins:
             self._disabled_plugins.remove(name)
             await self._config_manager.set('plugins.disabled', self._disabled_plugins)
@@ -979,15 +980,16 @@ class PluginManager(QorzenManager):
         return ret
 
     async def disable_plugin(self, plugin_id: str) -> bool:
-        ret = await self._state_manager.transition(plugin_id, "disabled")
-
-        # inside PluginManager.enable_plugin (after state transition succeeds)
+        ret = await self._state_manager.transition(plugin_id, 'disabled')
         name = self._plugins[plugin_id].name
-        if name not in self._enabled_plugins:
-            self._enabled_plugins.append(name)
+
+        # FIXED: Previously this had the logic reversed
+        if name in self._enabled_plugins:
+            self._enabled_plugins.remove(name)
             await self._config_manager.set('plugins.enabled', self._enabled_plugins)
-        if name in self._disabled_plugins:
-            self._disabled_plugins.remove(name)
+
+        if name not in self._disabled_plugins:
+            self._disabled_plugins.append(name)
             await self._config_manager.set('plugins.disabled', self._disabled_plugins)
 
         return ret

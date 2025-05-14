@@ -103,22 +103,20 @@ class PluginStateManager:
                     del self._active_transitions[plugin_id]
 
     async def _transition_to_active(self, plugin_id: str, current_state: str) -> bool:
-        """Handle transition to active state with proper intermediate steps."""
-        if current_state == "active":
-            return True  # Already in target state
+        """
+        Transition a plugin to the active state.
 
-        # If disabled, first enable it
-        if current_state == "disabled":
-            success = await self._exec_operation(plugin_id, "enable",
-                                                 lambda: self._plugin_manager.enable_plugin(plugin_id))
-            if not success:
-                return False
+        This has been modified to avoid circular calls between plugin_manager and state_manager.
+        """
+        if current_state == 'active':
+            return True
 
-        # Now load the plugin (works from discovered, inactive, or just-enabled states)
-        success = await self._exec_operation(plugin_id, "load",
-                                             lambda: self._plugin_manager.load_plugin(plugin_id))
+        # We only handle the load operation but avoid calling back to enable_plugin
+        # to prevent a circular dependency
+        if current_state in ('inactive', 'discovered'):
+            return await self._exec_operation(plugin_id, 'load', lambda: self._plugin_manager.load_plugin(plugin_id))
 
-        return success
+        return False
 
     async def _transition_to_inactive(self, plugin_id: str, current_state: str) -> bool:
         """Handle transition to inactive state."""
@@ -133,19 +131,29 @@ class PluginStateManager:
         return True
 
     async def _transition_to_disabled(self, plugin_id: str, current_state: str) -> bool:
-        """Handle transition to disabled state."""
-        if current_state == "disabled":
-            return True  # Already in target state
+        """
+        Transition a plugin to the disabled state.
 
-        # First transition to inactive if not already
-        if current_state in ("active", "loading"):
+        This has been modified to avoid circular calls between plugin_manager and state_manager.
+        """
+        if current_state == 'disabled':
+            return True
+
+        # First ensure the plugin is inactive
+        if current_state in ('active', 'loading'):
             success = await self._transition_to_inactive(plugin_id, current_state)
             if not success:
                 return False
 
-        # Now disable it
-        return await self._exec_operation(plugin_id, "disable",
-                                          lambda: self._plugin_manager.disable_plugin(plugin_id))
+        # We mark the plugin as disabled but don't call back to disable_plugin
+        # to prevent a circular dependency
+        plugin_info = await self._get_plugin_info(plugin_id)
+        if plugin_info:
+            from qorzen.core.plugin_manager import PluginState
+            plugin_info.state = PluginState.DISABLED
+            return True
+
+        return False
 
     async def _exec_operation(self, plugin_id: str, operation: str, func: callable) -> bool:
         """Execute a plugin operation with proper tracking and error handling."""

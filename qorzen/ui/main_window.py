@@ -46,20 +46,12 @@ class MainWindowPluginHandler:
         self._processing_plugins: Set[str] = set()
 
     async def handle_plugin_state_change(self, plugin_id: str, enable: bool) -> None:
-        """
-        Safely handles plugin state changes with proper locking to prevent race conditions.
+        from qorzen.core.plugin_manager import PluginState
 
-        Args:
-            plugin_id: The unique identifier of the plugin
-            enable: True to enable and load the plugin, False to disable and unload it
-        """
-        # Get or create lock for this specific plugin
         if plugin_id not in self._state_change_locks:
             self._state_change_locks[plugin_id] = asyncio.Lock()
 
-        # Use the lock to prevent concurrent operations on the same plugin
         async with self._state_change_locks[plugin_id]:
-            # Check if the plugin is already being processed
             if plugin_id in self._processing_plugins:
                 self._logger.debug(f"Plugin '{plugin_id}' is already being processed, skipping request")
                 return
@@ -67,7 +59,6 @@ class MainWindowPluginHandler:
             self._processing_plugins.add(plugin_id)
 
             try:
-                # Get current state
                 plugins = await self._plugin_manager.get_plugins()
                 if plugin_id not in plugins:
                     self._logger.warning(f'Plugin not found: {plugin_id}')
@@ -75,42 +66,36 @@ class MainWindowPluginHandler:
 
                 plugin_info = plugins[plugin_id]
                 current_state = plugin_info.state
-                is_active = current_state in ('active', 'loading')
+                is_active = current_state in (PluginState.ACTIVE, PluginState.LOADING)
 
-                # Skip if redundant operation
-                if (enable and is_active) or (not enable and not is_active):
+                if enable and is_active or (not enable and (not is_active)):
                     self._logger.debug(
-                        f"Skipping redundant state change for plugin '{plugin_id}' "
-                        f"(already {('enabled' if is_active else 'disabled')})"
-                    )
+                        f"Skipping redundant state change for plugin '{plugin_id}' (already {('enabled' if is_active else 'disabled')})")
                     return
 
-                # Update UI state
                 self._main_window.update_plugin_state_ui(plugin_id, 'loading' if enable else 'disabling')
 
-                # Perform the actual operations with proper sequencing
+                # Fixed: Proper sequence of operations with no sleeps
                 if enable:
-                    # First enable, then load
+                    # First enable the plugin (adds to enabled list)
                     await self._plugin_manager.enable_plugin(plugin_id)
-                    await asyncio.sleep(0.1)  # Small delay to ensure config updates are processed
+                    # Then load the plugin
                     await self._plugin_manager.load_plugin(plugin_id)
                 else:
-                    # First unload, then disable
+                    # First unload the plugin
                     await self._plugin_manager.unload_plugin(plugin_id)
-                    await asyncio.sleep(0.1)  # Small delay to ensure dependencies are handled
+                    # Then disable it (adds to disabled list)
                     await self._plugin_manager.disable_plugin(plugin_id)
 
-                # Get the final state and update UI
+                # Update UI with final plugin state
                 updated_plugins = await self._plugin_manager.get_plugins()
                 if plugin_id in updated_plugins:
                     final_plugin_info = updated_plugins[plugin_id]
                     self._main_window.update_plugin_state_ui(plugin_id, final_plugin_info.state)
 
             except Exception as e:
-                self._logger.error(
-                    f'Error changing plugin state: {e}',
-                    extra={'plugin_id': plugin_id, 'enable': enable, 'error': str(e)}
-                )
+                self._logger.error(f'Error changing plugin state: {e}',
+                                   extra={'plugin_id': plugin_id, 'enable': enable, 'error': str(e)})
                 self._main_window.update_plugin_state_ui(plugin_id, 'error')
 
             finally:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pathlib
 from copy import deepcopy
@@ -238,6 +239,7 @@ class ConfigManager(QorzenManager):
         self._loaded_from_file = False
         self._env_vars_applied: Set[str] = set()
         self._listeners: Dict[str, List[Callable[[str, Any], Awaitable[None]]]] = {}
+        self._logger: Optional[logging.Logger] = None
 
     async def initialize(self) -> None:
         """Initialize the configuration manager asynchronously.
@@ -260,6 +262,10 @@ class ConfigManager(QorzenManager):
                 f'Failed to initialize AsyncConfigManager: {str(e)}',
                 manager_name=self.name
             ) from e
+
+    def set_logger(self, logger: Any) -> None:
+        from qorzen.core import LoggingManager
+        self._logger: LoggingManager = logger.get_logger('config_manager')
 
     async def _load_from_file(self) -> None:
         """Load configuration from a file asynchronously.
@@ -444,16 +450,40 @@ class ConfigManager(QorzenManager):
         pass
 
     async def _save_to_file(self) -> None:
-        """Save the configuration to a file asynchronously."""
+        """
+        Save configuration to file with improved error handling.
+        """
         if not self._loaded_from_file:
             return
 
         try:
-            async with aiofiles.open(self._config_path, 'w', encoding='utf-8') as f:
-                if self._config_path.suffix.lower() in ('.yaml', '.yml'):
-                    await f.write(yaml.safe_dump(self._config, default_flow_style=False))
-                elif self._config_path.suffix.lower() == '.json':
-                    await f.write(json.dumps(self._config, indent=2))
+            # Use a temporary file for atomic writes
+            import tempfile
+            import os
+            import pathlib
+
+            config_path = pathlib.Path(self._config_path)
+            config_dir = config_path.parent
+
+            # Ensure directory exists
+            os.makedirs(config_dir, exist_ok=True)
+
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, dir=config_dir, suffix='.tmp') as tmp:
+                if config_path.suffix.lower() in ('.yaml', '.yml'):
+                    import yaml
+                    yaml.dump(self._config, tmp, default_flow_style=False)
+                elif config_path.suffix.lower() == '.json':
+                    import json
+                    json.dump(self._config, tmp, indent=2)
+                else:
+                    # Not supported format
+                    tmp.close()
+                    os.unlink(tmp.name)
+                    return
+
+            # Atomic replace
+            os.replace(tmp.name, str(config_path))
+
         except Exception as e:
             print(f'Error saving configuration to {self._config_path}: {str(e)}')
 

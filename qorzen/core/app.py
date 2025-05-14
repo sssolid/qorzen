@@ -124,6 +124,7 @@ class ApplicationCore:
             dependencies=['config_manager']
         )
         self._managers['logging_manager'] = logging_manager
+        self._managers.get('config_manager').set_logger(logging_manager)
         self._logger = logging_manager.get_logger('app_core')
 
     async def _init_concurrency_manager(self) -> None:

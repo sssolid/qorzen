@@ -135,8 +135,9 @@ class PluginCard(QFrame):
         self.logo_label.setStyleSheet('font-size: 36px;')
 
     def _is_plugin_enabled(self) -> bool:
-        state = self.plugin_info.metadata.get('state', '').lower()
-        return state in ('active', 'loaded') or self.plugin_info.metadata.get('enabled', False)
+        state = self.plugin_info.state
+
+        return state in (PluginState.ACTIVE, PluginState.LOADED)
 
     def _update_state(self, state: str) -> None:
         state = state.lower()
