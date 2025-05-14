@@ -866,6 +866,7 @@ class PluginManager(QorzenManager):
                 await setup_ui_method(self._ui_integration)
             else:
                 setup_ui_method(self._ui_integration)
+            self._ui_plugins.add(plugin_id)
         except Exception as e:
             self._logger.error(
                 f"Failed to set up UI for plugin '{plugin_id}': {str(e)}",

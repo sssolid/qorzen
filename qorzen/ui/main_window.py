@@ -780,6 +780,8 @@ class MainWindow(QMainWindow):
 
             if button:
                 self.sidebar_buttons_layout.removeWidget(button)
+                button.hide()
+                button.setParent(None)
                 button.deleteLater()
 
         elif element_type == "menu_item":

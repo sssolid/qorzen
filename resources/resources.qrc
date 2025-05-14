@@ -6,5 +6,6 @@
         <file alias="database-search.svg">ui_icons/database-search.svg</file>
         <file alias="library-books.svg">ui_icons/library-books.svg</file>
         <file alias="extension.svg">ui_icons/extension.svg</file>
+        <file alias="trending-up.svg">ui_icons/trending-up.svg</file>
     </qresource>
 </RCC>
