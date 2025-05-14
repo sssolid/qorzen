@@ -149,9 +149,8 @@ class PluginManifest:
 
 @dataclass
 class PluginInfo:
-    """Information about a plugin."""
-    plugin_id: str
-    name: str
+    plugin_id: str  # Unique identifier for the plugin
+    name: str  # Internal name (code reference)
     version: str
     description: str
     author: str
@@ -165,6 +164,13 @@ class PluginInfo:
     settings: Dict[str, Any] = field(default_factory=dict)
     capabilities: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def display_name(self) -> str:
+        """User-friendly name to display in the UI"""
+        if self.manifest and hasattr(self.manifest, 'display_name') and self.manifest.display_name:
+            return self.manifest.display_name
+        return self.name
 
 
 class PluginManager(QorzenManager):

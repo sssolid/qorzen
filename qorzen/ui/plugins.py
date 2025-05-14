@@ -30,27 +30,13 @@ class PluginState(Enum):
 
 
 class PluginCard(QFrame):
-    """Card widget displaying plugin information and controls."""
-    stateChangeRequested = Signal(str, bool)
-    reloadRequested = Signal(str)
-    infoRequested = Signal(str)
+    stateChangeRequested = Signal(str, bool)  # Always pass plugin_id
+    reloadRequested = Signal(str)  # Always pass plugin_id
+    infoRequested = Signal(str)  # Always pass plugin_id
 
-    def __init__(
-            self,
-            plugin_name: str,
-            plugin_info: PluginInfo,
-            parent: Optional[QWidget] = None
-    ) -> None:
-        """
-        Initialize plugin card widget.
-
-        Args:
-            plugin_name: The name of the plugin
-            plugin_info: Plugin information object
-            parent: Parent widget
-        """
+    def __init__(self, plugin_id: str, plugin_info: PluginInfo, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.plugin_name = plugin_name
+        self.plugin_id = plugin_id  # The unique ID for all operations
         self.plugin_info = plugin_info
 
         self.setFrameShape(QFrame.StyledPanel)
@@ -58,89 +44,77 @@ class PluginCard(QFrame):
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         self.setMinimumHeight(120)
         self.setMaximumHeight(180)
-
         self._setup_ui()
-        self._update_state(plugin_info.metadata.get("state", "discovered"))
+        self._update_state(plugin_info.metadata.get('state', 'discovered'))
 
     def _setup_ui(self) -> None:
-        """Set up the card UI elements."""
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
 
-        # Logo
         self.logo_label = QLabel()
         self.logo_label.setFixedSize(64, 64)
         self.logo_label.setScaledContents(True)
         self._set_plugin_logo()
         main_layout.addWidget(self.logo_label)
 
-        # Info section
         info_layout = QVBoxLayout()
         info_layout.setSpacing(5)
 
-        # Name and version row
         name_layout = QHBoxLayout()
-        self.name_label = QLabel(f"<b>{self.plugin_name}</b>")
-        self.name_label.setStyleSheet("font-size: 14px;")
+        # Always use display_name in the UI
+        self.name_label = QLabel(f'<b>{self.plugin_info.display_name}</b>')
+        self.name_label.setStyleSheet('font-size: 14px;')
         name_layout.addWidget(self.name_label)
 
-        self.version_label = QLabel(
-            f"v{getattr(self.plugin_info.manifest, 'version', None) or '0.0.0'}"
-        )
-        self.version_label.setStyleSheet("color: #666;")
+        self.version_label = QLabel(f"v{getattr(self.plugin_info.manifest, 'version', None) or '0.0.0'}")
+        self.version_label.setStyleSheet('color: #666;')
         name_layout.addWidget(self.version_label)
+
         name_layout.addStretch()
 
-        self.status_label = QLabel("Status: Unknown")
-        self.status_label.setStyleSheet("font-weight: bold; color: #666;")
+        self.status_label = QLabel('Status: Unknown')
+        self.status_label.setStyleSheet('font-weight: bold; color: #666;')
         name_layout.addWidget(self.status_label)
+
         info_layout.addLayout(name_layout)
 
-        # Separator
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         info_layout.addWidget(separator)
 
-        # Description
         self.description_label = QLabel(
-            getattr(self.plugin_info.manifest, "description", None)
-            or "No description available."
-        )
+            getattr(self.plugin_info.manifest, 'description', None) or 'No description available.')
         self.description_label.setWordWrap(True)
         info_layout.addWidget(self.description_label)
 
-        # Author
-        self.author_label = QLabel(
-            f"Author: {getattr(self.plugin_info.manifest, 'author', None) or 'Unknown'}"
-        )
-        self.author_label.setStyleSheet("color: #666; font-size: 11px;")
+        self.author_label = QLabel(f"Author: {getattr(self.plugin_info.manifest, 'author', None) or 'Unknown'}")
+        self.author_label.setStyleSheet('color: #666; font-size: 11px;')
         info_layout.addWidget(self.author_label)
 
-        info_layout.addItem(
-            QSpacerItem(20, 10, QSizePolicy.Minimum, QSizePolicy.Expanding)
-        )
+        info_layout.addItem(QSpacerItem(20, 10, QSizePolicy.Minimum, QSizePolicy.Expanding))
+
         main_layout.addLayout(info_layout, 1)
 
-        # Controls
         controls_layout = QVBoxLayout()
         controls_layout.setSpacing(8)
 
-        self.enable_checkbox = QCheckBox("Enabled")
+        self.enable_checkbox = QCheckBox('Enabled')
         self.enable_checkbox.setChecked(self._is_plugin_enabled())
         self.enable_checkbox.toggled.connect(self._on_toggle_state)
         controls_layout.addWidget(self.enable_checkbox)
 
-        self.reload_button = QPushButton("Reload")
+        self.reload_button = QPushButton('Reload')
         self.reload_button.clicked.connect(self._on_reload_clicked)
         controls_layout.addWidget(self.reload_button)
 
-        self.info_button = QPushButton("Details")
+        self.info_button = QPushButton('Details')
         self.info_button.clicked.connect(self._on_info_clicked)
         controls_layout.addWidget(self.info_button)
 
         controls_layout.addStretch()
+
         main_layout.addLayout(controls_layout)
 
     def _set_plugin_logo(self) -> None:
@@ -202,21 +176,16 @@ class PluginCard(QFrame):
         self.reload_button.setEnabled(state in ("active", "loaded", "failed", "inactive"))
 
     def _on_toggle_state(self, checked: bool) -> None:
-        """
-        Handle the enable/disable toggle.
-
-        Args:
-            checked: Whether the plugin should be enabled
-        """
-        self.stateChangeRequested.emit(self.plugin_name, checked)
+        # ALWAYS use the plugin_id (not name) for all operations
+        self.stateChangeRequested.emit(self.plugin_id, checked)
 
     def _on_reload_clicked(self) -> None:
-        """Handle reload button click."""
-        self.reloadRequested.emit(self.plugin_name)
+        # ALWAYS use the plugin_id (not name) for all operations
+        self.reloadRequested.emit(self.plugin_id)
 
     def _on_info_clicked(self) -> None:
-        """Handle info button click."""
-        self.infoRequested.emit(self.plugin_name)
+        # ALWAYS use the plugin_id (not name) for all operations
+        self.infoRequested.emit(self.plugin_id)
 
     def update_info(self, plugin_info: PluginInfo) -> None:
         """
@@ -226,7 +195,7 @@ class PluginCard(QFrame):
             plugin_info: Updated plugin information
         """
         self.plugin_info = plugin_info
-        self.name_label.setText(f"<b>{self.plugin_name}</b>")
+        self.name_label.setText(f"<b>{self.plugin_info.name}</b>")
         self.version_label.setText(
             f"v{getattr(plugin_info.manifest, 'version', None) or '0.0.0'}"
         )
@@ -507,16 +476,38 @@ class PluginsView(QWidget):
         # Forward signal to main
         self.pluginInfoRequested.emit(plugin_name)
 
-    def update_plugin_state(self, plugin_name: str, state: str) -> None:
+    def update_plugin_state_ui(self, plugin_name: str, state: str) -> None:
         """
-        Update a plugin's state in the UI.
+        Update the UI to reflect plugin state changes.
+        Prevents triggering additional state changes.
 
         Args:
-            plugin_name: Plugin name
-            state: New plugin state
+            plugin_name: Name of the plugin
+            state: New state string (e.g., "active", "loading", "disabled", "error")
         """
-        if plugin_name in self._plugin_cards:
-            self._plugin_cards[plugin_name]._update_state(state)
+        # Find the plugin card
+        for plugin_id, card in self._plugin_cards.items():
+            if card.plugin_name == plugin_name:
+                # Update the card state without triggering additional events
+                # Temporarily disconnect signals
+                try:
+                    old_signal = card.enable_checkbox.toggled.disconnect()
+                except Exception:
+                    old_signal = None
+
+                # Update the UI
+                card._update_state(state)
+
+                # For checkboxes, only update if needed to avoid triggering events
+                is_active = state in ('active', 'loaded', 'loading')
+                if card.enable_checkbox.isChecked() != is_active:
+                    card.enable_checkbox.setChecked(is_active)
+
+                # Reconnect signals
+                if old_signal:
+                    card.enable_checkbox.toggled.connect(card._on_toggle_state)
+
+                break
 
     def _start_async_task(
             self,

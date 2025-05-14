@@ -987,40 +987,65 @@ class MainWindow(QMainWindow):
         # Create task to handle the state change
         asyncio.create_task(self._async_handle_plugin_state_change(plugin_name, enable))
 
-    async def _async_handle_plugin_state_change(self, plugin_name: str, enable: bool) -> None:
+    async def _async_handle_plugin_state_change(self, plugin_id: str, enable: bool) -> None:
         """
         Asynchronously handle plugin state changes.
 
         Args:
-            plugin_name: Name of the plugin
+            plugin_id: Unique ID of the plugin
             enable: Whether to enable or disable the plugin
         """
         if not self._plugin_manager:
             return
 
         try:
+            # Get plugin info by ID
+            plugins = await self._plugin_manager.get_plugins()
+            if plugin_id not in plugins:
+                self._logger.warning(f"Plugin not found: {plugin_id}")
+                return
+
+            plugin_info = plugins[plugin_id]
+
+            # Get current state
+            current_state = plugin_info.state
+
+            # Skip redundant operations
+            is_active = current_state in ("active", "loading")
+            if (enable and is_active) or (not enable and not is_active):
+                self._logger.debug(
+                    f"Skipping redundant state change for plugin '{plugin_id}' (already {'enabled' if is_active else 'disabled'})")
+                return
+
             # Update UI to show operation in progress
-            self.update_plugin_state_ui(plugin_name, "loading" if enable else "disabling")
+            self.update_plugin_state_ui(plugin_id, "loading" if enable else "disabling")
+
+            # Set processing flag
+            self._processing_plugin = plugin_id
 
             if enable:
-                # First enable the plugin
-                await self._plugin_manager.enable_plugin(plugin_name)
-
-                # Then load it if needed
-                await self._plugin_manager.load_plugin(plugin_name)
+                # Enable and load
+                await self._plugin_manager.enable_plugin(plugin_id)
+                await self._plugin_manager.load_plugin(plugin_id)
             else:
-                # Unload then disable
-                await self._plugin_manager.unload_plugin(plugin_name)
-                await self._plugin_manager.disable_plugin(plugin_name)
+                # Unload and disable
+                await self._plugin_manager.unload_plugin(plugin_id)
+                await self._plugin_manager.disable_plugin(plugin_id)
+
+            # Clear processing flag
+            self._processing_plugin = None
 
         except Exception as e:
             self._logger.error(
                 f"Error changing plugin state: {e}",
-                extra={"plugin_name": plugin_name, "enable": enable, "error": str(e)},
+                extra={"plugin_id": plugin_id, "enable": enable, "error": str(e)},
             )
 
             # Update UI to show error
-            self.update_plugin_state_ui(plugin_name, "error")
+            self.update_plugin_state_ui(plugin_id, "error")
+
+            # Clear processing flag
+            self._processing_plugin = None
 
     def update_plugin_state_ui(self, plugin_name: str, state: str) -> None:
         """
