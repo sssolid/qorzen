@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast, Awaitable, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, cast, Awaitable
 
 import sqlalchemy
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, and_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.selectable import Join
 
 from qorzen.core.database_manager import DatabaseConnectionConfig, DatabaseManager
 from qorzen.core.event_bus_manager import EventBusManager
@@ -21,25 +23,26 @@ from .models import (
     Aspiration, BaseVehicle, BedConfig, BedLength, BedType, BodyNumDoors,
     BodyStyleConfig, BodyType, BrakeABS, BrakeConfig, BrakeSystem, BrakeType,
     Class, CylinderHeadType, DriveType, ElecControlled, EngineBase2, EngineBlock,
-    EngineBoreStroke, EngineConfig2, EngineDesignation, EngineVersion, FuelDeliveryConfig,
-    FuelDeliverySubType, FuelDeliveryType, FuelSystemControlType, FuelSystemDesign,
-    FuelType, IgnitionSystemType, Make, Mfr, MfrBodyCode, Model, PowerOutput,
-    PublicationStage, Region, SpringType, SpringTypeConfig, SteeringConfig,
-    SteeringSystem, SteeringType, SubModel, Transmission, TransmissionBase,
-    TransmissionControlType, TransmissionMfrCode, TransmissionNumSpeeds, TransmissionType,
-    Valves, Vehicle, VehicleToBodyConfig, VehicleToBodyStyleConfig, VehicleToBedConfig,
-    VehicleToBrakeConfig, VehicleToClass, VehicleToDriveType, VehicleToEngineConfig,
-    VehicleToMfrBodyCode, VehicleToSpringTypeConfig, VehicleToSteeringConfig,
-    VehicleToTransmission, VehicleToWheelBase, VehicleType, VehicleTypeGroup, WheelBase, Year
+    EngineBoreStroke, EngineConfig2, EngineDesignation, EngineVersion,
+    FuelDeliveryConfig, FuelDeliverySubType, FuelDeliveryType, FuelSystemControlType,
+    FuelSystemDesign, FuelType, IgnitionSystemType, Make, Mfr, MfrBodyCode, Model,
+    PowerOutput, PublicationStage, Region, SpringType, SpringTypeConfig,
+    SteeringConfig, SteeringSystem, SteeringType, SubModel, Transmission,
+    TransmissionBase, TransmissionControlType, TransmissionMfrCode,
+    TransmissionNumSpeeds, TransmissionType, Valves, Vehicle, VehicleToBodyConfig,
+    VehicleToBodyStyleConfig, VehicleToBedConfig, VehicleToBrakeConfig,
+    VehicleToClass, VehicleToDriveType, VehicleToEngineConfig, VehicleToMfrBodyCode,
+    VehicleToSpringTypeConfig, VehicleToSteeringConfig, VehicleToTransmission,
+    VehicleToWheelBase, VehicleType, VehicleTypeGroup, WheelBase, Year
 )
 
 
 class DatabaseHandlerError(Exception):
-    """Exception raised for database handler errors.
+    """Exception raised for errors in the DatabaseHandler.
 
     Attributes:
-        message: Error message
-        details: Additional error details
+        message: Explanation of the error
+        details: Additional details about the error
     """
 
     def __init__(self, message: str, details: Optional[Dict[str, Any]] = None) -> None:
@@ -49,8 +52,11 @@ class DatabaseHandlerError(Exception):
 
 
 class DatabaseHandler:
-    """Handler for database operations related to the VCdb Explorer plugin."""
+    """Handler for VCdb database operations.
 
+    This class provides methods for querying the VCdb database and retrieving
+    filter values for UI components. It uses async patterns for database operations.
+    """
     CONNECTION_NAME = 'vcdb_explorer'
 
     def __init__(
@@ -61,14 +67,14 @@ class DatabaseHandler:
             concurrency_manager: ConcurrencyManager,
             logger: logging.Logger
     ) -> None:
-        """Initialize the DatabaseHandler.
+        """Initialize the database handler.
 
         Args:
-            database_manager: Database manager instance
-            event_bus_manager: Event bus manager instance
-            task_manager: Task manager instance
-            concurrency_manager: Concurrency manager instance
-            logger: Logger instance
+            database_manager: Manager for database connections
+            event_bus_manager: Manager for event publishing/subscribing
+            task_manager: Manager for background tasks
+            concurrency_manager: Manager for concurrent operations
+            logger: Logger instance for this handler
         """
         self._db_manager = database_manager
         self._event_bus_manager = event_bus_manager
@@ -78,7 +84,9 @@ class DatabaseHandler:
         self._initialized = False
         self._connection_config: Optional[DatabaseConnectionConfig] = None
         self._shutting_down = False
+        self._query_cancellation_tokens: Dict[str, asyncio.Event] = {}
 
+        # Map of filter types to model classes and attribute names
         self._filter_map = {
             'year': (Year, 'year_id'),
             'make': (Make, 'make_name'),
@@ -103,24 +111,26 @@ class DatabaseHandler:
         }
 
     async def initialize(self) -> None:
-        """Initialize the database handler and subscribe to events."""
+        """Initialize the database handler and subscribe to events.
+
+        Raises:
+            DatabaseHandlerError: If initialization fails
+        """
         try:
             await self._event_bus_manager.subscribe(
                 event_type=VCdbEventType.filter_changed(),
                 callback=self._on_filter_changed,
                 subscriber_id='vcdb_explorer_handler'
             )
-
             await self._event_bus_manager.subscribe(
                 event_type=VCdbEventType.query_execute(),
                 callback=self._on_query_execute,
                 subscriber_id='vcdb_explorer_handler'
             )
-
-            self._logger.info("Database handler initialized and subscribed to events")
+            self._logger.info('Database handler initialized and subscribed to events')
         except Exception as e:
-            self._logger.error(f"Failed to initialize database handler: {str(e)}")
-            raise DatabaseHandlerError(f"Failed to initialize database handler: {str(e)}") from e
+            self._logger.error(f'Failed to initialize database handler: {str(e)}')
+            raise DatabaseHandlerError(f'Failed to initialize database handler: {str(e)}') from e
 
     async def configure(
             self,
@@ -143,17 +153,16 @@ class DatabaseHandler:
             database: Database name
             user: Database user
             password: Database password
-            db_type: Database type
-            pool_size: Connection pool size
-            max_overflow: Maximum number of connections to overflow
-            pool_recycle: Number of seconds after which a connection is recycled
-            echo: Whether to echo SQL statements
+            db_type: Database type (default: 'postgresql')
+            pool_size: Connection pool size (default: 5)
+            max_overflow: Max overflow connections (default: 10)
+            pool_recycle: Connection recycle time in seconds (default: 3600)
+            echo: Echo SQL statements (default: False)
 
         Raises:
-            DatabaseHandlerError: If database connection fails
+            DatabaseHandlerError: If configuration fails
         """
         self._logger.debug(f'Configuring VCdb database connection: {host}:{port}/{database}')
-
         try:
             has_connection = await self._db_manager.has_connection(self.CONNECTION_NAME)
             if has_connection:
@@ -174,10 +183,8 @@ class DatabaseHandler:
                 pool_recycle=pool_recycle,
                 echo=echo
             )
-
             await self._db_manager.register_connection(self._connection_config)
 
-            # Verify connection by executing a simple query
             async with self._db_manager.async_session(self.CONNECTION_NAME) as session:
                 result = await session.execute(select(func.count()).select_from(Vehicle))
                 vehicle_count = result.scalar()
@@ -192,7 +199,7 @@ class DatabaseHandler:
         """Handle filter changed events.
 
         Args:
-            event: The event containing filter change information
+            event: Event containing filter change information
         """
         payload = event.payload
         filter_panel_id = payload.get('panel_id')
@@ -206,7 +213,7 @@ class DatabaseHandler:
 
         if auto_populate:
             try:
-                await self._task_manager.submit_async_task(
+                task_id = await self._task_manager.submit_async_task(
                     func=self._refresh_filters,
                     filter_panel_id=filter_panel_id,
                     filter_type=filter_type,
@@ -215,14 +222,15 @@ class DatabaseHandler:
                     category=TaskCategory.PLUGIN,
                     plugin_id='vcdb_explorer'
                 )
+                self._logger.debug(f'Submitted filter refresh task with ID: {task_id}')
             except TaskError as e:
-                self._logger.error(f"Failed to submit refresh filters task: {str(e)}")
+                self._logger.error(f'Failed to submit refresh filters task: {str(e)}')
 
     async def _on_query_execute(self, event: Event) -> None:
         """Handle query execute events.
 
         Args:
-            event: The event containing query execution parameters
+            event: Event containing query execution parameters
         """
         payload = event.payload
         filter_panels = payload.get('filter_panels', [])
@@ -243,6 +251,10 @@ class DatabaseHandler:
                 self._logger.debug(f'Filter panel {i}: Empty')
 
         try:
+            # Create a cancellation token for this query
+            query_token = f"query_{callback_id}"
+            self._query_cancellation_tokens[query_token] = asyncio.Event()
+
             task_id = await self._task_manager.submit_async_task(
                 func=self._execute_query,
                 filter_panels=filter_panels,
@@ -253,13 +265,14 @@ class DatabaseHandler:
                 sort_desc=sort_desc,
                 table_filters=table_filters,
                 callback_id=callback_id,
+                cancellation_token=query_token,
                 name=f'vcdb_query_execute',
                 category=TaskCategory.PLUGIN,
                 plugin_id='vcdb_explorer'
             )
-            self._logger.debug(f"Submitted query execution task with ID: {task_id}")
+            self._logger.debug(f'Submitted query execution task with ID: {task_id}')
         except TaskError as e:
-            self._logger.error(f"Failed to submit query execution task: {str(e)}")
+            self._logger.error(f'Failed to submit query execution task: {str(e)}')
             await self._event_bus_manager.publish(
                 event_type=VCdbEventType.query_results(),
                 source='vcdb_explorer',
@@ -271,12 +284,29 @@ class DatabaseHandler:
                 }
             )
 
+    async def cancel_query(self, callback_id: str) -> bool:
+        """Cancel a running query.
+
+        Args:
+            callback_id: ID of the query to cancel
+
+        Returns:
+            bool: True if cancellation was triggered, False otherwise
+        """
+        query_token = f"query_{callback_id}"
+        if query_token in self._query_cancellation_tokens:
+            self._query_cancellation_tokens[query_token].set()
+            self._logger.debug(f'Cancellation requested for query {callback_id}')
+            return True
+        return False
+
     async def _refresh_filters(
             self,
             filter_panel_id: str,
             filter_type: str,
             current_filters: Dict[str, List[int]],
-            progress_reporter: Any = None
+            progress_reporter: Any = None,
+            cancellation_token: Optional[str] = None
     ) -> Dict[str, Any]:
         """Refresh filter values based on current filter selections.
 
@@ -284,10 +314,11 @@ class DatabaseHandler:
             filter_panel_id: ID of the filter panel
             filter_type: Type of filter that changed
             current_filters: Current filter selections
-            progress_reporter: Progress reporter for task progress updates
+            progress_reporter: Reporter for task progress
+            cancellation_token: Token for cancellation
 
         Returns:
-            Dictionary with refresh results
+            Dict[str, Any]: Result information
         """
         self._logger.debug(f'Refreshing filters for panel {filter_panel_id} after {filter_type} change')
 
@@ -298,7 +329,6 @@ class DatabaseHandler:
             exclude_filters.add('year_range')
 
         results = {}
-
         try:
             if progress_reporter:
                 await progress_reporter.report_progress(10, f'Processing filters')
@@ -307,22 +337,25 @@ class DatabaseHandler:
             total_filters = len(filter_types)
 
             for i, filter_type_to_refresh in enumerate(filter_types):
-                if filter_type_to_refresh != filter_type and filter_type_to_refresh != 'year_range' and (
-                        filter_type_to_refresh != 'year'):
+                # Check if cancellation was requested
+                if cancellation_token and cancellation_token in self._query_cancellation_tokens:
+                    if self._query_cancellation_tokens[cancellation_token].is_set():
+                        self._logger.debug(f'Filter refresh cancelled for {filter_panel_id}')
+                        return {'success': False, 'cancelled': True}
+
+                if filter_type_to_refresh != filter_type and filter_type_to_refresh != 'year_range' and filter_type_to_refresh != 'year':
                     try:
                         if progress_reporter:
                             await progress_reporter.report_progress(
                                 int(10 + 80 * i / total_filters),
                                 f'Processing {filter_type_to_refresh} filter'
                             )
-
                         values = await self.get_filter_values(filter_type_to_refresh, current_filters, exclude_filters)
                         results[filter_type_to_refresh] = values
                         self._logger.debug(f'Refreshed {filter_type_to_refresh}: {len(values)} values')
                     except Exception as e:
                         self._logger.error(f'Error refreshing {filter_type_to_refresh}: {str(e)}')
 
-            # Handle year separately
             if filter_type != 'year' and 'year' in self._filter_map:
                 try:
                     values = await self.get_filter_values('year', current_filters, exclude_filters)
@@ -333,7 +366,6 @@ class DatabaseHandler:
             if progress_reporter:
                 await progress_reporter.report_progress(95, f'Publishing filter refresh event')
 
-            # Publish the filter refresh event
             await self._event_bus_manager.publish(
                 event_type=VCdbEventType.filters_refreshed(),
                 source='vcdb_explorer',
@@ -361,20 +393,22 @@ class DatabaseHandler:
             sort_desc: bool,
             table_filters: Dict[str, Any],
             callback_id: Optional[str],
-            progress_reporter: Any = None
+            progress_reporter: Any = None,
+            cancellation_token: Optional[str] = None
     ) -> None:
-        """Execute query and publish results.
+        """Execute a query with the given parameters.
 
         Args:
-            filter_panels: List of filter panels with their selections
-            columns: List of columns to include in results
+            filter_panels: Filter selections from panels
+            columns: Columns to include in results
             page: Page number
-            page_size: Page size
+            page_size: Results per page
             sort_by: Column to sort by
-            sort_desc: Whether to sort in descending order
+            sort_desc: Sort in descending order
             table_filters: Additional table filters
-            callback_id: Callback ID for response
-            progress_reporter: Progress reporter for task progress
+            callback_id: ID for callback
+            progress_reporter: Reporter for task progress
+            cancellation_token: Token for cancellation
         """
         self._logger.debug(f'Executing query: panels={len(filter_panels)}, page={page}, page_size={page_size}')
 
@@ -386,26 +420,42 @@ class DatabaseHandler:
             if progress_reporter:
                 await progress_reporter.report_progress(10, 'Starting query execution')
 
-            # Use concurrency manager to run the database query in a separate thread
-            result = await self._concurrency_manager.run_in_thread(
-                self._execute_query_sync,
-                filter_panels,
-                columns,
-                page,
-                page_size,
-                sort_by,
-                sort_desc,
-                table_filters
-            )
+            # Execute query using async session
+            async with self._db_manager.async_session(self.CONNECTION_NAME) as session:
+                results, total_count = await self._execute_query_async(
+                    session,
+                    filter_panels,
+                    columns,
+                    page,
+                    page_size,
+                    sort_by,
+                    sort_desc,
+                    table_filters,
+                    progress_reporter,
+                    cancellation_token
+                )
 
-            results, total_count = result
+            # Check if cancellation was requested
+            if cancellation_token and cancellation_token in self._query_cancellation_tokens:
+                if self._query_cancellation_tokens[cancellation_token].is_set():
+                    self._logger.debug(f'Query execution cancelled for {callback_id}')
+                    await self._event_bus_manager.publish(
+                        event_type=VCdbEventType.query_results(),
+                        source='vcdb_explorer',
+                        payload={
+                            'results': [],
+                            'total_count': 0,
+                            'cancelled': True,
+                            'callback_id': callback_id
+                        }
+                    )
+                    return
 
             if progress_reporter:
                 await progress_reporter.report_progress(90, 'Query completed, preparing results')
 
             self._logger.debug(f'Query executed: {len(results)} rows of {total_count} total')
 
-            # Publish results
             await self._event_bus_manager.publish(
                 event_type=VCdbEventType.query_results(),
                 source='vcdb_explorer',
@@ -431,65 +481,81 @@ class DatabaseHandler:
                     'callback_id': callback_id
                 }
             )
+        finally:
+            # Clean up the cancellation token
+            if cancellation_token and cancellation_token in self._query_cancellation_tokens:
+                del self._query_cancellation_tokens[cancellation_token]
 
-    def _execute_query_sync(
+    async def _execute_query_async(
             self,
+            session: AsyncSession,
             filter_panels: List[Dict[str, List[int]]],
             columns: List[str],
             page: int,
             page_size: int,
             sort_by: Optional[str],
             sort_desc: bool,
-            table_filters: Dict[str, Any]
+            table_filters: Dict[str, Any],
+            progress_reporter: Any = None,
+            cancellation_token: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
-        """Synchronous execution of database query to be run in a separate thread.
+        """Execute a query asynchronously.
 
         Args:
-            filter_panels: List of filter panels with their selections
-            columns: List of columns to include in results
+            session: Async database session
+            filter_panels: Filter selections from panels
+            columns: Columns to include in results
             page: Page number
-            page_size: Page size
+            page_size: Results per page
             sort_by: Column to sort by
-            sort_desc: Whether to sort in descending order
+            sort_desc: Sort in descending order
             table_filters: Additional table filters
+            progress_reporter: Reporter for task progress
+            cancellation_token: Token for cancellation
 
         Returns:
-            Tuple of (results list, total count)
+            Tuple[List[Dict[str, Any]], int]: Query results and total count
+
+        Raises:
+            DatabaseHandlerError: If query execution fails
         """
         if not self._initialized:
             raise DatabaseHandlerError('DatabaseHandler not initialized')
 
-        # grab a synchronous session from the factory
-        conn = self._db_manager._connections[self.CONNECTION_NAME]
-        session: Session = conn.session_factory()
-
         try:
             self._logger.debug(
-                f'Executing query: panels={len(filter_panels)}, columns={columns}, page={page}, page_size={page_size}')
+                f'Executing async query: panels={len(filter_panels)}, columns={columns}, page={page}, page_size={page_size}')
 
             # Build base query
             base_query = select(Vehicle.vehicle_id).select_from(Vehicle)
 
-            # Apply filter panels
+            # Apply panel filters
             if filter_panels:
                 panel_conditions = []
+
                 for panel in filter_panels:
                     if not panel:
                         continue
+
                     panel_query = select(Vehicle.vehicle_id).select_from(Vehicle)
-                    panel_query = self._apply_filters(panel_query, panel, set(), session)
+                    panel_query = self._apply_filters(panel_query, panel, set())
                     panel_conditions.append(Vehicle.vehicle_id.in_(panel_query.scalar_subquery()))
 
                 if panel_conditions:
                     base_query = base_query.filter(or_(*panel_conditions))
                     self._logger.debug(f'Applied {len(panel_conditions)} panel conditions')
 
-            # Get total count
+            # Execute count query
+            if progress_reporter:
+                await progress_reporter.report_progress(30, 'Counting matching records')
+
             count_query = select(func.count()).select_from(base_query.alias())
-            total_count = session.execute(count_query).scalar() or 0
+            count_result = await session.execute(count_query)
+            total_count = count_result.scalar() or 0
+
             self._logger.debug(f'Total count: {total_count}')
 
-            # Build columns query
+            # Build full query with columns
             query = self._build_columns_query(base_query.scalar_subquery(), columns)
 
             # Apply table filters
@@ -507,28 +573,41 @@ class DatabaseHandler:
                 query = query.offset((page - 1) * page_size).limit(page_size)
                 self._logger.debug(f'Applied pagination: page={page}, page_size={page_size}')
 
-            self._logger.debug('Executing final query')
-            total_count = session.execute(query).scalar() or 0
-            rows = session.execute(query).all()
+            # Check cancellation
+            if cancellation_token and cancellation_token in self._query_cancellation_tokens:
+                if self._query_cancellation_tokens[cancellation_token].is_set():
+                    self._logger.debug(f'Query cancelled before execution')
+                    return [], 0
 
-            # Convert rows to dicts
+            # Execute final query
+            if progress_reporter:
+                await progress_reporter.report_progress(60, 'Executing query')
+
+            self._logger.debug('Executing final query')
+            rows = await session.execute(query)
+            result_rows = rows.all()
+
+            # Convert results to dictionaries
+            if progress_reporter:
+                await progress_reporter.report_progress(80, 'Processing results')
+
             results = []
-            for row in rows:
+            for row in result_rows:
                 d: Dict[str, Any] = {}
                 for idx, col in enumerate(query.columns):
                     d[col.name] = row[idx]
                 results.append(d)
 
             self._logger.debug(f'Query returned {len(results)} rows')
-            return results, total_count
+
+            return (results, total_count)
+
         except SQLAlchemyError as e:
             self._logger.error(f'Database error executing query: {str(e)}')
             raise DatabaseHandlerError(f'Database error executing query: {str(e)}') from e
         except Exception as e:
             self._logger.error(f'Error executing query: {str(e)}')
             raise DatabaseHandlerError(f'Error executing query: {str(e)}') from e
-        finally:
-            session.close()
 
     async def get_filter_values(
             self,
@@ -536,18 +615,18 @@ class DatabaseHandler:
             current_filters: Dict[str, List[int]],
             exclude_filters: Optional[Set[str]] = None
     ) -> List[Dict[str, Any]]:
-        """Get available filter values based on current filter selections.
+        """Get filter values based on current filter selections.
 
         Args:
             filter_type: Type of filter to get values for
             current_filters: Current filter selections
-            exclude_filters: Filters to exclude from consideration
+            exclude_filters: Filter types to exclude
 
         Returns:
-            List of filter values with id, name, and count
+            List[Dict[str, Any]]: Filter values
 
         Raises:
-            DatabaseHandlerError: If database error occurs
+            DatabaseHandlerError: If filter value retrieval fails
         """
         if not self._initialized:
             raise DatabaseHandlerError('DatabaseHandler not initialized')
@@ -566,51 +645,56 @@ class DatabaseHandler:
                     Year.year_id.label('id'),
                     Year.year_id.label('name'),
                     func.count(Year.year_id).label('count')
-                ).select_from(Vehicle).join(
-                    BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
+                ).select_from(Year).join(
+                    BaseVehicle, BaseVehicle.year_id == Year.year_id
                 ).join(
-                    Year, BaseVehicle.year_id == Year.year_id
-                ).group_by(Year.year_id).order_by(Year.year_id)
+                    Vehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
+                )
+                query = query.group_by(Year.year_id).order_by(Year.year_id)
 
             elif filter_type == 'make':
                 query = select(
                     Make.make_id.label('id'),
                     Make.make_name.label('name'),
                     func.count(Make.make_id).label('count')
-                ).select_from(Vehicle).join(
-                    BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
+                ).select_from(Make).join(
+                    BaseVehicle, BaseVehicle.make_id == Make.make_id
                 ).join(
-                    Make, BaseVehicle.make_id == Make.make_id
-                ).group_by(Make.make_id, Make.make_name).order_by(Make.make_name)
+                    Vehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
+                )
+                query = query.group_by(Make.make_id, Make.make_name).order_by(Make.make_name)
 
             elif filter_type == 'model':
                 query = select(
                     Model.model_id.label('id'),
                     Model.model_name.label('name'),
                     func.count(Model.model_id).label('count')
-                ).select_from(Vehicle).join(
-                    BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
+                ).select_from(Model).join(
+                    BaseVehicle, BaseVehicle.model_id == Model.model_id
                 ).join(
-                    Model, BaseVehicle.model_id == Model.model_id
-                ).group_by(Model.model_id, Model.model_name).order_by(Model.model_name)
+                    Vehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
+                )
+                query = query.group_by(Model.model_id, Model.model_name).order_by(Model.model_name)
 
             elif filter_type == 'submodel':
                 query = select(
                     SubModel.sub_model_id.label('id'),
                     SubModel.sub_model_name.label('name'),
                     func.count(SubModel.sub_model_id).label('count')
-                ).select_from(Vehicle).join(
-                    SubModel, Vehicle.sub_model_id == SubModel.sub_model_id
-                ).group_by(SubModel.sub_model_id, SubModel.sub_model_name).order_by(SubModel.sub_model_name)
+                ).select_from(SubModel).join(
+                    Vehicle, Vehicle.sub_model_id == SubModel.sub_model_id
+                )
+                query = query.group_by(SubModel.sub_model_id, SubModel.sub_model_name).order_by(SubModel.sub_model_name)
 
             elif filter_type == 'region':
                 query = select(
                     Region.region_id.label('id'),
                     Region.region_name.label('name'),
                     func.count(Region.region_id).label('count')
-                ).select_from(Vehicle).join(
-                    Region, Vehicle.region_id == Region.region_id
-                ).group_by(Region.region_id, Region.region_name).order_by(Region.region_name)
+                ).select_from(Region).join(
+                    Vehicle, Vehicle.region_id == Region.region_id
+                )
+                query = query.group_by(Region.region_id, Region.region_name).order_by(Region.region_name)
 
             elif filter_type == 'drivetype':
                 vtdt = aliased(VehicleToDriveType)
@@ -623,7 +707,8 @@ class DatabaseHandler:
                     vtdt, Vehicle.vehicle_id == vtdt.vehicle_id
                 ).join(
                     dt, vtdt.drive_type_id == dt.drive_type_id
-                ).group_by(dt.drive_type_id, dt.drive_type_name).order_by(dt.drive_type_name)
+                )
+                query = query.group_by(dt.drive_type_id, dt.drive_type_name).order_by(dt.drive_type_name)
 
             elif filter_type == 'wheelbase':
                 vtwb = aliased(VehicleToWheelBase)
@@ -636,7 +721,8 @@ class DatabaseHandler:
                     vtwb, Vehicle.vehicle_id == vtwb.vehicle_id
                 ).join(
                     wb, vtwb.wheel_base_id == wb.wheel_base_id
-                ).group_by(wb.wheel_base_id, wb.wheel_base).order_by(wb.wheel_base)
+                )
+                query = query.group_by(wb.wheel_base_id, wb.wheel_base).order_by(wb.wheel_base)
 
             elif filter_type == 'bedtype':
                 vtbc = aliased(VehicleToBedConfig)
@@ -652,7 +738,8 @@ class DatabaseHandler:
                     bc, vtbc.bed_config_id == bc.bed_config_id
                 ).join(
                     bt, bc.bed_type_id == bt.bed_type_id
-                ).group_by(bt.bed_type_id, bt.bed_type_name).order_by(bt.bed_type_name)
+                )
+                query = query.group_by(bt.bed_type_id, bt.bed_type_name).order_by(bt.bed_type_name)
 
             elif filter_type == 'bedlength':
                 vtbc = aliased(VehicleToBedConfig)
@@ -668,50 +755,183 @@ class DatabaseHandler:
                     bc, vtbc.bed_config_id == bc.bed_config_id
                 ).join(
                     bl, bc.bed_length_id == bl.bed_length_id
-                ).group_by(bl.bed_length_id, bl.bed_length).order_by(bl.bed_length)
+                )
+                query = query.group_by(bl.bed_length_id, bl.bed_length).order_by(bl.bed_length)
+
+            elif filter_type == 'bodytype':
+                vtbc = aliased(VehicleToBodyConfig)
+                bsc = aliased(BodyStyleConfig)
+                bt = aliased(BodyType)
+                query = select(
+                    bsc.body_type_id.label('id'),
+                    bt.body_type_name.label('name'),
+                    func.count(bt.body_type_id).label('count')
+                ).select_from(Vehicle).join(
+                    vtbc, Vehicle.vehicle_id == vtbc.vehicle_id
+                ).join(
+                    bsc, vtbc.body_style_config_id == bsc.body_style_config_id
+                ).join(
+                    bt, bt.body_type_id == bsc.body_type_id
+                )
+                query = query.group_by(bsc.body_type_id, bt.body_type_id).order_by(bt.body_type_name)
+
+            elif filter_type == 'bodynumdoors':
+                vtbc = aliased(VehicleToBodyConfig)
+                bsc = aliased(BodyStyleConfig)
+                bnd = aliased(BodyNumDoors)
+                query = select(
+                    bsc.body_num_doors_id.label('id'),
+                    bnd.body_num_doors.label('name'),
+                    func.count(bnd.body_num_doors_id).label('count')
+                ).select_from(Vehicle).join(
+                    vtbc, Vehicle.vehicle_id == vtbc.vehicle_id
+                ).join(
+                    bsc, vtbc.body_style_config_id == bsc.body_style_config_id
+                ).join(
+                    bnd, bnd.body_num_doors_id == bsc.body_type_id
+                )
+                query = query.group_by(bsc.body_num_doors_id, bnd.body_num_doors_id).order_by(bnd.body_num_doors)
+
+            elif filter_type == 'engineblock':
+                vtec = aliased(VehicleToEngineConfig)
+                ec = aliased(EngineConfig2)
+                eb = aliased(EngineBlock)
+                query = select(
+                    eb.engine_block_id.label('id'),
+                    eb.cylinders.label('name'),
+                    func.count(eb.engine_block_id).label('count')
+                ).select_from(Vehicle).join(
+                    vtec, Vehicle.vehicle_id == vtec.vehicle_id
+                ).join(
+                    ec, vtec.engine_config_id == ec.engine_config_id
+                ).join(
+                    eb, ec.engine_block_id == eb.engine_block_id
+                )
+                query = query.group_by(eb.engine_block_id, eb.cylinders).order_by(eb.cylinders)
+
+            elif filter_type == 'fueltypename':
+                vtec = aliased(VehicleToEngineConfig)
+                ec = aliased(EngineConfig2)
+                ft = aliased(FuelType)
+                query = select(
+                    ft.fuel_type_id.label('id'),
+                    ft.fuel_type_name.label('name'),
+                    func.count(ft.fuel_type_id).label('count')
+                ).select_from(Vehicle).join(
+                    vtec, Vehicle.vehicle_id == vtec.vehicle_id
+                ).join(
+                    ec, vtec.engine_config_id == ec.engine_config_id
+                ).join(
+                    ft, ec.fuel_type_id == ft.fuel_type_id
+                )
+                query = query.group_by(ft.fuel_type_id, ft.fuel_type_name).order_by(ft.fuel_type_name)
 
             else:
-                # Generic query for other filter types
+                # Generic case for other filters
                 pk_column = getattr(model_class, model_class.__table__.primary_key.columns.keys()[0])
                 name_column = getattr(model_class, attr_name)
+
+                # We need to determine the appropriate joins depending on the model
                 query = select(
                     pk_column.label('id'),
                     name_column.label('name'),
                     func.count(pk_column).label('count')
                 ).select_from(Vehicle)
 
-            # Apply existing filters to query
-            query = self._apply_filters(query, current_filters, exclude_filters, session)
+                # Add appropriate joins based on model relationship to Vehicle
+                if model_class == VehicleType:
+                    query = query.join(
+                        BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
+                    ).join(
+                        Model, BaseVehicle.model_id == Model.model_id
+                    ).join(
+                        VehicleType, Model.vehicle_type_id == VehicleType.vehicle_type_id
+                    )
+                elif model_class == VehicleTypeGroup:
+                    query = query.join(
+                        BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
+                    ).join(
+                        Model, BaseVehicle.model_id == Model.model_id
+                    ).join(
+                        VehicleType, Model.vehicle_type_id == VehicleType.vehicle_type_id
+                    ).join(
+                        VehicleTypeGroup, VehicleType.vehicle_type_group_id == VehicleTypeGroup.vehicle_type_group_id
+                    )
+                elif model_class == PublicationStage:
+                    query = query.join(
+                        PublicationStage, Vehicle.publication_stage_id == PublicationStage.publication_stage_id
+                    )
+                elif model_class == BrakeType:
+                    vtbc = aliased(VehicleToBrakeConfig)
+                    bc = aliased(BrakeConfig)
+                    query = query.join(
+                        vtbc, Vehicle.vehicle_id == vtbc.vehicle_id
+                    ).join(
+                        bc, vtbc.brake_config_id == bc.brake_config_id
+                    ).join(
+                        BrakeType, or_(
+                            bc.front_brake_type_id == BrakeType.brake_type_id,
+                            bc.rear_brake_type_id == BrakeType.brake_type_id
+                        )
+                    )
+                elif model_class == BrakeSystem:
+                    vtbc = aliased(VehicleToBrakeConfig)
+                    bc = aliased(BrakeConfig)
+                    query = query.join(
+                        vtbc, Vehicle.vehicle_id == vtbc.vehicle_id
+                    ).join(
+                        bc, vtbc.brake_config_id == bc.brake_config_id
+                    ).join(
+                        BrakeSystem, bc.brake_system_id == BrakeSystem.brake_system_id
+                    )
+                elif model_class == BrakeABS:
+                    vtbc = aliased(VehicleToBrakeConfig)
+                    bc = aliased(BrakeConfig)
+                    query = query.join(
+                        vtbc, Vehicle.vehicle_id == vtbc.vehicle_id
+                    ).join(
+                        bc, vtbc.brake_config_id == bc.brake_config_id
+                    ).join(
+                        BrakeABS, bc.brake_abs_id == BrakeABS.brake_abs_id
+                    )
+                elif model_class == Class:
+                    vtc = aliased(VehicleToClass)
+                    query = query.join(
+                        vtc, Vehicle.vehicle_id == vtc.vehicle_id
+                    ).join(
+                        Class, vtc.class_id == Class.class_id
+                    )
+                # Add more cases as needed for other models
+
+                # Add the group by and order by clauses
+                query = query.group_by(pk_column, name_column).order_by(name_column)
+
+            # Apply filters
+            query = self._apply_filters(query, current_filters, exclude_filters)
 
             self._logger.debug(f'Executing filter values query for {filter_type}')
             result = await session.execute(query)
             rows = result.all()
 
-            # Return list of dicts
-            return [
-                {'id': row.id, 'name': str(row.name), 'count': row.count}
-                for row in rows
-            ]
+            return [{'id': row.id, 'name': str(row.name), 'count': row.count} for row in rows]
 
     def _apply_filters(
             self,
             query: Any,
             filters: Dict[str, List[int]],
             exclude_filters: Set[str],
-            session: Optional[Session] = None,
             target_model: Any = None
     ) -> Any:
         """Apply filters to a query.
 
         Args:
-            query: SQLAlchemy query object
-            filters: Dictionary of filters to apply
-            exclude_filters: Set of filter types to exclude
-            session: Database session
-            target_model: Target model if filtering for a specific model
+            query: Query to apply filters to
+            filters: Filter selections
+            exclude_filters: Filter types to exclude
+            target_model: Target model class
 
         Returns:
-            Updated query with filters applied
+            Any: Updated query with filters applied
         """
         if not filters:
             self._logger.debug('No filters to apply')
@@ -719,15 +939,14 @@ class DatabaseHandler:
 
         self._logger.debug(f'Applying filters: {filters}, excluding: {exclude_filters}')
 
-        # Check if base vehicle is already joined
+        # Check if BaseVehicle is already joined
         has_base_vehicle_join = False
         for clause in getattr(query, '_from_obj', []):
-            if isinstance(clause, sqlalchemy.sql.elements.Join) and hasattr(clause, 'right') and (
-                    clause.right == BaseVehicle.__table__):
+            if isinstance(clause, Join) and hasattr(clause,
+                                                                            'right') and clause.right == BaseVehicle.__table__:
                 has_base_vehicle_join = True
                 break
 
-        # Apply each filter
         for filter_type, values in filters.items():
             if not values:
                 self._logger.debug(f'Skipping empty filter: {filter_type}')
@@ -737,12 +956,11 @@ class DatabaseHandler:
                 self._logger.debug(f'Skipping excluded filter: {filter_type}')
                 continue
 
-            if target_model and filter_type in self._filter_map and (self._filter_map[filter_type][0] == target_model):
+            if target_model and filter_type in self._filter_map and self._filter_map[filter_type][0] == target_model:
                 self._logger.debug(f'Skipping filter for target model: {filter_type}')
                 continue
 
             try:
-                # Apply specific filter based on type
                 if filter_type == 'year':
                     if not has_base_vehicle_join:
                         query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
@@ -785,64 +1003,148 @@ class DatabaseHandler:
                 elif filter_type == 'drivetype':
                     vtdt = aliased(VehicleToDriveType)
                     dt = aliased(DriveType)
-                    query = query.join(vtdt, Vehicle.vehicle_id == vtdt.vehicle_id)
-                    query = query.join(dt, vtdt.drive_type_id == dt.drive_type_id)
+
+                    # Check if the join already exists
+                    has_join = False
+                    for clause in getattr(query, '_from_obj', []):
+                        if isinstance(clause, Join) and hasattr(clause,
+                                                                                        'right') and clause.right == vtdt.__table__:
+                            has_join = True
+                            break
+
+                    if not has_join:
+                        query = query.join(vtdt, Vehicle.vehicle_id == vtdt.vehicle_id)
+                        query = query.join(dt, vtdt.drive_type_id == dt.drive_type_id)
+
                     query = query.filter(dt.drive_type_id.in_(values))
-                    self._logger.debug(f'Applied drive type filter with joins: {values}')
+                    self._logger.debug(f'Applied drive type filter: {values}')
 
                 elif filter_type == 'wheelbase':
                     vtwb = aliased(VehicleToWheelBase)
                     wb = aliased(WheelBase)
-                    query = query.join(vtwb, Vehicle.vehicle_id == vtwb.vehicle_id)
-                    query = query.join(wb, vtwb.wheel_base_id == wb.wheel_base_id)
+
+                    # Check if the join already exists
+                    has_join = False
+                    for clause in getattr(query, '_from_obj', []):
+                        if isinstance(clause, Join) and hasattr(clause,
+                                                                                        'right') and clause.right == vtwb.__table__:
+                            has_join = True
+                            break
+
+                    if not has_join:
+                        query = query.join(vtwb, Vehicle.vehicle_id == vtwb.vehicle_id)
+                        query = query.join(wb, vtwb.wheel_base_id == wb.wheel_base_id)
+
                     query = query.filter(wb.wheel_base_id.in_(values))
-                    self._logger.debug(f'Applied wheel base filter with joins: {values}')
+                    self._logger.debug(f'Applied wheel base filter: {values}')
 
                 elif filter_type == 'bedtype':
                     vtbc = aliased(VehicleToBedConfig)
                     bc = aliased(BedConfig)
                     bt = aliased(BedType)
-                    query = query.join(vtbc, Vehicle.vehicle_id == vtbc.vehicle_id)
-                    query = query.join(bc, vtbc.bed_config_id == bc.bed_config_id)
-                    query = query.join(bt, bc.bed_type_id == bt.bed_type_id)
+
+                    # Check if the join already exists
+                    has_join = False
+                    for clause in getattr(query, '_from_obj', []):
+                        if isinstance(clause, Join) and hasattr(clause,
+                                                                                        'right') and clause.right == vtbc.__table__:
+                            has_join = True
+                            break
+
+                    if not has_join:
+                        query = query.join(vtbc, Vehicle.vehicle_id == vtbc.vehicle_id)
+                        query = query.join(bc, vtbc.bed_config_id == bc.bed_config_id)
+                        query = query.join(bt, bc.bed_type_id == bt.bed_type_id)
+
                     query = query.filter(bt.bed_type_id.in_(values))
-                    self._logger.debug(f'Applied bed type filter with joins: {values}')
+                    self._logger.debug(f'Applied bed type filter: {values}')
 
                 elif filter_type == 'vehicletype':
                     if not has_base_vehicle_join:
                         query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
                         has_base_vehicle_join = True
 
-                    query = query.join(Model, BaseVehicle.model_id == Model.model_id)
-                    query = query.join(VehicleType, Model.vehicle_type_id == VehicleType.vehicle_type_id)
+                    # Check if Model and VehicleType are already joined
+                    has_model_join = False
+                    has_vehicle_type_join = False
+                    for clause in getattr(query, '_from_obj', []):
+                        if isinstance(clause, Join):
+                            if hasattr(clause, 'right') and clause.right == Model.__table__:
+                                has_model_join = True
+                            elif hasattr(clause, 'right') and clause.right == VehicleType.__table__:
+                                has_vehicle_type_join = True
+
+                    if not has_model_join:
+                        query = query.join(Model, BaseVehicle.model_id == Model.model_id)
+
+                    if not has_vehicle_type_join:
+                        query = query.join(VehicleType, Model.vehicle_type_id == VehicleType.vehicle_type_id)
+
                     query = query.filter(VehicleType.vehicle_type_id.in_(values))
-                    self._logger.debug(f'Applied vehicle type filter with joins: {values}')
+                    self._logger.debug(f'Applied vehicle type filter: {values}')
 
                 elif filter_type == 'engineblock':
                     vtec = aliased(VehicleToEngineConfig)
                     ec = aliased(EngineConfig2)
                     eb = aliased(EngineBlock)
-                    query = query.join(vtec, Vehicle.vehicle_id == vtec.vehicle_id)
-                    query = query.join(ec, vtec.engine_config_id == ec.engine_config_id)
-                    query = query.join(eb, ec.engine_block_id == eb.engine_block_id)
 
-                    # Ensure values are integers
+                    # Check if the joins already exist
+                    has_vtec_join = False
+                    has_ec_join = False
+                    has_eb_join = False
+                    for clause in getattr(query, '_from_obj', []):
+                        if isinstance(clause, Join) and hasattr(clause, 'right'):
+                            if clause.right == vtec.__table__:
+                                has_vtec_join = True
+                            elif clause.right == ec.__table__:
+                                has_ec_join = True
+                            elif clause.right == eb.__table__:
+                                has_eb_join = True
+
+                    if not has_vtec_join:
+                        query = query.join(vtec, Vehicle.vehicle_id == vtec.vehicle_id)
+
+                    if not has_ec_join:
+                        query = query.join(ec, vtec.engine_config_id == ec.engine_config_id)
+
+                    if not has_eb_join:
+                        query = query.join(eb, ec.engine_block_id == eb.engine_block_id)
+
                     engine_block_ids = [int(v) if isinstance(v, str) and v.isdigit() else v for v in values]
                     query = query.filter(eb.engine_block_id.in_(engine_block_ids))
-                    self._logger.debug(f'Applied engine block filter with joins: {values}')
+                    self._logger.debug(f'Applied engine block filter: {values}')
 
                 elif filter_type == 'fueltypename':
                     vtec = aliased(VehicleToEngineConfig)
                     ec = aliased(EngineConfig2)
                     ft = aliased(FuelType)
-                    query = query.join(vtec, Vehicle.vehicle_id == vtec.vehicle_id)
-                    query = query.join(ec, vtec.engine_config_id == ec.engine_config_id)
-                    query = query.join(ft, ec.fuel_type_id == ft.fuel_type_id)
+
+                    # Check if the joins already exist
+                    has_vtec_join = False
+                    has_ec_join = False
+                    has_ft_join = False
+                    for clause in getattr(query, '_from_obj', []):
+                        if isinstance(clause, Join) and hasattr(clause, 'right'):
+                            if clause.right == vtec.__table__:
+                                has_vtec_join = True
+                            elif clause.right == ec.__table__:
+                                has_ec_join = True
+                            elif clause.right == ft.__table__:
+                                has_ft_join = True
+
+                    if not has_vtec_join:
+                        query = query.join(vtec, Vehicle.vehicle_id == vtec.vehicle_id)
+
+                    if not has_ec_join:
+                        query = query.join(ec, vtec.engine_config_id == ec.engine_config_id)
+
+                    if not has_ft_join:
+                        query = query.join(ft, ec.fuel_type_id == ft.fuel_type_id)
+
                     query = query.filter(ft.fuel_type_id.in_(values))
-                    self._logger.debug(f'Applied fuel type filter with joins: {values}')
+                    self._logger.debug(f'Applied fuel type filter: {values}')
 
                 elif filter_type in self._filter_map:
-                    # Generic filter application
                     model_class, attr_name = self._filter_map[filter_type]
                     self._logger.debug(f'Using filter map for {filter_type}: {model_class.__name__}.{attr_name}')
 
@@ -851,7 +1153,17 @@ class DatabaseHandler:
                             query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
                             has_base_vehicle_join = True
 
-                        query = query.join(Year, BaseVehicle.year_id == Year.year_id)
+                        # Check if Year is already joined
+                        has_year_join = False
+                        for clause in getattr(query, '_from_obj', []):
+                            if isinstance(clause, Join) and hasattr(clause,
+                                                                                            'right') and clause.right == Year.__table__:
+                                has_year_join = True
+                                break
+
+                        if not has_year_join:
+                            query = query.join(Year, BaseVehicle.year_id == Year.year_id)
+
                         query = query.filter(getattr(Year, attr_name).in_(values))
                         self._logger.debug(f'Applied {filter_type} filter with year join: {values}')
 
@@ -860,7 +1172,17 @@ class DatabaseHandler:
                             query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
                             has_base_vehicle_join = True
 
-                        query = query.join(Make, BaseVehicle.make_id == Make.make_id)
+                        # Check if Make is already joined
+                        has_make_join = False
+                        for clause in getattr(query, '_from_obj', []):
+                            if isinstance(clause, Join) and hasattr(clause,
+                                                                                            'right') and clause.right == Make.__table__:
+                                has_make_join = True
+                                break
+
+                        if not has_make_join:
+                            query = query.join(Make, BaseVehicle.make_id == Make.make_id)
+
                         query = query.filter(getattr(Make, attr_name).in_(values))
                         self._logger.debug(f'Applied {filter_type} filter with make join: {values}')
 
@@ -869,7 +1191,17 @@ class DatabaseHandler:
                             query = query.join(BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id)
                             has_base_vehicle_join = True
 
-                        query = query.join(Model, BaseVehicle.model_id == Model.model_id)
+                        # Check if Model is already joined
+                        has_model_join = False
+                        for clause in getattr(query, '_from_obj', []):
+                            if isinstance(clause, Join) and hasattr(clause,
+                                                                                            'right') and clause.right == Model.__table__:
+                                has_model_join = True
+                                break
+
+                        if not has_model_join:
+                            query = query.join(Model, BaseVehicle.model_id == Model.model_id)
+
                         query = query.filter(getattr(Model, attr_name).in_(values))
                         self._logger.debug(f'Applied {filter_type} filter with model join: {values}')
 
@@ -889,17 +1221,19 @@ class DatabaseHandler:
         """Build a query with the specified columns.
 
         Args:
-            vehicle_ids: Vehicle IDs subquery or scalar subquery
-            columns: List of columns to include
+            vehicle_ids: Subquery with vehicle IDs
+            columns: Columns to include in results
 
         Returns:
-            SQLAlchemy query object
+            Any: Query with selected columns
         """
         query = select(Vehicle.vehicle_id).select_from(Vehicle)
         query = query.filter(Vehicle.vehicle_id.in_(vehicle_ids))
 
-        # Join with base tables and add common columns
-        query = query.add_columns(BaseVehicle.year_id.label('year')).join(
+        # Add standard joins and columns
+        query = query.add_columns(
+            BaseVehicle.year_id.label('year')
+        ).join(
             BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id, isouter=True
         )
 
@@ -924,7 +1258,7 @@ class DatabaseHandler:
             SubModel, Vehicle.sub_model_id == SubModel.sub_model_id, isouter=True
         )
 
-        # Add requested columns
+        # Add additional columns based on request
         for column in columns:
             if column == 'region':
                 query = query.add_columns(
@@ -954,17 +1288,19 @@ class DatabaseHandler:
                     dt, vtdt.drive_type_id == dt.drive_type_id
                 )
 
+            # Add additional column cases as needed
+
         return query
 
     def _apply_table_filters(self, query: Any, table_filters: Dict[str, Any]) -> Any:
         """Apply additional table filters to a query.
 
         Args:
-            query: SQLAlchemy query object
-            table_filters: Dictionary of table filters
+            query: Query to apply filters to
+            table_filters: Table filters
 
         Returns:
-            Updated query with filters applied
+            Any: Updated query with table filters applied
         """
         for column, filter_value in table_filters.items():
             if column == 'year' and isinstance(filter_value, dict):
@@ -999,12 +1335,12 @@ class DatabaseHandler:
         """Apply sorting to a query.
 
         Args:
-            query: SQLAlchemy query object
+            query: Query to apply sorting to
             sort_by: Column to sort by
-            sort_desc: Whether to sort in descending order
+            sort_desc: Sort in descending order
 
         Returns:
-            Updated query with sorting applied
+            Any: Updated query with sorting applied
         """
         sort_map = {
             'vehicle_id': Vehicle.vehicle_id,
@@ -1025,10 +1361,10 @@ class DatabaseHandler:
         return query
 
     def get_available_columns(self) -> List[Dict[str, str]]:
-        """Get list of available columns for display.
+        """Get available columns for query results.
 
         Returns:
-            List of column definitions with id and name
+            List[Dict[str, str]]: Available columns
         """
         return [
             {'id': 'vehicle_id', 'name': 'Vehicle ID'},
@@ -1050,10 +1386,10 @@ class DatabaseHandler:
         ]
 
     def get_available_filters(self) -> List[Dict[str, str]]:
-        """Get list of available filters.
+        """Get available filters for query.
 
         Returns:
-            List of filter definitions with id, name, and mandatory flag
+            List[Dict[str, str]]: Available filters
         """
         return [
             {'id': 'year', 'name': 'Year', 'mandatory': True},
@@ -1078,7 +1414,7 @@ class DatabaseHandler:
         ]
 
     async def shutdown(self) -> None:
-        """Shut down the database handler and clean up resources."""
+        """Shutdown the database handler and clean up resources."""
         if not self._initialized:
             return
 
@@ -1089,10 +1425,8 @@ class DatabaseHandler:
         self._shutting_down = True
 
         try:
-            # Unsubscribe from events
             await self._event_bus_manager.unsubscribe(subscriber_id='vcdb_explorer_handler')
 
-            # Unregister database connection if needed
             if self._db_manager and await self._db_manager.has_connection(self.CONNECTION_NAME):
                 try:
                     await self._db_manager.unregister_connection(self.CONNECTION_NAME)
@@ -1100,6 +1434,8 @@ class DatabaseHandler:
                 except Exception as e:
                     self._logger.warning(f'Error unregistering database connection: {str(e)}')
 
+            # Clean up cancellation tokens
+            self._query_cancellation_tokens.clear()
             self._initialized = False
             self._logger.info('VCdb Database Handler shut down successfully')
         finally:

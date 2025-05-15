@@ -7,20 +7,20 @@ import os
 import tempfile
 import threading
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast, Union
 
 from PySide6.QtCore import (
     QAbstractTableModel, QModelIndex, QRegularExpression, QSize,
-    QSortFilterProxyModel, Qt, Signal, Slot, QThread, QTimer, QPoint, QObject
+    QSortFilterProxyModel, Qt, Signal, Slot, QTimer, QPoint
 )
 from PySide6.QtGui import QAction, QClipboard, QIcon, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
-    QProgressBar, QProgressDialog, QPushButton, QScrollArea,
-    QSizePolicy, QSpinBox, QSplitter, QTableView, QTabWidget,
-    QToolBar, QToolButton, QVBoxLayout, QWidget, QGridLayout, QApplication, QRadioButton
+    QProgressBar, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
+    QSpinBox, QSplitter, QTableView, QTabWidget, QToolBar, QToolButton,
+    QVBoxLayout, QWidget, QGridLayout, QApplication, QRadioButton
 )
 
 try:
@@ -32,27 +32,24 @@ except ImportError:
     EXCEL_AVAILABLE = False
 
 from qorzen.core.event_bus_manager import EventBusManager
-from qorzen.core.event_model import Event, EventType
+from qorzen.core.event_model import Event
 
 from .database_handler import DatabaseHandler
 from .events import VCdbEventType
 from .export import DataExporter, ExportError
 
 
-# New signal class for thread-safe communication
-class QuerySignals(QObject):
-    # Signal when query starts
+class QuerySignals(QWidget):
+    """Signals for query execution events."""
     started = Signal()
-    # Signal when query completes with results
     completed = Signal(object)
-    # Signal when query fails with error
     failed = Signal(str)
-    # Signal when progress updates
     progress = Signal(int, int)
+    cancelled = Signal()
 
 
 class ColumnSelectionDialog(QDialog):
-    """Dialog for selecting and ordering table columns."""
+    """Dialog for selecting and ordering columns to display."""
 
     def __init__(
             self,
@@ -63,8 +60,8 @@ class ColumnSelectionDialog(QDialog):
         """Initialize column selection dialog.
 
         Args:
-            available_columns: List of available columns with id and name
-            selected_columns: List of currently selected column IDs
+            available_columns: List of available columns
+            selected_columns: List of currently selected columns
             parent: Parent widget
         """
         super().__init__(parent)
@@ -86,27 +83,27 @@ class ColumnSelectionDialog(QDialog):
         self._list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         layout.addWidget(self._list_widget)
 
-        # Add items to list
         for col_id in self._column_map:
             item = QListWidgetItem(self._column_map[col_id])
             item.setData(Qt.ItemDataRole.UserRole, col_id)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(
-                Qt.CheckState.Checked if col_id in selected_columns
-                else Qt.CheckState.Unchecked
+                Qt.CheckState.Checked if col_id in selected_columns else Qt.CheckState.Unchecked
             )
             self._list_widget.addItem(item)
 
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
     def get_selected_columns(self) -> List[str]:
-        """Get selected column IDs in displayed order.
+        """Get selected columns in display order.
 
         Returns:
-            List of selected column IDs
+            List[str]: Selected column IDs
         """
         result = []
         for i in range(self._list_widget.count()):
@@ -142,7 +139,6 @@ class YearRangeTableFilter(QWidget):
         self._min_year.setPrefix('From: ')
         self._min_year.valueChanged.connect(self._on_value_changed)
         self._min_year.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        # Disable mouse wheel to prevent accidental changes
         self._min_year.wheelEvent = lambda event: event.ignore()
         layout.addWidget(self._min_year)
 
@@ -152,7 +148,6 @@ class YearRangeTableFilter(QWidget):
         self._max_year.setPrefix('To: ')
         self._max_year.valueChanged.connect(self._on_value_changed)
         self._max_year.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        # Disable mouse wheel to prevent accidental changes
         self._max_year.wheelEvent = lambda event: event.ignore()
         layout.addWidget(self._max_year)
 
@@ -163,10 +158,10 @@ class YearRangeTableFilter(QWidget):
         layout.addWidget(self._clear_btn)
 
     def get_filter(self) -> Dict[str, Any]:
-        """Get current filter values.
+        """Get the current filter values.
 
         Returns:
-            Filter dictionary or empty dict if no filter active
+            Dict[str, Any]: Filter values
         """
         min_year = self._min_year.value()
         max_year = self._max_year.value()
@@ -190,18 +185,15 @@ class YearRangeTableFilter(QWidget):
         """Clear the filter."""
         self._min_year.blockSignals(True)
         self._max_year.blockSignals(True)
-
         self._min_year.setValue(self._min_year.minimum())
         self._max_year.setValue(self._max_year.maximum())
-
         self._min_year.blockSignals(False)
         self._max_year.blockSignals(False)
-
         self.filterChanged.emit({})
 
 
 class QueryResultModel(QAbstractTableModel):
-    """Table model for query results."""
+    """Model for displaying query results in a table."""
 
     def __init__(
             self,
@@ -212,8 +204,8 @@ class QueryResultModel(QAbstractTableModel):
         """Initialize query result model.
 
         Args:
-            columns: List of column IDs
-            column_map: Mapping from column IDs to display names
+            columns: Column IDs
+            column_map: Map of column IDs to display names
             parent: Parent widget
         """
         super().__init__(parent)
@@ -224,40 +216,40 @@ class QueryResultModel(QAbstractTableModel):
         self._total_count = 0
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        """Get number of rows.
+        """Get the number of rows.
 
         Args:
             parent: Parent index
 
         Returns:
-            Number of rows
+            int: Number of rows
         """
         if parent.isValid():
             return 0
         return self._row_count
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        """Get number of columns.
+        """Get the number of columns.
 
         Args:
             parent: Parent index
 
         Returns:
-            Number of columns
+            int: Number of columns
         """
         if parent.isValid():
             return 0
         return len(self._columns)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
-        """Get data for a cell.
+        """Get data for a specific index and role.
 
         Args:
-            index: Cell index
-            role: Data role
+            index: Index to get data for
+            role: Role to get data for
 
         Returns:
-            Cell data for the requested role
+            Any: Data for index and role
         """
         if not index.isValid() or not 0 <= index.row() < self._row_count:
             return None
@@ -281,10 +273,10 @@ class QueryResultModel(QAbstractTableModel):
         Args:
             section: Section index
             orientation: Header orientation
-            role: Data role
+            role: Role to get data for
 
         Returns:
-            Header data for the requested role
+            Any: Header data
         """
         if role != Qt.ItemDataRole.DisplayRole:
             return None
@@ -296,21 +288,21 @@ class QueryResultModel(QAbstractTableModel):
         return str(section + 1)
 
     def set_columns(self, columns: List[str]) -> None:
-        """Set columns for the model.
+        """Set columns to display.
 
         Args:
-            columns: List of column IDs
+            columns: Column IDs
         """
         self.beginResetModel()
         self._columns = columns
         self.endResetModel()
 
     def set_data(self, data: List[Dict[str, Any]], total_count: int) -> None:
-        """Set data for the model.
+        """Set data to display.
 
         Args:
-            data: List of row data dictionaries
-            total_count: Total number of matching rows (may be more than visible)
+            data: Row data
+            total_count: Total number of rows
         """
         self.beginResetModel()
         self._data = data
@@ -319,10 +311,10 @@ class QueryResultModel(QAbstractTableModel):
         self.endResetModel()
 
     def get_total_count(self) -> int:
-        """Get total row count (may include non-visible rows).
+        """Get the total number of rows.
 
         Returns:
-            Total row count
+            int: Total number of rows
         """
         return self._total_count
 
@@ -333,17 +325,17 @@ class QueryResultModel(QAbstractTableModel):
             row: Row index
 
         Returns:
-            Row data dictionary
+            Dict[str, Any]: Row data
         """
         if 0 <= row < self._row_count:
             return self._data[row].copy()
         return {}
 
     def get_all_data(self) -> List[Dict[str, Any]]:
-        """Get all visible data.
+        """Get all data.
 
         Returns:
-            List of all visible row data dictionaries
+            List[Dict[str, Any]]: All row data
         """
         return self._data.copy()
 
@@ -362,8 +354,8 @@ class TableFilterWidget(QWidget):
         """Initialize table filter widget.
 
         Args:
-            columns: List of column IDs
-            column_map: Mapping from column IDs to display names
+            columns: Column IDs
+            column_map: Map of column IDs to display names
             parent: Parent widget
         """
         super().__init__(parent)
@@ -375,7 +367,6 @@ class TableFilterWidget(QWidget):
         self._layout = QVBoxLayout()
         self.setLayout(self._layout)
 
-        # Header
         header_layout = QHBoxLayout()
         title = QLabel('Table Filters')
         title.setStyleSheet('font-weight: bold; font-size: 12px;')
@@ -397,17 +388,16 @@ class TableFilterWidget(QWidget):
 
         self._layout.addLayout(header_layout)
 
-        # Filters layout
         self._filters_layout = QVBoxLayout()
         self._layout.addLayout(self._filters_layout)
 
         self._filter_widgets: List[QWidget] = []
 
     def set_columns(self, columns: List[str]) -> None:
-        """Set available columns.
+        """Set columns available for filtering.
 
         Args:
-            columns: List of column IDs
+            columns: Column IDs
         """
         self._columns = columns
 
@@ -415,13 +405,12 @@ class TableFilterWidget(QWidget):
         """Get current filters.
 
         Returns:
-            Dictionary of current filters
+            Dict[str, Any]: Current filters
         """
         return self._filter_map.copy()
 
     def _add_year_range_filter(self) -> None:
         """Add a year range filter."""
-        # Check if one already exists
         for widget in self._filter_widgets:
             if isinstance(widget, YearRangeTableFilter):
                 return
@@ -433,10 +422,9 @@ class TableFilterWidget(QWidget):
         self._clear_all_btn.setEnabled(True)
 
     def _add_filter(self) -> None:
-        """Add a column text filter."""
+        """Add a column filter."""
         row_layout = QHBoxLayout()
 
-        # Column selector
         column_combo = QComboBox()
         for col_id in self._columns:
             if col_id not in self._filter_map or not isinstance(self._filter_map[col_id], str):
@@ -447,18 +435,15 @@ class TableFilterWidget(QWidget):
 
         row_layout.addWidget(column_combo)
 
-        # Filter input
         filter_input = QLineEdit()
         filter_input.setPlaceholderText('Filter value...')
         row_layout.addWidget(filter_input)
 
-        # Remove button
         remove_btn = QToolButton()
         remove_btn.setText('×')
         remove_btn.setToolTip('Remove filter')
         row_layout.addWidget(remove_btn)
 
-        # Create container widget
         widget_container = QWidget()
         widget_container.setLayout(row_layout)
         self._filters_layout.addWidget(widget_container)
@@ -467,15 +452,12 @@ class TableFilterWidget(QWidget):
         col_id = column_combo.currentData()
 
         def update_filter() -> None:
-            """Update filter when inputs change."""
             current_col = column_combo.currentData()
             value = filter_input.text()
 
-            # If column changed, remove old filter
             if col_id in self._filter_map and current_col != col_id:
                 del self._filter_map[col_id]
 
-            # Set new filter or remove if empty
             if value:
                 self._filter_map[current_col] = value
             elif current_col in self._filter_map:
@@ -485,7 +467,6 @@ class TableFilterWidget(QWidget):
             self.filterChanged.emit(self.get_filters())
 
         def remove_filter() -> None:
-            """Remove this filter."""
             current_col = column_combo.currentData()
             if current_col in self._filter_map:
                 del self._filter_map[current_col]
@@ -497,17 +478,16 @@ class TableFilterWidget(QWidget):
             self._clear_all_btn.setEnabled(bool(self._filter_map))
             self.filterChanged.emit(self.get_filters())
 
-        # Connect signals
         column_combo.currentIndexChanged.connect(update_filter)
         filter_input.textChanged.connect(update_filter)
         remove_btn.clicked.connect(remove_filter)
 
     @Slot(dict)
     def _on_year_range_filter_changed(self, year_filter: Dict[str, Any]) -> None:
-        """Handle year range filter change.
+        """Handle year range filter changes.
 
         Args:
-            year_filter: New year filter dictionary
+            year_filter: Year filter values
         """
         if year_filter:
             self._filter_map.update(year_filter)
@@ -530,7 +510,7 @@ class TableFilterWidget(QWidget):
 
 
 class ExportOptionsDialog(QDialog):
-    """Dialog for export options."""
+    """Dialog for configuring export options."""
 
     def __init__(
             self,
@@ -542,9 +522,9 @@ class ExportOptionsDialog(QDialog):
         """Initialize export options dialog.
 
         Args:
-            format_type: Export format type ("csv" or "excel")
-            current_count: Number of records in current page
-            total_count: Total number of records matching query
+            format_type: Export format type
+            current_count: Number of currently displayed rows
+            total_count: Total number of rows
             parent: Parent widget
         """
         super().__init__(parent)
@@ -555,7 +535,6 @@ class ExportOptionsDialog(QDialog):
         layout = QVBoxLayout()
         self.setLayout(layout)
 
-        # Export scope options
         scope_group = QGroupBox('Export Scope')
         scope_layout = QVBoxLayout()
         scope_group.setLayout(scope_layout)
@@ -567,36 +546,35 @@ class ExportOptionsDialog(QDialog):
         self._all_results_radio = QRadioButton(f'All matching results ({total_count} rows)')
         scope_layout.addWidget(self._all_results_radio)
 
-        # Disable all results option if not applicable
         if current_count >= total_count:
             self._all_results_radio.setEnabled(False)
             self._all_results_radio.setText('All matching results (already showing all)')
 
         layout.addWidget(scope_group)
 
-        # Warning for large exports
         if total_count > 5000:
             warning = QLabel(f'Warning: Exporting all {total_count} rows may take some time.')
             warning.setStyleSheet('color: #CC0000;')
             layout.addWidget(warning)
 
-        # Buttons
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
     def export_all(self) -> bool:
-        """Check if all results should be exported.
+        """Check if all rows should be exported.
 
         Returns:
-            True if all results should be exported, False for current page only
+            bool: True if all rows should be exported
         """
         return self._all_results_radio.isChecked()
 
 
 class DataTableWidget(QWidget):
-    """Widget for displaying query results in a table."""
+    """Widget for displaying database query results in a table."""
 
     queryStarted = Signal()
     queryFinished = Signal()
@@ -611,28 +589,24 @@ class DataTableWidget(QWidget):
         """Initialize data table widget.
 
         Args:
-            database_handler: Database handler for queries
-            event_bus_manager: Event bus for communication
+            database_handler: Handler for database operations
+            event_bus_manager: Manager for event publishing/subscribing
             logger: Logger instance
             parent: Parent widget
         """
         super().__init__(parent)
 
-        # Create signals object for thread-safe communication
+        # Set up signals
         self._signals = QuerySignals()
-
-        # Connect signals to slots with appropriate connection types
         self._signals.started.connect(self._on_query_started, Qt.ConnectionType.QueuedConnection)
         self._signals.completed.connect(self._on_query_completed, Qt.ConnectionType.QueuedConnection)
         self._signals.failed.connect(self._on_query_failed, Qt.ConnectionType.QueuedConnection)
         self._signals.progress.connect(self._on_query_progress, Qt.ConnectionType.QueuedConnection)
+        self._signals.cancelled.connect(self._on_query_cancelled, Qt.ConnectionType.QueuedConnection)
 
-        # Progress dialog reference - initialize to None
+        # Initialize properties
         self._progress_dialog = None
-
-        # Thread reference - initialize to None
-        self._query_thread = None
-
+        self._query_running = False
         self._database_handler = database_handler
         self._event_bus_manager = event_bus_manager
         self._logger = logger
@@ -646,16 +620,17 @@ class DataTableWidget(QWidget):
         self._sort_descending = False
         self._table_filters: Dict[str, Any] = {}
         self._current_filter_panels: List[Dict[str, List[int]]] = []
-        self._query_running = False
         self._callback_id = f'datatable_{uuid.uuid4()}'
         self._exporter = DataExporter(logger)
 
+        # Create layout
         self._layout = QVBoxLayout()
         self.setLayout(self._layout)
 
+        # Create UI components
         self._create_toolbar()
 
-        # Table view
+        # Create table view
         self._table_view = QTableView()
         self._table_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -673,10 +648,10 @@ class DataTableWidget(QWidget):
 
         self._layout.addWidget(self._table_view)
 
-        # Bottom layout with filters and pagination
+        # Create bottom panel
         bottom_layout = QHBoxLayout()
 
-        # Table filters
+        # Create filter widget
         self._filter_widget = TableFilterWidget(self._selected_columns, self._column_map, self)
         self._filter_widget.filterChanged.connect(self._on_table_filter_changed)
 
@@ -691,7 +666,7 @@ class DataTableWidget(QWidget):
 
         bottom_layout.addWidget(self._filter_group, 3)
 
-        # Pagination controls
+        # Create pagination widget
         pagination_widget = QWidget()
         pagination_layout = QGridLayout()
         pagination_layout.setContentsMargins(10, 5, 10, 5)
@@ -707,7 +682,6 @@ class DataTableWidget(QWidget):
 
         pagination_layout.addWidget(QLabel('Page:'), 1, 0)
 
-        # Navigation buttons
         nav_layout = QHBoxLayout()
 
         self._first_page_btn = QToolButton()
@@ -750,19 +724,26 @@ class DataTableWidget(QWidget):
         pagination_layout.addWidget(self._count_label, 2, 0, 1, 2)
 
         pagination_widget.setLayout(pagination_layout)
+
         bottom_layout.addWidget(pagination_widget, 1)
 
         self._layout.addLayout(bottom_layout)
 
         self._update_pagination_ui()
 
+        # Subscribe to events
         asyncio.create_task(self._subscribe_to_events())
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: Any) -> None:
+        """Handle close event.
+
+        Args:
+            event: Close event
+        """
         self._event_bus_manager.unsubscribe(subscriber_id=self._callback_id)
 
     async def _subscribe_to_events(self) -> None:
-        # Subscribe to query results events
+        """Subscribe to events."""
         await self._event_bus_manager.subscribe(
             event_type=VCdbEventType.query_results(),
             callback=self._on_query_results,
@@ -770,7 +751,7 @@ class DataTableWidget(QWidget):
         )
 
     def _create_toolbar(self) -> None:
-        """Create the toolbar with actions."""
+        """Create the toolbar."""
         toolbar = QToolBar()
         toolbar.setIconSize(QSize(16, 16))
 
@@ -778,6 +759,12 @@ class DataTableWidget(QWidget):
         self._run_query_action.setToolTip('Execute the query with current filters')
         self._run_query_action.triggered.connect(self._run_query)
         toolbar.addAction(self._run_query_action)
+
+        self._cancel_query_action = QAction('Cancel Query', self)
+        self._cancel_query_action.setToolTip('Cancel the currently running query')
+        self._cancel_query_action.triggered.connect(self._cancel_query)
+        self._cancel_query_action.setEnabled(False)
+        toolbar.addAction(self._cancel_query_action)
 
         toolbar.addSeparator()
 
@@ -802,36 +789,34 @@ class DataTableWidget(QWidget):
         self._layout.addWidget(toolbar)
 
     def get_callback_id(self) -> str:
-        """Get callback ID for event subscription.
+        """Get callback ID for this widget.
 
         Returns:
-            Callback ID
+            str: Callback ID
         """
         return self._callback_id
 
     def get_selected_columns(self) -> List[str]:
-        """Get currently selected columns.
+        """Get selected columns.
 
         Returns:
-            List of selected column IDs
+            List[str]: Selected column IDs
         """
         return self._selected_columns
 
     def get_page_size(self) -> int:
-        """Get current page size.
+        """Get page size.
 
         Returns:
-            Page size
+            int: Page size
         """
         return self._page_size
 
     def execute_query(self, filter_panels: List[Dict[str, List[int]]]) -> None:
-        """
-        Execute a query with the given filter panels.
-        All UI operations must happen on the main thread.
+        """Execute a query with the given filter panels.
 
         Args:
-            filter_panels: List of filter criteria from filter panels
+            filter_panels: Filter selections from panels
         """
         if self._query_running:
             self._logger.warning('Query already running, ignoring request')
@@ -840,143 +825,148 @@ class DataTableWidget(QWidget):
         self._query_running = True
         self._current_filter_panels = filter_panels
 
-        # Emit the started signal - this will trigger UI updates on the main thread
+        self._set_ui_state_for_query(True)
         self._signals.started.emit()
 
-        # Create a thread to run the actual query
-        self._query_thread = threading.Thread(
-            target=self._run_query_in_thread,
-            args=(filter_panels,),
-            daemon=True
-        )
+        # Execute query through event bus
+        asyncio.create_task(self._event_bus_manager.publish(
+            event_type=VCdbEventType.query_execute(),
+            source='vcdb_explorer',
+            payload={
+                'filter_panels': filter_panels,
+                'columns': self._selected_columns,
+                'page': self._current_page,
+                'page_size': self._page_size,
+                'sort_by': self._sort_column,
+                'sort_desc': self._sort_descending,
+                'table_filters': self._table_filters,
+                'callback_id': self._callback_id
+            }
+        ))
 
-        # Start the thread
-        self._query_thread.start()
-
-    def _run_query_in_thread(self, filter_panels: List[Dict[str, List[int]]]) -> None:
-        """
-        Run the query in a background thread.
-        No UI operations should happen here.
+    def _set_ui_state_for_query(self, running: bool) -> None:
+        """Set UI state based on query execution state.
 
         Args:
-            filter_panels: List of filter criteria
+            running: True if query is running
         """
-        try:
-            # Log the operation
-            self._logger.debug(f"Running query in thread with {len(filter_panels)} filter panels")
+        # Update action states
+        self._run_query_action.setEnabled(not running)
+        self._cancel_query_action.setEnabled(running)
+        self._select_columns_action.setEnabled(not running)
+        self._export_csv_action.setEnabled(not running)
 
-            # Call the database handler directly
-            results, total_count = self._database_handler.execute_query(
-                filter_panels=filter_panels,
-                columns=self._selected_columns,
-                page=self._current_page,
-                page_size=self._page_size,
-                sort_by=self._sort_column,
-                sort_desc=self._sort_descending,
-                table_filters=self._table_filters
-            )
+        if EXCEL_AVAILABLE:
+            self._export_excel_action.setEnabled(not running)
 
-            # Successfully got results, emit completed signal
-            self._signals.completed.emit({
-                'results': results,
-                'total_count': total_count
-            })
+        # Update filter states
+        self._filter_group.setEnabled(not running)
 
-        except Exception as e:
-            # Query failed, emit failed signal
-            self._logger.error(f"Query failed: {str(e)}")
-            self._signals.failed.emit(str(e))
+        # Update pagination states
+        self._page_size_combo.setEnabled(not running)
+        self._page_input.setEnabled(not running)
+        self._first_page_btn.setEnabled(not running and self._current_page > 1)
+        self._prev_page_btn.setEnabled(not running and self._current_page > 1)
+        self._next_page_btn.setEnabled(not running and self._current_page < self._get_max_page())
+        self._last_page_btn.setEnabled(not running and self._current_page < self._get_max_page())
+
+    def _get_max_page(self) -> int:
+        """Get maximum page number.
+
+        Returns:
+            int: Maximum page number
+        """
+        return max(1, (self._total_count + self._page_size - 1) // self._page_size)
 
     @Slot()
     def _on_query_started(self) -> None:
-        """
-        Handle query started event on the main thread.
-        Create and show the progress dialog.
-        """
-        # Create progress dialog on the main thread
-        self._progress_dialog = QProgressDialog('Executing query...', 'Cancel', 0, 0, self)
+        """Handle query start event."""
+        self._progress_dialog = QProgressDialog('Executing query...', 'Cancel', 0, 100, self)
         self._progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self._progress_dialog.setAutoClose(True)
         self._progress_dialog.setMinimumDuration(500)
-        self._progress_dialog.setCancelButton(None)  # No cancel button to simplify
-        self._progress_dialog.setRange(0, 0)  # Indeterminate progress
+        self._progress_dialog.canceled.connect(self._cancel_query)
+        self._progress_dialog.setValue(0)
         self._progress_dialog.show()
+
+        self.queryStarted.emit()
 
     @Slot(object)
     def _on_query_completed(self, data: Dict[str, Any]) -> None:
-        """
-        Handle query completed event on the main thread.
-        Update the UI with the results.
+        """Handle query completion event.
 
         Args:
-            data: Dictionary with query results
+            data: Query result data
         """
-        # Update the model with results
         results = data.get('results', [])
         total_count = data.get('total_count', 0)
 
-        # Update the model on the main thread
         self._model.set_data(results, total_count)
-
-        # Reset the table view
         self._table_view.reset()
-
-        # Store the total count
         self._total_count = total_count
-
-        # Update pagination UI
         self._update_pagination_ui()
 
-        # Close the progress dialog if it exists
         if self._progress_dialog:
             self._progress_dialog.close()
             self._progress_dialog = None
 
-        # Reset query running state
         self._query_running = False
+        self._set_ui_state_for_query(False)
 
-        # Log completion
-        self._logger.debug(f"Query completed: {len(results)} results of {total_count} total")
+        self._logger.debug(f'Query completed: {len(results)} results of {total_count} total')
+
+        self.queryFinished.emit()
 
     @Slot(str)
     def _on_query_failed(self, error_message: str) -> None:
-        """
-        Handle query failed event on the main thread.
-        Show error message to user.
+        """Handle query failure event.
 
         Args:
-            error_message: The error message to display
+            error_message: Error message
         """
-        # Close the progress dialog if it exists
         if self._progress_dialog:
             self._progress_dialog.close()
             self._progress_dialog = None
 
-        # Reset query running state
         self._query_running = False
+        self._set_ui_state_for_query(False)
 
-        # Show error message
         QMessageBox.critical(self, 'Query Error', f'Error executing query: {error_message}')
+        self._logger.error(f'Query failed: {error_message}')
 
-        # Log the error
-        self._logger.error(f"Query failed: {error_message}")
+        self.queryFinished.emit()
+
+    @Slot()
+    def _on_query_cancelled(self) -> None:
+        """Handle query cancellation event."""
+        if self._progress_dialog:
+            self._progress_dialog.close()
+            self._progress_dialog = None
+
+        self._query_running = False
+        self._set_ui_state_for_query(False)
+
+        self._logger.debug('Query cancelled')
+
+        self.queryFinished.emit()
 
     @Slot(int, int)
     def _on_query_progress(self, current: int, total: int) -> None:
-        """
-        Handle query progress event on the main thread.
-        Update the progress dialog.
+        """Handle query progress event.
 
         Args:
             current: Current progress value
-            total: Total expected progress
+            total: Total progress value
         """
-        # Update progress dialog if it exists
         if self._progress_dialog:
-            if self._progress_dialog.maximum() == 0 and total > 0:
-                self._progress_dialog.setRange(0, total)
-            self._progress_dialog.setValue(current)
+            if total > 0:
+                self._progress_dialog.setMaximum(total)
+                self._progress_dialog.setValue(current)
+            else:
+                # Indeterminate progress
+                self._progress_dialog.setMaximum(0)
 
+    @Slot()
     def _run_query(self) -> None:
         """Run the current query."""
         if not self._query_running:
@@ -984,12 +974,18 @@ class DataTableWidget(QWidget):
         else:
             self._logger.warning('Query already running')
 
-    @Slot(Any)
-    def _on_query_results(self, event: Any) -> None:
+    @Slot()
+    def _cancel_query(self) -> None:
+        """Cancel the current query."""
+        if self._query_running:
+            self._logger.debug('Cancelling query')
+            asyncio.create_task(self._database_handler.cancel_query(self._callback_id))
+
+    async def _on_query_results(self, event: Any) -> None:
         """Handle query results event.
 
         Args:
-            event: Query results event
+            event: Event containing query results
         """
         payload = event.payload
         callback_id = payload.get('callback_id')
@@ -1002,23 +998,19 @@ class DataTableWidget(QWidget):
         results = payload.get('results', [])
         total_count = payload.get('total_count', 0)
         error = payload.get('error')
+        cancelled = payload.get('cancelled', False)
 
-        if error:
+        if cancelled:
+            self._signals.cancelled.emit()
+        elif error:
             self._logger.error(f'Query error: {error}')
-            QMessageBox.critical(self, 'Query Error', f'Error executing query: {error}')
+            self._signals.failed.emit(error)
         else:
             self._logger.debug(f'Query results received: {len(results)} rows of {total_count} total')
-            self._model.set_data(results, total_count)
-            self._table_view.reset()
-            self._table_view.repaint()
-            self._total_count = total_count
-            self._update_pagination_ui()
-
-        self._query_running = False
-        self.queryFinished.emit()
+            self._signals.completed.emit({'results': results, 'total_count': total_count})
 
     def _show_column_selection(self) -> None:
-        """Show dialog to select and order columns."""
+        """Show column selection dialog."""
         dialog = ColumnSelectionDialog(self._available_columns, self._selected_columns, self)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -1033,12 +1025,11 @@ class DataTableWidget(QWidget):
                     self._run_query()
 
     def _export_data(self, export_type: str) -> None:
-        """Export data to file.
+        """Export data to a file.
 
         Args:
-            export_type: Export format ("csv" or "excel")
+            export_type: Export format type
         """
-        # Show file dialog
         file_dialog = QFileDialog(self)
         file_dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
 
@@ -1054,9 +1045,9 @@ class DataTableWidget(QWidget):
 
         file_path = file_dialog.selectedFiles()[0]
 
-        # Show export options dialog
         current_count = self._model.rowCount()
         total_count = self._model.get_total_count()
+
         options_dialog = ExportOptionsDialog(export_type, current_count, total_count, self)
 
         if not options_dialog.exec():
@@ -1065,7 +1056,6 @@ class DataTableWidget(QWidget):
         export_all = options_dialog.export_all() and total_count > current_count
 
         try:
-            # Export current page only
             if not export_all:
                 data = self._model.get_all_data()
 
@@ -1089,9 +1079,8 @@ class DataTableWidget(QWidget):
                     'Export Complete',
                     f'Successfully exported {len(data)} rows to {export_type.upper()} file.'
                 )
-            # Export all matching results
             else:
-                progress = QProgressDialog("Exporting data...", "Cancel", 0, total_count, self)
+                progress = QProgressDialog('Exporting data...', 'Cancel', 0, total_count, self)
                 progress.setWindowModality(Qt.WindowModality.WindowModal)
                 progress.setMinimumDuration(0)
                 progress.setValue(0)
@@ -1099,12 +1088,10 @@ class DataTableWidget(QWidget):
                 progress.setAutoReset(True)
                 progress.show()
 
-                # Define progress callback
                 def update_progress(current: int, total: int) -> None:
                     progress.setValue(current)
                     QApplication.processEvents()
 
-                # Run export operation
                 rows_exported = self._exporter.export_all_data(
                     database_callback=lambda filter_panels, columns, page, page_size, sort_by, sort_desc, table_filters:
                     self._database_handler.execute_query(
@@ -1137,6 +1124,7 @@ class DataTableWidget(QWidget):
                 progress.close()
 
             self._logger.info(f'Data exported to {file_path}')
+
         except Exception as e:
             self._logger.error(f'Error exporting data: {str(e)}')
             QMessageBox.critical(self, 'Export Error', f'Error exporting data: {str(e)}')
@@ -1145,6 +1133,7 @@ class DataTableWidget(QWidget):
     def _on_page_size_changed(self) -> None:
         """Handle page size change."""
         new_size = self._page_size_combo.currentData()
+
         if new_size != self._page_size:
             self._page_size = new_size
             self._current_page = 1
@@ -1183,7 +1172,8 @@ class DataTableWidget(QWidget):
     @Slot()
     def _goto_next_page(self) -> None:
         """Go to the next page."""
-        max_page = max(1, (self._total_count + self._page_size - 1) // self._page_size)
+        max_page = self._get_max_page()
+
         if self._current_page < max_page:
             self._current_page += 1
             self._refresh_current_page()
@@ -1191,14 +1181,15 @@ class DataTableWidget(QWidget):
     @Slot()
     def _goto_last_page(self) -> None:
         """Go to the last page."""
-        max_page = max(1, (self._total_count + self._page_size - 1) // self._page_size)
+        max_page = self._get_max_page()
+
         if self._current_page < max_page:
             self._current_page = max_page
             self._refresh_current_page()
 
     def _update_pagination_ui(self) -> None:
-        """Update pagination UI controls."""
-        max_page = max(1, (self._total_count + self._page_size - 1) // self._page_size)
+        """Update the pagination UI."""
+        max_page = self._get_max_page()
 
         self._page_input.blockSignals(True)
         self._page_input.setRange(1, max_page)
@@ -1207,10 +1198,10 @@ class DataTableWidget(QWidget):
 
         self._page_label.setText(f'of {max_page}')
 
-        self._first_page_btn.setEnabled(self._current_page > 1)
-        self._prev_page_btn.setEnabled(self._current_page > 1)
-        self._next_page_btn.setEnabled(self._current_page < max_page)
-        self._last_page_btn.setEnabled(self._current_page < max_page)
+        self._first_page_btn.setEnabled(not self._query_running and self._current_page > 1)
+        self._prev_page_btn.setEnabled(not self._query_running and self._current_page > 1)
+        self._next_page_btn.setEnabled(not self._query_running and self._current_page < max_page)
+        self._last_page_btn.setEnabled(not self._query_running and self._current_page < max_page)
 
         if self._total_count == 0:
             self._count_label.setText('No results')
@@ -1248,38 +1239,33 @@ class DataTableWidget(QWidget):
         """Handle filter group toggle.
 
         Args:
-            checked: Whether the group is checked
+            checked: True if checked
         """
-        if checked and (not self._table_filters):
+        if checked and not self._table_filters:
             self._filter_widget._add_year_range_filter()
 
     @Slot(QPoint)
-    def _show_context_menu(self, pos: 'QPoint') -> None:
-        """Show context menu for table.
+    def _show_context_menu(self, pos: QPoint) -> None:
+        """Show context menu.
 
         Args:
-            pos: Position for the menu
+            pos: Position to show menu at
         """
-        # Get selected rows
         selected_indexes = self._table_view.selectionModel().selectedRows()
         has_selection = len(selected_indexes) > 0
 
-        # Create context menu
         context_menu = QMenu(self)
 
-        # Copy selected rows action
         copy_selected_action = QAction('Copy Selected Row(s)', self)
         copy_selected_action.triggered.connect(self._copy_selected_rows)
         copy_selected_action.setEnabled(has_selection)
         context_menu.addAction(copy_selected_action)
 
-        # Copy all visible rows action
         copy_all_action = QAction('Copy All Visible Rows', self)
         copy_all_action.triggered.connect(self._copy_all_rows)
         copy_all_action.setEnabled(self._model.rowCount() > 0)
         context_menu.addAction(copy_all_action)
 
-        # Export actions
         context_menu.addSeparator()
 
         export_csv_action = QAction('Export to CSV...', self)
@@ -1291,72 +1277,66 @@ class DataTableWidget(QWidget):
             export_excel_action.triggered.connect(lambda: self._export_data('excel'))
             context_menu.addAction(export_excel_action)
 
-        # Show the menu
         context_menu.popup(self._table_view.viewport().mapToGlobal(pos))
 
     def _copy_selected_rows(self) -> None:
-        """Copy selected rows to clipboard as tab-separated text."""
+        """Copy selected rows to clipboard."""
         selected_indexes = self._table_view.selectionModel().selectedRows()
 
         if not selected_indexes:
             return
 
-        # Sort by row index to preserve order
         selected_indexes.sort(key=lambda idx: idx.row())
 
         rows_data = []
-
-        # Add header row
         header_row = []
+
         for col_idx, col_id in enumerate(self._selected_columns):
             header_row.append(self._column_map.get(col_id, col_id))
+
         rows_data.append('\t'.join(header_row))
 
-        # Add data rows
         for idx in selected_indexes:
             row_idx = idx.row()
             row_data = []
+
             for col_idx, col_id in enumerate(self._selected_columns):
-                cell_value = str(self._model.data(
-                    self._model.index(row_idx, col_idx),
-                    Qt.ItemDataRole.DisplayRole
-                ) or '')
+                cell_value = str(
+                    self._model.data(self._model.index(row_idx, col_idx), Qt.ItemDataRole.DisplayRole) or '')
                 row_data.append(cell_value)
+
             rows_data.append('\t'.join(row_data))
 
-        # Copy to clipboard
         clipboard = QApplication.clipboard()
         clipboard.setText('\n'.join(rows_data))
 
         self._logger.debug(f'Copied {len(selected_indexes)} rows to clipboard')
 
     def _copy_all_rows(self) -> None:
-        """Copy all visible rows to clipboard as tab-separated text."""
+        """Copy all visible rows to clipboard."""
         row_count = self._model.rowCount()
 
         if row_count == 0:
             return
 
         rows_data = []
-
-        # Add header row
         header_row = []
+
         for col_idx, col_id in enumerate(self._selected_columns):
             header_row.append(self._column_map.get(col_id, col_id))
+
         rows_data.append('\t'.join(header_row))
 
-        # Add data rows
         for row_idx in range(row_count):
             row_data = []
+
             for col_idx, col_id in enumerate(self._selected_columns):
-                cell_value = str(self._model.data(
-                    self._model.index(row_idx, col_idx),
-                    Qt.ItemDataRole.DisplayRole
-                ) or '')
+                cell_value = str(
+                    self._model.data(self._model.index(row_idx, col_idx), Qt.ItemDataRole.DisplayRole) or '')
                 row_data.append(cell_value)
+
             rows_data.append('\t'.join(row_data))
 
-        # Copy to clipboard
         clipboard = QApplication.clipboard()
         clipboard.setText('\n'.join(rows_data))
 

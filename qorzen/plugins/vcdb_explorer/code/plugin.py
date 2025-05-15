@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QAction, QIcon
 
-# Fix the import structure to match the application
 from qorzen.core.remote_manager import RemoteServicesManager
 from qorzen.core.security_manager import SecurityManager
 from qorzen.core.api_manager import APIManager
@@ -24,17 +23,18 @@ from qorzen.core.event_bus_manager import EventBusManager
 from qorzen.core.file_manager import FileManager
 from qorzen.core.concurrency_manager import ConcurrencyManager
 from qorzen.core.task_manager import TaskManager, TaskCategory, TaskPriority
-
 from qorzen.plugin_system.interface import BasePlugin
 from qorzen.ui.ui_integration import UIIntegration
 from qorzen.plugin_system.lifecycle import (
-    get_plugin_state, set_plugin_state, PluginLifecycleState, signal_ui_ready
+    get_plugin_state, set_plugin_state,
+    PluginLifecycleState, signal_ui_ready
 )
 
 from .database_handler import DatabaseHandler
 from .data_table import DataTableWidget
 from .events import VCdbEventType
 from .export import DataExporter
+from .filter_panel import FilterPanelManager
 
 
 class VCdbExplorerWidget(QWidget):
@@ -54,40 +54,50 @@ class VCdbExplorerWidget(QWidget):
 
         Args:
             database_handler: Handler for database operations
-            event_bus_manager: Manager for event bus operations
-            concurrency_manager: Manager for concurrency operations
-            task_manager: Manager for task operations
-            logger: Logger for logging
-            export_settings: Settings for export operations
+            event_bus_manager: Manager for event publishing/subscribing
+            concurrency_manager: Manager for concurrency
+            task_manager: Manager for tasks
+            logger: Logger instance
+            export_settings: Export settings
             parent: Parent widget
         """
         super().__init__(parent)
+
         self._database_handler = database_handler
         self._event_bus_manager = event_bus_manager
         self._concurrency_manager = concurrency_manager
         self._task_manager = task_manager
         self._logger = logger
         self._export_settings = export_settings
+        self._query_running = False
 
+        # Set up UI
         self._layout = QVBoxLayout()
         self.setLayout(self._layout)
 
-        # Set up the widget title
         title = QLabel('VCdb Explorer')
         title.setStyleSheet('font-weight: bold; font-size: 18px;')
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._layout.addWidget(title)
 
-        # Create exporter instance
+        # Initialize components
         self._exporter = DataExporter(logger)
 
+        # Subscribe to events
         asyncio.create_task(self._subscribe_to_events())
 
         # Create UI components
         self._create_ui_components()
+
+        # Connect signals
         self._connect_signals()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: Any) -> None:
+        """Handle close event.
+
+        Args:
+            event: Close event
+        """
         self._event_bus_manager.unsubscribe(subscriber_id='vcdb_explorer_widget')
 
     async def _subscribe_to_events(self) -> None:
@@ -99,12 +109,11 @@ class VCdbExplorerWidget(QWidget):
         )
 
     def _create_ui_components(self) -> None:
-        """Create and arrange UI components."""
-        # Create main splitter for filter section and data table
+        """Create UI components."""
+        # Create main splitter
         self._main_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # Create filter panel section
-        from .filter_panel import FilterPanelManager
+        # Create filter panel manager
         self._filter_panel_manager = FilterPanelManager(
             self._database_handler,
             self._event_bus_manager,
@@ -112,12 +121,13 @@ class VCdbExplorerWidget(QWidget):
             max_panels=self._export_settings.get('max_filter_panels', 5)
         )
 
+        # Create filter section
         filter_section = QWidget()
         filter_layout = QVBoxLayout()
         filter_layout.setContentsMargins(0, 0, 0, 0)
         filter_layout.addWidget(self._filter_panel_manager)
 
-        # Create query button
+        # Create query button layout
         query_button_layout = QHBoxLayout()
         query_button_layout.addStretch()
 
@@ -126,8 +136,15 @@ class VCdbExplorerWidget(QWidget):
         self._run_query_btn.clicked.connect(self._execute_query)
         query_button_layout.addWidget(self._run_query_btn)
 
+        self._cancel_query_btn = QPushButton('Cancel Query')
+        self._cancel_query_btn.setMinimumWidth(150)
+        self._cancel_query_btn.clicked.connect(self._cancel_query)
+        self._cancel_query_btn.setEnabled(False)
+        query_button_layout.addWidget(self._cancel_query_btn)
+
         query_button_layout.addStretch()
         filter_layout.addLayout(query_button_layout)
+
         filter_section.setLayout(filter_layout)
 
         # Create data table
@@ -143,23 +160,42 @@ class VCdbExplorerWidget(QWidget):
         self._main_splitter.addWidget(self._data_table)
         self._main_splitter.setSizes([400, 600])
 
-        # Add splitter to main layout
         self._layout.addWidget(self._main_splitter)
 
     def _connect_signals(self) -> None:
-        """Connect signals to slots."""
+        """Connect signals."""
         self._filter_panel_manager.filtersChanged.connect(self._on_filters_changed)
+        self._data_table.queryStarted.connect(self._on_query_started)
+        self._data_table.queryFinished.connect(self._on_query_finished)
 
     @Slot()
     def _on_filters_changed(self) -> None:
-        """Handle filter change events."""
+        """Handle filters changed event."""
         self._logger.debug('Filters changed in UI')
 
+    @Slot()
+    def _on_query_started(self) -> None:
+        """Handle query started event."""
+        self._query_running = True
+        self._update_ui_state()
+
+    @Slot()
+    def _on_query_finished(self) -> None:
+        """Handle query finished event."""
+        self._query_running = False
+        self._update_ui_state()
+
+    def _update_ui_state(self) -> None:
+        """Update UI state based on query status."""
+        self._run_query_btn.setEnabled(not self._query_running)
+        self._cancel_query_btn.setEnabled(self._query_running)
+        self._filter_panel_manager.setEnabled(not self._query_running)
+
     async def _on_filters_refreshed(self, event: Any) -> None:
-        """Handle filter refresh events.
+        """Handle filters refreshed event.
 
         Args:
-            event: Event containing filter refresh information
+            event: Event data
         """
         if not self._concurrency_manager.is_main_thread():
             await self._concurrency_manager.run_on_main_thread(
@@ -176,15 +212,18 @@ class VCdbExplorerWidget(QWidget):
 
     @Slot()
     def _execute_query(self) -> None:
-        """Execute query with current filter settings."""
-        self._run_query_btn.setEnabled(False)
+        """Execute a query with the current filters."""
+        if self._query_running:
+            self._logger.warning('Query already running, ignoring request')
+            return
 
-        # Get filter panels
+        self._run_query_btn.setEnabled(False)
+        self._cancel_query_btn.setEnabled(True)
+
         filter_panels = self._filter_panel_manager.get_all_filters()
         self._logger.debug(f'Collected filter panels: {filter_panels}')
 
-        # Confirm if no filters are set
-        if not any(panel for panel in filter_panels if panel):
+        if not any((panel for panel in filter_panels if panel)):
             if QMessageBox.question(
                     self,
                     'No Filters',
@@ -193,65 +232,68 @@ class VCdbExplorerWidget(QWidget):
                     QMessageBox.StandardButton.No
             ) != QMessageBox.StandardButton.Yes:
                 self._run_query_btn.setEnabled(True)
+                self._cancel_query_btn.setEnabled(False)
                 return
 
-        # Launch async query execution
         asyncio.create_task(self._execute_query_async(filter_panels))
 
+    @Slot()
+    def _cancel_query(self) -> None:
+        """Cancel the current query."""
+        if not self._query_running:
+            return
+
+        self._logger.debug('Cancelling query')
+        asyncio.create_task(self._database_handler.cancel_query(self._data_table.get_callback_id()))
+
     async def _execute_query_async(self, filter_panels: List[Dict[str, List[int]]]) -> None:
-        """Asynchronous implementation of query execution.
+        """Execute query asynchronously.
 
         Args:
-            filter_panels: List of filter panels with their selections
+            filter_panels: Filter panels
         """
         try:
             self._logger.debug('Execute async query triggered')
-
-            # Publish query execute event
-            await self._event_bus_manager.publish(
-                event_type=VCdbEventType.query_execute(),
-                source='vcdb_explorer',
-                payload={
-                    'filter_panels': filter_panels,
-                    'columns': self._data_table.get_selected_columns(),
-                    'page': 1,
-                    'page_size': self._data_table.get_page_size(),
-                    'sort_by': None,
-                    'sort_desc': False,
-                    'table_filters': {},
-                    'callback_id': self._data_table.get_callback_id()
-                }
-            )
+            self._data_table.execute_query(filter_panels)
         except Exception as e:
             self._logger.error(f'Query execution error: {str(e)}')
 
-            # Ensure we're on the main thread for UI operations
             if not self._concurrency_manager.is_main_thread():
                 await self._concurrency_manager.run_on_main_thread(
-                    lambda: QMessageBox.critical(self, 'Query Error', f'Error executing query: {str(e)}')
+                    lambda: QMessageBox.critical(
+                        self,
+                        'Query Error',
+                        f'Error executing query: {str(e)}'
+                    )
                 )
             else:
-                QMessageBox.critical(self, 'Query Error', f'Error executing query: {str(e)}')
-        finally:
-            # Enable the button on the main thread
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._run_query_btn.setEnabled(True)
+                QMessageBox.critical(
+                    self,
+                    'Query Error',
+                    f'Error executing query: {str(e)}'
                 )
-            else:
-                self._run_query_btn.setEnabled(True)
+
+            self._query_running = False
+            self._update_ui_state()
 
     @Slot()
     def refresh_filters(self) -> None:
-        """Refresh all filter panels."""
+        """Refresh all filters."""
         if hasattr(self, '_filter_panel_manager'):
             self._filter_panel_manager.refresh_all_panels()
-            QMessageBox.information(self, 'Filters Refreshed', 'All filters have been refreshed.')
+            QMessageBox.information(
+                self,
+                'Filters Refreshed',
+                'All filters have been refreshed.'
+            )
 
 
 class VCdbExplorerPlugin(BasePlugin):
-    """VCdb Explorer plugin main class."""
+    """VCdb Explorer plugin.
 
+    This plugin provides a user interface for exploring the Vehicle
+    Component Database (VCdb).
+    """
     name = 'vcdb_explorer'
     version = '1.0.0'
     description = 'Advanced query tool for exploring Vehicle Component Database'
@@ -262,24 +304,25 @@ class VCdbExplorerPlugin(BasePlugin):
     def __init__(self) -> None:
         """Initialize the plugin."""
         super().__init__()
+
         self._main_widget: Optional[VCdbExplorerWidget] = None
         self._database_handler: Optional[DatabaseHandler] = None
         self._logger: Optional[logging.Logger] = None
         self._event_bus_manager: Optional[EventBusManager] = None
         self._concurrency_manager: Optional[ConcurrencyManager] = None
         self._task_manager: Optional[TaskManager] = None
-
         self._db_config: Dict[str, Any] = {}
         self._ui_config: Dict[str, Any] = {}
         self._export_config: Dict[str, Any] = {}
         self._connection_registered = False
         self._icon_path: Optional[str] = None
+        self._ui_components_created = False
 
     async def initialize(self, application_core: Any, **kwargs: Any) -> None:
         """Initialize the plugin.
 
         Args:
-            application_core: Core application instance
+            application_core: Core application
             **kwargs: Additional arguments
         """
         await super().initialize(application_core, **kwargs)
@@ -287,7 +330,7 @@ class VCdbExplorerPlugin(BasePlugin):
         self._logger = self._logger or logging.getLogger(self.name)
         self._logger.info(f'Initializing {self.name} plugin')
 
-        # Store required managers
+        # Get managers
         self._concurrency_manager = self._concurrency_manager or application_core.get_manager('concurrency_manager')
         self._event_bus_manager = self._event_bus_manager or application_core.get_manager('event_bus_manager')
         self._task_manager = self._task_manager or application_core.get_manager('task_manager')
@@ -311,7 +354,6 @@ class VCdbExplorerPlugin(BasePlugin):
             self._connection_registered = False
         else:
             try:
-                # Create database handler
                 self._database_handler = DatabaseHandler(
                     database_manager,
                     self._event_bus_manager,
@@ -320,10 +362,8 @@ class VCdbExplorerPlugin(BasePlugin):
                     self._logger
                 )
 
-                # Initialize the database handler
                 await self._database_handler.initialize()
 
-                # Configure the database connection
                 await self._database_handler.configure(
                     self._db_config.get('host', 'localhost'),
                     self._db_config.get('port', 5432),
@@ -334,19 +374,20 @@ class VCdbExplorerPlugin(BasePlugin):
 
                 self._connection_registered = True
                 self._logger.info('Database handler initialized and configured successfully')
+
             except Exception as e:
                 self._logger.error(f'Failed to initialize database connection: {str(e)}')
                 self._database_handler = None
                 self._connection_registered = False
 
-        # Subscribe to log messages
+        # Subscribe to events
         await self._event_bus_manager.subscribe(
             event_type='vcdb_explorer:log_message',
             callback=self._on_log_message,
             subscriber_id='vcdb_explorer_plugin'
         )
 
-        # Update plugin state
+        # Set plugin state
         await set_plugin_state(self.name, PluginLifecycleState.INITIALIZED)
         self._logger.info(f'{self.name} plugin initialized successfully')
 
@@ -354,15 +395,17 @@ class VCdbExplorerPlugin(BasePlugin):
         """Find the plugin directory.
 
         Returns:
-            Path to the plugin directory or None if not found
+            Optional[str]: Plugin directory path
         """
         import inspect
+
         try:
             module_path = inspect.getmodule(self).__file__
             if module_path:
                 return os.path.dirname(os.path.abspath(module_path))
         except (AttributeError, TypeError):
             pass
+
         return None
 
     async def _load_config(self) -> None:
@@ -394,21 +437,20 @@ class VCdbExplorerPlugin(BasePlugin):
             self._logger.debug('Configuration loaded')
 
     async def on_ui_ready(self, ui_integration: UIIntegration) -> None:
-        """Set up UI components when UI is ready.
+        """Handle UI ready event.
 
         Args:
-            ui_integration: UI integration instance
+            ui_integration: UI integration
         """
         if self._logger:
             self._logger.info('Setting up UI components')
 
-        # Check if already in progress
         current_state = await get_plugin_state(self.name)
+
         if current_state == PluginLifecycleState.UI_READY:
             self._logger.debug('UI setup already in progress, avoiding recursive call')
             return
 
-        # Ensure we're on the main thread
         if self._concurrency_manager and (not self._concurrency_manager.is_main_thread()):
             self._logger.debug('on_ui_ready called from non-main thread, delegating to main thread')
             await set_plugin_state(self.name, PluginLifecycleState.UI_READY)
@@ -417,7 +459,6 @@ class VCdbExplorerPlugin(BasePlugin):
             )
             return
 
-        # Avoid duplicate UI creation
         if hasattr(self, '_ui_components_created') and self._ui_components_created:
             self._logger.debug('UI components already created, skipping duplicate creation')
             await signal_ui_ready(self.name)
@@ -426,7 +467,7 @@ class VCdbExplorerPlugin(BasePlugin):
         try:
             await set_plugin_state(self.name, PluginLifecycleState.UI_READY)
 
-            # Add menu actions
+            # Add menu items
             await ui_integration.add_menu_item(
                 plugin_id=self.plugin_id,
                 parent_menu='VCdb',
@@ -472,23 +513,25 @@ class VCdbExplorerPlugin(BasePlugin):
                             None
                         )
 
-                    # Add plugin page
-                    # icon = QIcon(self._icon_path) if self._icon_path else QIcon()
+                    # Add page
                     await ui_integration.add_page(
                         plugin_id=self.plugin_id,
                         page_component=self._main_widget,
                         icon=self._icon_path,
-                        title=self.display_name or self.name,
+                        title=self.display_name or self.name
                     )
 
                     if self._logger:
                         self._logger.info('UI components set up successfully')
+
                 except Exception as e:
                     if self._logger:
                         self._logger.error(f'Failed to set up UI components: {str(e)}')
+
                     self._main_widget = await self._create_error_widget(str(e))
 
             self._ui_components_created = True
+
             await set_plugin_state(self.name, PluginLifecycleState.ACTIVE)
             await signal_ui_ready(self.name)
 
@@ -497,10 +540,10 @@ class VCdbExplorerPlugin(BasePlugin):
             await set_plugin_state(self.name, PluginLifecycleState.FAILED)
 
     async def setup_ui(self, ui_integration: Any) -> None:
-        """Set up the UI components.
+        """Set up UI components (alias for on_ui_ready).
 
         Args:
-            ui_integration: The UI integration instance
+            ui_integration: UI integration
         """
         if self._logger:
             self._logger.info('setup_ui method called')
@@ -508,13 +551,13 @@ class VCdbExplorerPlugin(BasePlugin):
         await self.on_ui_ready(ui_integration)
 
     async def _create_error_widget(self, error_message: Optional[str] = None) -> QWidget:
-        """Create an error widget when the database connection fails.
+        """Create a widget to display an error message.
 
         Args:
-            error_message: Optional error message to display
+            error_message: Error message
 
         Returns:
-            Error widget
+            QWidget: Error widget
         """
         error_widget = QWidget()
         error_layout = QVBoxLayout()
@@ -530,6 +573,7 @@ class VCdbExplorerPlugin(BasePlugin):
         error_layout.addWidget(message)
 
         button_layout = QHBoxLayout()
+
         config_btn = QPushButton('Open Configuration')
         config_btn.clicked.connect(lambda: asyncio.create_task(self._open_configuration()))
         button_layout.addWidget(config_btn)
@@ -540,10 +584,10 @@ class VCdbExplorerPlugin(BasePlugin):
         return error_widget
 
     async def _on_log_message(self, event: Any) -> None:
-        """Handle log message events.
+        """Handle log message event.
 
         Args:
-            event: Event containing log message
+            event: Event data
         """
         if not self._logger:
             return
@@ -564,7 +608,7 @@ class VCdbExplorerPlugin(BasePlugin):
             self._logger.info(f'[{level}] {message}')
 
     async def _refresh_filters(self) -> None:
-        """Refresh all filter panels."""
+        """Refresh filters."""
         if not self._concurrency_manager.is_main_thread():
             await self._concurrency_manager.run_on_main_thread(
                 lambda: asyncio.create_task(self._refresh_filters())
@@ -575,7 +619,7 @@ class VCdbExplorerPlugin(BasePlugin):
             self._main_widget.refresh_filters()
 
     async def _run_query(self) -> None:
-        """Execute query with current filter settings."""
+        """Run query."""
         if not self._concurrency_manager.is_main_thread():
             await self._concurrency_manager.run_on_main_thread(
                 lambda: asyncio.create_task(self._run_query())
@@ -586,7 +630,7 @@ class VCdbExplorerPlugin(BasePlugin):
             self._main_widget._execute_query()
 
     async def _open_documentation(self) -> None:
-        """Open plugin documentation."""
+        """Open documentation."""
         if not self._concurrency_manager.is_main_thread():
             await self._concurrency_manager.run_on_main_thread(
                 lambda: asyncio.create_task(self._open_documentation())
@@ -599,12 +643,11 @@ class VCdbExplorerPlugin(BasePlugin):
         QMessageBox.information(
             None,
             'Documentation',
-            'The VCdb Explorer plugin provides an interface to query and explore the Vehicle Component Database.\n\n'
-            'For more information, please refer to the online documentation.'
+            'The VCdb Explorer plugin provides an interface to query and explore the Vehicle Component Database.\n\nFor more information, please refer to the online documentation.'
         )
 
     async def _open_configuration(self) -> None:
-        """Open plugin configuration."""
+        """Open configuration."""
         if not self._concurrency_manager.is_main_thread():
             await self._concurrency_manager.run_on_main_thread(
                 lambda: asyncio.create_task(self._open_configuration())
@@ -618,34 +661,31 @@ class VCdbExplorerPlugin(BasePlugin):
         )
 
     def get_main_widget(self) -> Optional[QWidget]:
-        """Get the main plugin widget.
+        """Get the main widget.
 
         Returns:
-            Main plugin widget or None if not created
+            Optional[QWidget]: Main widget
         """
         return self._main_widget
 
     def get_icon(self) -> Optional[str]:
-        """Get the plugin icon path.
+        """Get the icon path.
 
         Returns:
-            Path to the plugin icon or None if not found
+            Optional[str]: Icon path
         """
         return self._icon_path
 
     async def shutdown(self) -> None:
-        """Shut down the plugin and clean up resources."""
+        """Shut down the plugin."""
         if self._logger:
             self._logger.info(f'Shutting down {self.name} plugin')
 
-        # Update plugin state
         await set_plugin_state(self.name, PluginLifecycleState.DISABLING)
 
-        # Unsubscribe from events
         if self._event_bus_manager:
             await self._event_bus_manager.unsubscribe(subscriber_id='vcdb_explorer_plugin')
 
-        # Shut down database handler
         if self._database_handler and self._connection_registered:
             try:
                 await self._database_handler.shutdown()
@@ -654,13 +694,10 @@ class VCdbExplorerPlugin(BasePlugin):
                 if self._logger:
                     self._logger.error(f'Error shutting down database handler: {str(e)}')
 
-        # Clean up UI
         self._main_widget = None
 
-        # Call super shutdown
         await super().shutdown()
 
-        # Update plugin state
         await set_plugin_state(self.name, PluginLifecycleState.INACTIVE)
 
         if self._logger:
