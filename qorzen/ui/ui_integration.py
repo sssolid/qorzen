@@ -177,7 +177,7 @@ class UIIntegration:
             plugin_id: str,
             title: str,
             callback: Callable[[], Any],
-            parent_menu: str = 'plugins',
+            parent_menu: str = 'Plugins',
             icon: Optional[str] = None,
             position: Optional[int] = None,
             tooltip: Optional[str] = None,

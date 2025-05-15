@@ -4,6 +4,7 @@ import asyncio
 import logging
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Set, cast
+from qasync import asyncSlot
 
 from PySide6.QtCore import Qt, Signal, Slot, QSize
 from PySide6.QtGui import QAction
@@ -375,24 +376,22 @@ class FilterPanel(QGroupBox):
         line.setFrameShadow(QFrame.Shadow.Sunken)
         self._layout.addWidget(line)
 
+        asyncio.create_task(self.initialize())
+
+    def closeEvent(self, event):
+        self._event_bus_manager.unsubscribe(subscriber_id=f'filter_panel_{self._panel_id}', )
+
+    async def initialize(self) -> None:
         # Add mandatory filters
         for filter_def in self._available_filters:
             if filter_def.get('mandatory', False):
-                self._add_filter(filter_def['id'], filter_def['name'])
+                await self._add_filter(filter_def['id'], filter_def['name'])
 
-        # Subscribe to filter refresh events
-        self._event_bus_manager.subscribe(
+        await self._event_bus_manager.subscribe(
             event_type=VCdbEventType.filters_refreshed(),
-            callback=self._on_filters_refreshed,
-            subscriber_id=f'filter_panel_{panel_id}'
+            subscriber_id=f'filter_panel_{self._panel_id}',
+            callback=self._on_filters_refreshed
         )
-
-    def __del__(self) -> None:
-        """Clean up resources when panel is destroyed."""
-        try:
-            self._event_bus_manager.unsubscribe(subscriber_id=f'filter_panel_{self._panel_id}')
-        except Exception:
-            pass
 
     def get_panel_id(self) -> str:
         """Get panel identifier.
@@ -410,7 +409,7 @@ class FilterPanel(QGroupBox):
         """
         return self._current_values.copy()
 
-    def set_filter_values(self, filter_type: str, values: List[Dict[str, Any]]) -> None:
+    async def set_filter_values(self, filter_type: str, values: List[Dict[str, Any]]) -> None:
         """Set available values for a filter.
 
         Args:
@@ -423,7 +422,7 @@ class FilterPanel(QGroupBox):
         self._logger.debug(f'Setting filter values for {filter_type}: {len(values)} values')
         self._filters[filter_type].set_available_values(values)
 
-    def _add_filter(self, filter_type: str, filter_name: str) -> None:
+    async def _add_filter(self, filter_type: str, filter_name: str) -> None:
         """Add a filter widget to the panel.
 
         Args:
@@ -443,9 +442,9 @@ class FilterPanel(QGroupBox):
         self._filters[filter_type] = filter_widget
 
         # Refresh filter values
-        self._refresh_filter_values(filter_type)
+        await self._refresh_filter_values(filter_type)
 
-    def _refresh_filter_values(self, filter_type: str) -> None:
+    async def _refresh_filter_values(self, filter_type: str) -> None:
         """Refresh values for a specific filter.
 
         Args:
@@ -464,7 +463,7 @@ class FilterPanel(QGroupBox):
             self._logger.debug(f'Refreshing filter values for {filter_type}')
 
             # Use the database handler to get filter values
-            values = self._database_handler.get_filter_values(
+            values = await self._database_handler.get_filter_values(
                 filter_type if filter_type != 'year_range' else 'year',
                 self._current_values,
                 exclude_filters
@@ -492,8 +491,9 @@ class FilterPanel(QGroupBox):
 
         if panel_id == self._panel_id:
             self._logger.debug(f'Received filter refresh for panel {panel_id}')
-            self.update_filter_values(filter_values)
+            await self.update_filter_values(filter_values)
 
+    @Slot(str, list)
     def _on_filter_value_changed(self, filter_type: str, values: List[int]) -> None:
         """Handle filter value changes.
 
@@ -517,20 +517,22 @@ class FilterPanel(QGroupBox):
 
         # Publish event
         self._logger.debug(f'Publishing filter changed event: auto_populate={self._auto_populate_filters}')
-        self._event_bus_manager.publish(
-            event_type=VCdbEventType.filter_changed(),
-            source='vcdb_explorer_filter_panel',
-            payload={
-                'panel_id': self._panel_id,
-                'filter_type': filter_type,
-                'values': values,
-                'current_filters': self._current_values.copy(),
-                'auto_populate': self._auto_populate_filters
-            }
+        asyncio.create_task(
+            self._event_bus_manager.publish(
+                event_type=VCdbEventType.filter_changed(),
+                source='vcdb_explorer_filter_panel',
+                payload={
+                    'panel_id': self._panel_id,
+                    'filter_type': filter_type,
+                    'values': values,
+                    'current_filters': self._current_values.copy(),
+                    'auto_populate': self._auto_populate_filters
+                }
+            )
         )
 
-    @Slot(int)
-    def _on_auto_populate_changed(self, state: int) -> None:
+    @asyncSlot(int)
+    async def _on_auto_populate_changed(self, state: int) -> None:
         """Handle auto-populate checkbox state change.
 
         Args:
@@ -549,7 +551,7 @@ class FilterPanel(QGroupBox):
                 if self._current_values:
                     for filter_type, values in self._current_values.items():
                         self._logger.debug(f'Publishing filter changed event for {filter_type}: {values}')
-                        self._event_bus_manager.publish(
+                        await self._event_bus_manager.publish(
                             event_type=VCdbEventType.filter_changed(),
                             source='vcdb_explorer_filter_panel',
                             payload={
@@ -562,7 +564,7 @@ class FilterPanel(QGroupBox):
                         )
                 else:
                     self._logger.debug('No current filter values, sending empty refresh')
-                    self._event_bus_manager.publish(
+                    await self._event_bus_manager.publish(
                         event_type=VCdbEventType.filter_changed(),
                         source='vcdb_explorer_filter_panel',
                         payload={
@@ -604,7 +606,7 @@ class FilterPanel(QGroupBox):
         """Request removal of this panel."""
         self.removeRequested.emit(self._panel_id)
 
-    def update_filter_values(self, filter_values: Dict[str, List[Dict[str, Any]]]) -> None:
+    async def update_filter_values(self, filter_values: Dict[str, List[Dict[str, Any]]]) -> None:
         """Update filter values from filter refresh event.
 
         Args:
@@ -614,7 +616,7 @@ class FilterPanel(QGroupBox):
         try:
             for filter_type, values in filter_values.items():
                 if filter_type in self._filters:
-                    self.set_filter_values(filter_type, values)
+                    await self.set_filter_values(filter_type, values)
         finally:
             self._is_refreshing = False
 
@@ -677,22 +679,21 @@ class FilterPanelManager(QWidget):
         self._tab_widget.tabCloseRequested.connect(self._on_tab_close_requested)
         self._layout.addWidget(self._tab_widget)
 
-        # Subscribe to filter refresh events
-        self._event_bus_manager.subscribe(
-            event_type=VCdbEventType.filters_refreshed(),
-            callback=self._on_filters_refreshed,
-            subscriber_id='filter_panel_manager'
-        )
+        asyncio.create_task(self._subscribe_to_events())
 
         # Create initial panel
         self._add_panel()
 
-    def __del__(self) -> None:
-        """Clean up resources when manager is destroyed."""
-        try:
-            self._event_bus_manager.unsubscribe(subscriber_id='filter_panel_manager')
-        except Exception:
-            pass
+    def closeEvent(self, event):
+        self._event_bus_manager.unsubscribe(subscriber_id='filter_panel_manager')
+
+    async def _subscribe_to_events(self) -> None:
+        """Subscribe to events."""
+        await self._event_bus_manager.subscribe(
+            event_type=VCdbEventType.filters_refreshed(),
+            subscriber_id='filter_panel_manager',
+            callback=self._on_filters_refreshed
+        )
 
     def _add_panel(self) -> None:
         """Add a new filter panel."""
@@ -782,7 +783,7 @@ class FilterPanelManager(QWidget):
 
         if panel_id in self._panels:
             self._logger.debug(f'Updating filter values for panel {panel_id}')
-            self._panels[panel_id].update_filter_values(filter_values)
+            await self._panels[panel_id].update_filter_values(filter_values)
 
     def get_all_filters(self) -> List[Dict[str, List[int]]]:
         """Get all filter values from all panels.
@@ -800,7 +801,7 @@ class FilterPanelManager(QWidget):
         for panel in self._panels.values():
             panel.refresh_all_filters()
 
-    def update_filter_values(self, panel_id: str, filter_values: Dict[str, List[Dict[str, Any]]]) -> None:
+    async def update_filter_values(self, panel_id: str, filter_values: Dict[str, List[Dict[str, Any]]]) -> None:
         """Update filter values for a specific panel.
 
         Args:
@@ -808,4 +809,4 @@ class FilterPanelManager(QWidget):
             filter_values: Dictionary of filter values
         """
         if panel_id in self._panels:
-            self._panels[panel_id].update_filter_values(filter_values)
+            await self._panels[panel_id].update_filter_values(filter_values)

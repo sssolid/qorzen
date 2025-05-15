@@ -465,7 +465,7 @@ class MainWindow(QMainWindow):
             element_id: str,
             title: str,
             callback: Callable[[], None],
-            parent_menu: str = "plugins",
+            parent_menu: str = "Plugins",
             icon: Optional[str] = None,
             position: Optional[int] = None,
             tooltip: Optional[str] = None,

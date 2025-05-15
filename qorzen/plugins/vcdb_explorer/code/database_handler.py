@@ -459,72 +459,76 @@ class DatabaseHandler:
         if not self._initialized:
             raise DatabaseHandlerError('DatabaseHandler not initialized')
 
+        # grab a synchronous session from the factory
+        conn = self._db_manager._connections[self.CONNECTION_NAME]
+        session: Session = conn.session_factory()
+
         try:
-            with self._db_manager.session(self.CONNECTION_NAME) as session:
-                self._logger.debug(
-                    f'Executing query: panels={len(filter_panels)}, columns={columns}, page={page}, page_size={page_size}')
+            self._logger.debug(
+                f'Executing query: panels={len(filter_panels)}, columns={columns}, page={page}, page_size={page_size}')
 
-                # Build base query
-                base_query = select(Vehicle.vehicle_id).select_from(Vehicle)
+            # Build base query
+            base_query = select(Vehicle.vehicle_id).select_from(Vehicle)
 
-                # Apply filter panels
-                if filter_panels:
-                    panel_conditions = []
-                    for panel in filter_panels:
-                        if not panel:
-                            continue
-                        panel_query = select(Vehicle.vehicle_id).select_from(Vehicle)
-                        panel_query = self._apply_filters(panel_query, panel, set(), session)
-                        panel_conditions.append(Vehicle.vehicle_id.in_(panel_query.scalar_subquery()))
+            # Apply filter panels
+            if filter_panels:
+                panel_conditions = []
+                for panel in filter_panels:
+                    if not panel:
+                        continue
+                    panel_query = select(Vehicle.vehicle_id).select_from(Vehicle)
+                    panel_query = self._apply_filters(panel_query, panel, set(), session)
+                    panel_conditions.append(Vehicle.vehicle_id.in_(panel_query.scalar_subquery()))
 
-                    if panel_conditions:
-                        base_query = base_query.filter(or_(*panel_conditions))
-                        self._logger.debug(f'Applied {len(panel_conditions)} panel conditions')
+                if panel_conditions:
+                    base_query = base_query.filter(or_(*panel_conditions))
+                    self._logger.debug(f'Applied {len(panel_conditions)} panel conditions')
 
-                # Get total count
-                count_query = select(func.count()).select_from(base_query.alias())
-                total_count = session.execute(count_query).scalar() or 0
-                self._logger.debug(f'Total count: {total_count}')
+            # Get total count
+            count_query = select(func.count()).select_from(base_query.alias())
+            total_count = session.execute(count_query).scalar() or 0
+            self._logger.debug(f'Total count: {total_count}')
 
-                # Build columns query
-                query = self._build_columns_query(base_query.scalar_subquery(), columns)
+            # Build columns query
+            query = self._build_columns_query(base_query.scalar_subquery(), columns)
 
-                # Apply table filters
-                if table_filters:
-                    query = self._apply_table_filters(query, table_filters)
-                    self._logger.debug(f'Applied table filters: {table_filters}')
+            # Apply table filters
+            if table_filters:
+                query = self._apply_table_filters(query, table_filters)
+                self._logger.debug(f'Applied table filters: {table_filters}')
 
-                # Apply sorting
-                if sort_by:
-                    query = self._apply_sorting(query, sort_by, sort_desc)
-                    self._logger.debug(f"Applied sorting: {sort_by} {('DESC' if sort_desc else 'ASC')}")
+            # Apply sorting
+            if sort_by:
+                query = self._apply_sorting(query, sort_by, sort_desc)
+                self._logger.debug(f"Applied sorting: {sort_by} {('DESC' if sort_desc else 'ASC')}")
 
-                # Apply pagination
-                if page > 0 and page_size > 0:
-                    query = query.offset((page - 1) * page_size).limit(page_size)
-                    self._logger.debug(f'Applied pagination: page={page}, page_size={page_size}')
+            # Apply pagination
+            if page > 0 and page_size > 0:
+                query = query.offset((page - 1) * page_size).limit(page_size)
+                self._logger.debug(f'Applied pagination: page={page}, page_size={page_size}')
 
-                self._logger.debug('Executing final query')
-                result_rows = session.execute(query).all()
+            self._logger.debug('Executing final query')
+            total_count = session.execute(query).scalar() or 0
+            rows = session.execute(query).all()
 
-                # Convert rows to dicts
-                results = []
-                for row in result_rows:
-                    result = {}
-                    for i, col in enumerate(query.columns):
-                        col_name = col.name
-                        value = row[i]
-                        result[col_name] = value
-                    results.append(result)
+            # Convert rows to dicts
+            results = []
+            for row in rows:
+                d: Dict[str, Any] = {}
+                for idx, col in enumerate(query.columns):
+                    d[col.name] = row[idx]
+                results.append(d)
 
-                self._logger.debug(f'Query returned {len(results)} rows')
-                return (results, total_count)
+            self._logger.debug(f'Query returned {len(results)} rows')
+            return results, total_count
         except SQLAlchemyError as e:
             self._logger.error(f'Database error executing query: {str(e)}')
             raise DatabaseHandlerError(f'Database error executing query: {str(e)}') from e
         except Exception as e:
             self._logger.error(f'Error executing query: {str(e)}')
             raise DatabaseHandlerError(f'Error executing query: {str(e)}') from e
+        finally:
+            session.close()
 
     async def get_filter_values(
             self,
@@ -551,186 +555,143 @@ class DatabaseHandler:
         if exclude_filters is None:
             exclude_filters = set()
 
-        # Run this in a thread since it uses synchronous SQLAlchemy operations
-        try:
-            return await self._concurrency_manager.run_in_thread(
-                self._get_filter_values_sync,
-                filter_type,
-                current_filters,
-                exclude_filters
-            )
-        except Exception as e:
-            self._logger.error(f'Error getting filter values for {filter_type}: {str(e)}')
-            raise DatabaseHandlerError(f'Error getting filter values for {filter_type}: {str(e)}') from e
+        if filter_type not in self._filter_map:
+            raise DatabaseHandlerError(f'Unknown filter type: {filter_type}')
 
-    def _get_filter_values_sync(
-            self,
-            filter_type: str,
-            current_filters: Dict[str, List[int]],
-            exclude_filters: Set[str]
-    ) -> List[Dict[str, Any]]:
-        """Synchronous version of get_filter_values to run in a thread.
+        model_class, attr_name = self._filter_map[filter_type]
 
-        Args:
-            filter_type: Type of filter to get values for
-            current_filters: Current filter selections
-            exclude_filters: Filters to exclude from consideration
+        async with self._db_manager.async_session(self.CONNECTION_NAME) as session:
+            if filter_type == 'year':
+                query = select(
+                    Year.year_id.label('id'),
+                    Year.year_id.label('name'),
+                    func.count(Year.year_id).label('count')
+                ).select_from(Vehicle).join(
+                    BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
+                ).join(
+                    Year, BaseVehicle.year_id == Year.year_id
+                ).group_by(Year.year_id).order_by(Year.year_id)
 
-        Returns:
-            List of filter values with id, name, and count
+            elif filter_type == 'make':
+                query = select(
+                    Make.make_id.label('id'),
+                    Make.make_name.label('name'),
+                    func.count(Make.make_id).label('count')
+                ).select_from(Vehicle).join(
+                    BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
+                ).join(
+                    Make, BaseVehicle.make_id == Make.make_id
+                ).group_by(Make.make_id, Make.make_name).order_by(Make.make_name)
 
-        Raises:
-            DatabaseHandlerError: If database error occurs
-        """
-        try:
-            if filter_type not in self._filter_map:
-                raise DatabaseHandlerError(f'Unknown filter type: {filter_type}')
+            elif filter_type == 'model':
+                query = select(
+                    Model.model_id.label('id'),
+                    Model.model_name.label('name'),
+                    func.count(Model.model_id).label('count')
+                ).select_from(Vehicle).join(
+                    BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
+                ).join(
+                    Model, BaseVehicle.model_id == Model.model_id
+                ).group_by(Model.model_id, Model.model_name).order_by(Model.model_name)
 
-            model_class, attr_name = self._filter_map[filter_type]
+            elif filter_type == 'submodel':
+                query = select(
+                    SubModel.sub_model_id.label('id'),
+                    SubModel.sub_model_name.label('name'),
+                    func.count(SubModel.sub_model_id).label('count')
+                ).select_from(Vehicle).join(
+                    SubModel, Vehicle.sub_model_id == SubModel.sub_model_id
+                ).group_by(SubModel.sub_model_id, SubModel.sub_model_name).order_by(SubModel.sub_model_name)
 
-            with self._db_manager.session(self.CONNECTION_NAME) as session:
-                # Build appropriate query based on filter type
-                if filter_type == 'year':
-                    query = select(
-                        Year.year_id.label('id'),
-                        Year.year_id.label('name'),
-                        func.count(Year.year_id).label('count')
-                    ).select_from(Vehicle).join(
-                        BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
-                    ).join(
-                        Year, BaseVehicle.year_id == Year.year_id
-                    ).group_by(Year.year_id).order_by(Year.year_id)
+            elif filter_type == 'region':
+                query = select(
+                    Region.region_id.label('id'),
+                    Region.region_name.label('name'),
+                    func.count(Region.region_id).label('count')
+                ).select_from(Vehicle).join(
+                    Region, Vehicle.region_id == Region.region_id
+                ).group_by(Region.region_id, Region.region_name).order_by(Region.region_name)
 
-                elif filter_type == 'make':
-                    query = select(
-                        Make.make_id.label('id'),
-                        Make.make_name.label('name'),
-                        func.count(Make.make_id).label('count')
-                    ).select_from(Vehicle).join(
-                        BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
-                    ).join(
-                        Make, BaseVehicle.make_id == Make.make_id
-                    ).group_by(Make.make_id, Make.make_name).order_by(Make.make_name)
+            elif filter_type == 'drivetype':
+                vtdt = aliased(VehicleToDriveType)
+                dt = aliased(DriveType)
+                query = select(
+                    dt.drive_type_id.label('id'),
+                    dt.drive_type_name.label('name'),
+                    func.count(dt.drive_type_id).label('count')
+                ).select_from(Vehicle).join(
+                    vtdt, Vehicle.vehicle_id == vtdt.vehicle_id
+                ).join(
+                    dt, vtdt.drive_type_id == dt.drive_type_id
+                ).group_by(dt.drive_type_id, dt.drive_type_name).order_by(dt.drive_type_name)
 
-                elif filter_type == 'model':
-                    query = select(
-                        Model.model_id.label('id'),
-                        Model.model_name.label('name'),
-                        func.count(Model.model_id).label('count')
-                    ).select_from(Vehicle).join(
-                        BaseVehicle, Vehicle.base_vehicle_id == BaseVehicle.base_vehicle_id
-                    ).join(
-                        Model, BaseVehicle.model_id == Model.model_id
-                    ).group_by(Model.model_id, Model.model_name).order_by(Model.model_name)
+            elif filter_type == 'wheelbase':
+                vtwb = aliased(VehicleToWheelBase)
+                wb = aliased(WheelBase)
+                query = select(
+                    wb.wheel_base_id.label('id'),
+                    wb.wheel_base.label('name'),
+                    func.count(wb.wheel_base_id).label('count')
+                ).select_from(Vehicle).join(
+                    vtwb, Vehicle.vehicle_id == vtwb.vehicle_id
+                ).join(
+                    wb, vtwb.wheel_base_id == wb.wheel_base_id
+                ).group_by(wb.wheel_base_id, wb.wheel_base).order_by(wb.wheel_base)
 
-                elif filter_type == 'submodel':
-                    query = select(
-                        SubModel.sub_model_id.label('id'),
-                        SubModel.sub_model_name.label('name'),
-                        func.count(SubModel.sub_model_id).label('count')
-                    ).select_from(Vehicle).join(
-                        SubModel, Vehicle.sub_model_id == SubModel.sub_model_id
-                    ).group_by(SubModel.sub_model_id, SubModel.sub_model_name).order_by(SubModel.sub_model_name)
+            elif filter_type == 'bedtype':
+                vtbc = aliased(VehicleToBedConfig)
+                bc = aliased(BedConfig)
+                bt = aliased(BedType)
+                query = select(
+                    bt.bed_type_id.label('id'),
+                    bt.bed_type_name.label('name'),
+                    func.count(bt.bed_type_id).label('count')
+                ).select_from(Vehicle).join(
+                    vtbc, Vehicle.vehicle_id == vtbc.vehicle_id
+                ).join(
+                    bc, vtbc.bed_config_id == bc.bed_config_id
+                ).join(
+                    bt, bc.bed_type_id == bt.bed_type_id
+                ).group_by(bt.bed_type_id, bt.bed_type_name).order_by(bt.bed_type_name)
 
-                elif filter_type == 'region':
-                    query = select(
-                        Region.region_id.label('id'),
-                        Region.region_name.label('name'),
-                        func.count(Region.region_id).label('count')
-                    ).select_from(Vehicle).join(
-                        Region, Vehicle.region_id == Region.region_id
-                    ).group_by(Region.region_id, Region.region_name).order_by(Region.region_name)
+            elif filter_type == 'bedlength':
+                vtbc = aliased(VehicleToBedConfig)
+                bc = aliased(BedConfig)
+                bl = aliased(BedLength)
+                query = select(
+                    bl.bed_length_id.label('id'),
+                    bl.bed_length.label('name'),
+                    func.count(bl.bed_length_id).label('count')
+                ).select_from(Vehicle).join(
+                    vtbc, Vehicle.vehicle_id == vtbc.vehicle_id
+                ).join(
+                    bc, vtbc.bed_config_id == bc.bed_config_id
+                ).join(
+                    bl, bc.bed_length_id == bl.bed_length_id
+                ).group_by(bl.bed_length_id, bl.bed_length).order_by(bl.bed_length)
 
-                elif filter_type == 'drivetype':
-                    vtdt = aliased(VehicleToDriveType)
-                    dt = aliased(DriveType)
-                    query = select(
-                        dt.drive_type_id.label('id'),
-                        dt.drive_type_name.label('name'),
-                        func.count(dt.drive_type_id).label('count')
-                    ).select_from(Vehicle).join(
-                        vtdt, Vehicle.vehicle_id == vtdt.vehicle_id
-                    ).join(
-                        dt, vtdt.drive_type_id == dt.drive_type_id
-                    ).group_by(dt.drive_type_id, dt.drive_type_name).order_by(dt.drive_type_name)
+            else:
+                # Generic query for other filter types
+                pk_column = getattr(model_class, model_class.__table__.primary_key.columns.keys()[0])
+                name_column = getattr(model_class, attr_name)
+                query = select(
+                    pk_column.label('id'),
+                    name_column.label('name'),
+                    func.count(pk_column).label('count')
+                ).select_from(Vehicle)
 
-                elif filter_type == 'wheelbase':
-                    vtwb = aliased(VehicleToWheelBase)
-                    wb = aliased(WheelBase)
-                    query = select(
-                        wb.wheel_base_id.label('id'),
-                        wb.wheel_base.label('name'),
-                        func.count(wb.wheel_base_id).label('count')
-                    ).select_from(Vehicle).join(
-                        vtwb, Vehicle.vehicle_id == vtwb.vehicle_id
-                    ).join(
-                        wb, vtwb.wheel_base_id == wb.wheel_base_id
-                    ).group_by(wb.wheel_base_id, wb.wheel_base).order_by(wb.wheel_base)
+            # Apply existing filters to query
+            query = self._apply_filters(query, current_filters, exclude_filters, session)
 
-                elif filter_type == 'bedtype':
-                    vtbc = aliased(VehicleToBedConfig)
-                    bc = aliased(BedConfig)
-                    bt = aliased(BedType)
-                    query = select(
-                        bt.bed_type_id.label('id'),
-                        bt.bed_type_name.label('name'),
-                        func.count(bt.bed_type_id).label('count')
-                    ).select_from(Vehicle).join(
-                        vtbc, Vehicle.vehicle_id == vtbc.vehicle_id
-                    ).join(
-                        bc, vtbc.bed_config_id == bc.bed_config_id
-                    ).join(
-                        bt, bc.bed_type_id == bt.bed_type_id
-                    ).group_by(bt.bed_type_id, bt.bed_type_name).order_by(bt.bed_type_name)
+            self._logger.debug(f'Executing filter values query for {filter_type}')
+            result = await session.execute(query)
+            rows = result.all()
 
-                elif filter_type == 'bedlength':
-                    vtbc = aliased(VehicleToBedConfig)
-                    bc = aliased(BedConfig)
-                    bl = aliased(BedLength)
-                    query = select(
-                        bl.bed_length_id.label('id'),
-                        bl.bed_length.label('name'),
-                        func.count(bl.bed_length_id).label('count')
-                    ).select_from(Vehicle).join(
-                        vtbc, Vehicle.vehicle_id == vtbc.vehicle_id
-                    ).join(
-                        bc, vtbc.bed_config_id == bc.bed_config_id
-                    ).join(
-                        bl, bc.bed_length_id == bl.bed_length_id
-                    ).group_by(bl.bed_length_id, bl.bed_length).order_by(bl.bed_length)
-
-                else:
-                    # Generic query for other filter types
-                    pk_column = getattr(model_class, model_class.__table__.primary_key.columns.keys()[0])
-                    name_column = getattr(model_class, attr_name)
-                    query = select(
-                        pk_column.label('id'),
-                        name_column.label('name'),
-                        func.count(pk_column).label('count')
-                    ).select_from(Vehicle)
-
-                # Apply existing filters to query
-                query = self._apply_filters(query, current_filters, exclude_filters, session)
-
-                self._logger.debug(f'Executing filter values query for {filter_type}')
-                result = session.execute(query)
-
-                # Convert result to list of dicts
-                values = []
-                for row in result:
-                    values.append({
-                        'id': row.id,
-                        'name': str(row.name),
-                        'count': row.count
-                    })
-
-                return values
-        except SQLAlchemyError as e:
-            self._logger.error(f'Database error getting filter values for {filter_type}: {str(e)}')
-            raise DatabaseHandlerError(f'Database error getting filter values for {filter_type}: {str(e)}') from e
-        except Exception as e:
-            self._logger.error(f'Error getting filter values for {filter_type}: {str(e)}')
-            raise DatabaseHandlerError(f'Error getting filter values for {filter_type}: {str(e)}') from e
+            # Return list of dicts
+            return [
+                {'id': row.id, 'name': str(row.name), 'count': row.count}
+                for row in rows
+            ]
 
     def _apply_filters(
             self,

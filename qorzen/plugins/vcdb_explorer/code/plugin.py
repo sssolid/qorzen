@@ -81,23 +81,22 @@ class VCdbExplorerWidget(QWidget):
         # Create exporter instance
         self._exporter = DataExporter(logger)
 
-        # Subscribe to filter refresh events
-        self._event_bus_manager.subscribe(
-            event_type=VCdbEventType.filters_refreshed(),
-            callback=self._on_filters_refreshed,
-            subscriber_id='vcdb_explorer_widget'
-        )
+        asyncio.create_task(self._subscribe_to_events())
 
         # Create UI components
         self._create_ui_components()
         self._connect_signals()
 
-    def __del__(self) -> None:
-        """Clean up resources when widget is destroyed."""
-        try:
-            self._event_bus_manager.unsubscribe(subscriber_id='vcdb_explorer_widget')
-        except Exception:
-            pass
+    def closeEvent(self, event):
+        self._event_bus_manager.unsubscribe(subscriber_id='vcdb_explorer_widget')
+
+    async def _subscribe_to_events(self) -> None:
+        """Subscribe to events."""
+        await self._event_bus_manager.subscribe(
+            event_type=VCdbEventType.filters_refreshed(),
+            callback=self._on_filters_refreshed,
+            subscriber_id='vcdb_explorer_widget'
+        )
 
     def _create_ui_components(self) -> None:
         """Create and arrange UI components."""
@@ -173,7 +172,7 @@ class VCdbExplorerWidget(QWidget):
         filter_values = payload.get('filter_values', {})
 
         self._logger.debug(f'Filters refreshed event received for panel {panel_id}')
-        self._filter_panel_manager.update_filter_values(panel_id, filter_values)
+        await self._filter_panel_manager.update_filter_values(panel_id, filter_values)
 
     @Slot()
     def _execute_query(self) -> None:
@@ -427,49 +426,33 @@ class VCdbExplorerPlugin(BasePlugin):
         try:
             await set_plugin_state(self.name, PluginLifecycleState.UI_READY)
 
-            # Find or create Plugins menu
-            plugins_menu = ui_integration.find_menu('Plugins')
-            if not plugins_menu:
-                plugins_menu = await ui_integration.add_menu('Plugins')
-
-            # Find or create VCdb Explorer menu
-            vcdb_menu = None
-            for action in plugins_menu.actions():
-                if action.text() == 'VCdb Explorer' and action.menu():
-                    vcdb_menu = action.menu()
-                    self._logger.debug('Found existing VCdb Explorer menu')
-                    break
-
-            if not vcdb_menu:
-                vcdb_menu = await ui_integration.add_menu(self.name, 'VCdb Explorer', plugins_menu)
-
             # Add menu actions
-            await ui_integration.add_menu_action(
-                self.name,
-                vcdb_menu,
-                'Run Query',
-                lambda: asyncio.create_task(self._run_query())
+            await ui_integration.add_menu_item(
+                plugin_id=self.plugin_id,
+                parent_menu='VCdb',
+                title='Run Query',
+                callback=lambda: asyncio.create_task(self._run_query())
             )
 
-            await ui_integration.add_menu_action(
-                self.name,
-                vcdb_menu,
-                'Refresh Filters',
-                lambda: asyncio.create_task(self._refresh_filters())
+            await ui_integration.add_menu_item(
+                plugin_id=self.plugin_id,
+                parent_menu='VCdb',
+                title='Refresh Filters',
+                callback=lambda: asyncio.create_task(self._refresh_filters())
             )
 
-            await ui_integration.add_menu_action(
-                self.name,
-                vcdb_menu,
-                'Documentation',
-                lambda: asyncio.create_task(self._open_documentation())
+            await ui_integration.add_menu_item(
+                plugin_id=self.plugin_id,
+                parent_menu='VCdb',
+                title='Documentation',
+                callback=lambda: asyncio.create_task(self._open_documentation())
             )
 
-            await ui_integration.add_menu_action(
-                self.name,
-                vcdb_menu,
-                'Configuration',
-                lambda: asyncio.create_task(self._open_configuration())
+            await ui_integration.add_menu_item(
+                plugin_id=self.plugin_id,
+                parent_menu='VCdb',
+                title='Configuration',
+                callback=lambda: asyncio.create_task(self._open_configuration())
             )
 
             # Create main widget
@@ -490,14 +473,12 @@ class VCdbExplorerPlugin(BasePlugin):
                         )
 
                     # Add plugin page
-                    icon = QIcon(self._icon_path) if self._icon_path else QIcon()
+                    # icon = QIcon(self._icon_path) if self._icon_path else QIcon()
                     await ui_integration.add_page(
-                        self.name,
-                        self._main_widget,
-                        f'plugin_{self.name}',
-                        icon,
-                        self.display_name or self.name,
-                        'plugins'
+                        plugin_id=self.plugin_id,
+                        page_component=self._main_widget,
+                        icon=self._icon_path,
+                        title=self.display_name or self.name,
                     )
 
                     if self._logger:

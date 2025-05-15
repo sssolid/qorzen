@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import logging
 import os
@@ -755,19 +756,18 @@ class DataTableWidget(QWidget):
 
         self._update_pagination_ui()
 
+        asyncio.create_task(self._subscribe_to_events())
+
+    def closeEvent(self, event):
+        self._event_bus_manager.unsubscribe(subscriber_id=self._callback_id)
+
+    async def _subscribe_to_events(self) -> None:
         # Subscribe to query results events
-        self._event_bus_manager.subscribe(
+        await self._event_bus_manager.subscribe(
             event_type=VCdbEventType.query_results(),
             callback=self._on_query_results,
             subscriber_id=self._callback_id
         )
-
-    def __del__(self) -> None:
-        """Clean up event subscriptions."""
-        try:
-            self._event_bus_manager.unsubscribe(subscriber_id=self._callback_id)
-        except Exception:
-            pass
 
     def _create_toolbar(self) -> None:
         """Create the toolbar with actions."""
