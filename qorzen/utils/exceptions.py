@@ -69,6 +69,12 @@ class ManagerInitializationError(ManagerError):
     pass
 
 
+class DatabaseManagerInitializationError(ManagerError):
+    """Exception raised when a database manager fails to initialize."""
+
+    pass
+
+
 class ManagerShutdownError(ManagerError):
     """Exception raised when a manager fails to shut down cleanly."""
 

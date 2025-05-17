@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from qorzen.core.base import QorzenManager
-from qorzen.utils.exceptions import DatabaseError, ManagerInitializationError, ManagerShutdownError
+from qorzen.utils.exceptions import DatabaseError, ManagerInitializationError, ManagerShutdownError, \
+    DatabaseManagerInitializationError
 
 T = TypeVar('T')
 R = TypeVar('R')
@@ -224,7 +225,7 @@ class DatabaseManager(QorzenManager):
 
         except Exception as e:
             self._logger.error(f'Failed to initialize Database Manager: {str(e)}')
-            raise ManagerInitializationError(
+            raise DatabaseManagerInitializationError(
                 f'Failed to initialize AsyncDatabaseManager: {str(e)}',
                 manager_name=self.name
             ) from e

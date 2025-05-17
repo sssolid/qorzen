@@ -8,6 +8,7 @@
     "email": "developer@qorzen.com"
   },
   "logo_path": "resources/initialdb.ico",
+  "icon_path": "resources/initialdb.ico",
   "license": "MIT",
   "capabilities": [
     "ui.extend",

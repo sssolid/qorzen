@@ -430,6 +430,7 @@ class VCdbExplorerPlugin(BasePlugin):
         Args:
             ui_integration: UI integration instance
         """
+
         if self._logger:
             self._logger.info('Setting up UI components')
 
@@ -487,43 +488,44 @@ class VCdbExplorerPlugin(BasePlugin):
             )
 
             # Create main widget
-            if not self._database_handler or not getattr(self._database_handler, '_initialized', False):
-                self._main_widget = await self._create_error_widget()
-                self._logger.warning('Added error widget due to database connection failure')
-            else:
-                try:
-                    if not self._main_widget:
-                        self._main_widget = VCdbExplorerWidget(
-                            self._database_handler,
-                            self._event_bus_manager,
-                            self._concurrency_manager,
-                            self._task_manager,
-                            self._logger,
-                            self._export_config,
-                            None
-                        )
-
-                    # Add page to UI
-                    await ui_integration.add_page(
-                        plugin_id=self.plugin_id,
-                        page_component=self._main_widget,
-                        icon=self._icon_path,
-                        title=self.display_name or self.name
+            try:
+                if not self._main_widget:
+                    self._main_widget = VCdbExplorerWidget(
+                        self._database_handler,
+                        self._event_bus_manager,
+                        self._concurrency_manager,
+                        self._task_manager,
+                        self._logger,
+                        self._export_config,
+                        None
                     )
 
-                    if self._logger:
-                        self._logger.info('UI components set up successfully')
+                # Add page to UI
+                await ui_integration.add_page(
+                    plugin_id=self.plugin_id,
+                    page_component=self._main_widget,
+                    icon=self._icon_path,
+                    title=self.display_name or self.name
+                )
 
-                except Exception as e:
-                    if self._logger:
-                        self._logger.error(f'Failed to set up UI components: {str(e)}')
-                    self._main_widget = await self._create_error_widget(str(e))
+                if self._logger:
+                    self._logger.info('UI components set up successfully')
+
+            except Exception as e:
+                if self._logger:
+                    self._logger.error(f'Failed to set up UI components: {str(e)}')
+                self._main_widget = await self._create_error_widget(str(e))
 
             self._ui_components_created = True
 
             # Signal completion
             await set_plugin_state(self.name, PluginLifecycleState.ACTIVE)
             await signal_ui_ready(self.name)
+
+            if not self._database_handler or not getattr(self._database_handler, '_initialized', False):
+                self._main_widget = await self._create_error_widget()
+                self._logger.warning('Added error widget due to database connection failure')
+                self._ui_components_created = False
 
         except Exception as e:
             self._logger.error(f'Error setting up UI: {str(e)}')

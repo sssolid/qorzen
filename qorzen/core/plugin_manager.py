@@ -36,6 +36,7 @@ class PluginManifest:
     description: str
     author: str
     logo_path: str
+    icon_path: str
     homepage: Optional[str] = None
     license: Optional[str] = None
     min_core_version: Optional[str] = None
@@ -57,6 +58,7 @@ class PluginManifest:
             description=data.get('description', ''),
             author=data.get('author', 'Unknown'),
             logo_path=data.get('logo_path', ''),
+            icon_path=data.get('icon_path', ''),
             homepage=data.get('homepage'),
             license=data.get('license'),
             min_core_version=data.get('min_core_version'),
@@ -93,6 +95,10 @@ class PluginManifest:
             # Handle logo path if it's None
             if 'logo_path' in data and data['logo_path'] is None:
                 data['logo_path'] = ''
+
+            # Handle icon path if it's None
+            if 'icon_path' in data and data['icon_path'] is None:
+                data['icon_path'] = ''
 
             # Check for required fields
             required_fields = ['name', 'display_name', 'version', 'description', 'author']

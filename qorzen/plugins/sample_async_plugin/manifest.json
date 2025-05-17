@@ -8,6 +8,7 @@
     "email": "info@qorzen.com"
   },
   "logo_path": null,
+  "icon_path": null,
   "license": "MIT",
   "homepage": "https://example.com/plugins/sample_async_plugin",
   "capabilities": [

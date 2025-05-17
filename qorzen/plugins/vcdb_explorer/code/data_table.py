@@ -887,7 +887,11 @@ class DataTableWidget(QWidget):
         self._logger = logger
 
         # Get available columns
-        self._available_columns = database_handler.get_available_columns()
+        try:
+            self._available_columns = database_handler.get_available_columns()
+        except Exception as e:
+            self._logger.error(f'Error getting available columns: {str(e)}')
+            self._available_columns = []
         self._column_map = {col['id']: col['name'] for col in self._available_columns}
 
         # Default columns

@@ -326,7 +326,11 @@ class FilterPanel(QGroupBox):
         self._event_bus_manager = event_bus_manager
         self._logger = logger
 
-        self._available_filters = database_handler.get_available_filters()
+        try:
+            self._available_filters = database_handler.get_available_filters()
+        except Exception as e:
+            self._logger.error(f'Error getting available filters: {str(e)}')
+            self._available_filters = []
         self._filters: Dict[str, FilterWidget] = {}
         self._current_values: Dict[str, List[int]] = {}
 
@@ -681,7 +685,11 @@ class FilterPanelManager(QWidget):
         self._max_panels = max_panels
 
         self._panels: Dict[str, FilterPanel] = {}
-        self._available_filters = database_handler.get_available_filters()
+        try:
+            self._available_filters = database_handler.get_available_filters()
+        except Exception as e:
+            self._logger.error(f'Error getting available filters: {str(e)}')
+            self._available_filters = []
         self._refreshing = False
 
         # Main layout

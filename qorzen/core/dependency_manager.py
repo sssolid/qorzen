@@ -5,7 +5,8 @@ import networkx as nx
 from typing import Any, Dict, List, Optional, Set, Tuple, Type, TypeVar, Union, cast
 
 from qorzen.core.base import QorzenManager, BaseManager
-from qorzen.utils.exceptions import DependencyError, ManagerInitializationError, ManagerShutdownError
+from qorzen.utils.exceptions import DependencyError, ManagerInitializationError, ManagerShutdownError, \
+    DatabaseManagerInitializationError
 
 T = TypeVar('T', bound=BaseManager)
 
@@ -195,6 +196,10 @@ class DependencyManager(QorzenManager):
                     try:
                         self._logger.debug(f'Initializing {manager_name}')
                         await manager.initialize()
+                    except DatabaseManagerInitializationError as e:
+                        self._logger.error(f'Failed to initialize {manager_name}: {str(e)}')
+                        # This will not exit the application
+                        pass
                     except Exception as e:
                         self._logger.error(f'Failed to initialize {manager_name}: {str(e)}')
                         raise ManagerInitializationError(

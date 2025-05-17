@@ -1,0 +1,39 @@
+{
+  "name": "application_launcher",
+  "display_name": "Application Launcher",
+  "version": "1.0.0",
+  "description": "Launch external applications with configurable arguments",
+  "logo_path": "resources/icon.svg",
+  "icon_path": "resources/icon.svg",
+  "author": {
+    "name": "Qorzen Developer"
+  },
+  "license": "MIT",
+  "min_core_version": "0.9.0",
+  "entry_point": "code.plugin",
+  "dependencies": [],
+  "capabilities": ["file_io", "process_execution"],
+  "ui_integration": true,
+  "settings_schema": {
+    "properties": {
+      "max_process_memory_mb": {
+        "type": "integer",
+        "title": "Maximum Process Memory (MB)",
+        "description": "Maximum memory limit for external processes (0 for no limit)",
+        "default": 0
+      },
+      "process_timeout_sec": {
+        "type": "integer",
+        "title": "Process Timeout (seconds)",
+        "description": "Default timeout for external processes (0 for no timeout)",
+        "default": 0
+      },
+      "default_working_directory": {
+        "type": "string",
+        "title": "Default Working Directory",
+        "description": "Default working directory for applications",
+        "default": ""
+      }
+    }
+  }
+}
