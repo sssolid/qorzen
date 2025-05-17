@@ -414,3 +414,20 @@ class AsyncOperationError(QorzenError):
         if operation_id:
             details['operation_id'] = operation_id
         super().__init__(message, *args, details=details, **kwargs)
+
+
+class ValidationError(QorzenError):
+    """Exception raised for validation-related errors."""
+
+    def __init__(
+            self, message: str, *args: Any, **kwargs: Any
+    ) -> None:
+        """Initialize a ValidationError.
+
+        Args:
+            message: A descriptive error message.
+            *args: Additional positional arguments to pass to the parent Exception.
+            **kwargs: Additional keyword arguments to pass to the parent Exception.
+        """
+        details = kwargs.pop("details", {})
+        super().__init__(message, *args, details=details, **kwargs)

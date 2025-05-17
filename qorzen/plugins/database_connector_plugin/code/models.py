@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Union, cast, Literal
 
-from pydantic import BaseModel, Field, SecretStr, validator, root_validator
+from pydantic import BaseModel, Field, SecretStr, validator, model_validator, field_validator
 
 
 class ConnectionType(str, enum.Enum):
@@ -59,13 +59,13 @@ class AS400ConnectionConfig(BaseConnectionConfig):
     ssl: bool = Field(True, description="Use SSL for connection")
     allowed_libraries: Optional[List[str]] = Field(None, description="Whitelist of allowed libraries/schemas")
 
-    @validator("port")
+    @field_validator("port")
     def validate_port(cls, v: Optional[int]) -> Optional[int]:
         if v is not None and (v < 1 or v > 65535):
             raise ValueError("Port must be between 1 and 65535")
         return v
 
-    @validator("allowed_tables", "allowed_libraries")
+    @field_validator("allowed_tables", "allowed_libraries")
     def validate_allowed_lists(cls, v: Optional[List[str]]) -> Optional[List[str]]:
         if v is not None:
             return [item.upper() for item in v]
@@ -80,13 +80,13 @@ class ODBCConnectionConfig(BaseConnectionConfig):
     port: Optional[int] = Field(None, description="Server port (if not in DSN)")
     connection_string: Optional[str] = Field(None, description="Full ODBC connection string (alternative to DSN)")
 
-    @validator("port")
+    @field_validator("port")
     def validate_port(cls, v: Optional[int]) -> Optional[int]:
         if v is not None and (v < 1 or v > 65535):
             raise ValueError("Port must be between 1 and 65535")
         return v
 
-    @root_validator
+    @model_validator(mode="before")
     def validate_connection_info(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         dsn = values.get("dsn")
         conn_string = values.get("connection_string")
@@ -100,7 +100,7 @@ class SQLConnectionConfig(BaseConnectionConfig):
     server: str = Field(..., description="Database server address")
     port: Optional[int] = Field(None, description="Database server port")
 
-    @validator("port")
+    @field_validator("port")
     def validate_port(cls, v: Optional[int]) -> Optional[int]:
         if v is not None and (v < 1 or v > 65535):
             raise ValueError("Port must be between 1 and 65535")

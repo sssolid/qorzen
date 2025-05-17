@@ -294,8 +294,8 @@ class ConnectionDialog(QDialog):
             database_label = "Database/File:"
 
         # Find and update the database label
-        for i in range(self._settings_stack.parentWidget().layout().rowCount()):
-            label_item = self._settings_stack.parentWidget().layout().itemAt(i, QFormLayout.LabelRole)
+        for i in range(self._settings_stack.parentWidget().layout().count()):
+            label_item = self._settings_stack.parentWidget().layout().itemAt(i) #, QFormLayout.LabelRole)
             if label_item and isinstance(label_item.widget(), QLabel):
                 label = label_item.widget()
                 if label.text().startswith("Database:"):

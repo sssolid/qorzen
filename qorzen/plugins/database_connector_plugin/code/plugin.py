@@ -248,10 +248,14 @@ class DatabaseConnectorPlugin(BasePlugin):
                     event_bus_manager=self._event_bus_manager
                 )
 
+            p = Path(self.plugin_info.path)
+            icon_file = p / self.plugin_info.manifest.icon_path
+            icon_arg = str(icon_file) if icon_file.exists() else None
+
             await ui_integration.add_page(
                 plugin_id=self.plugin_id,
                 page_component=self._main_widget,
-                icon=self._icon_path,
+                icon=icon_arg,
                 title=self.display_name or self.name
             )
 
@@ -1015,7 +1019,7 @@ class DatabaseConnectorPlugin(BasePlugin):
 
             file_path = f"{self.name}/connections.json"
             try:
-                file_info = self._file_manager.get_file_info(
+                file_info = await self._file_manager.get_file_info(
                     file_path,
                     "plugin_data"
                 )
@@ -1024,7 +1028,7 @@ class DatabaseConnectorPlugin(BasePlugin):
             except:
                 return
 
-            json_data = self._file_manager.read_text(
+            json_data = await self._file_manager.read_text(
                 file_path,
                 "plugin_data"
             )
@@ -1108,7 +1112,7 @@ class DatabaseConnectorPlugin(BasePlugin):
 
             file_path = f"{self.name}/saved_queries.json"
             try:
-                file_info = self._file_manager.get_file_info(
+                file_info = await self._file_manager.get_file_info(
                     file_path,
                     "plugin_data"
                 )
@@ -1117,7 +1121,7 @@ class DatabaseConnectorPlugin(BasePlugin):
             except:
                 return
 
-            json_data = self._file_manager.read_text(
+            json_data = await self._file_manager.read_text(
                 file_path,
                 "plugin_data"
             )

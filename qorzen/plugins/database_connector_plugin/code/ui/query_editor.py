@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 """
 SQL query editor for the Database Connector Plugin.
 
@@ -211,7 +213,7 @@ class SQLEditor(QTextEdit):
     def _highlight_current_line(self) -> None:
         """Highlight the current line."""
         selection = QTextEdit.ExtraSelection()
-        line_color = self._highlighter.colors.get("current_line", QColor(232, 242, 254))
+        line_color = QColor(144, 238, 144, 40)
         selection.format.setBackground(line_color)
         selection.format.setProperty(QTextCharFormat.FullWidthSelection, True)
         selection.cursor = self.textCursor()

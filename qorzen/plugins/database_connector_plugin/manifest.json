@@ -1,0 +1,113 @@
+{
+  "name": "database_connector_plugin",
+  "display_name": "Database Connector",
+  "version": "1.0.0",
+  "description": "Connect and query various databases with field mapping, validation, and historical data tracking capabilities",
+  "author": {
+    "name": "Qorzen Team",
+    "email": "support@qorzen.com",
+    "organization": "Qorzen"
+  },
+  "logo_path": "resources/icon.png",
+  "icon_path": "resources/icon.png",
+  "license": "proprietary",
+  "capabilities": [
+    "config.read",
+    "config.write",
+    "ui.extend",
+    "database.read",
+    "database.write",
+    "file.read",
+    "file.write",
+    "event.subscribe",
+    "event.publish",
+    "network.connect"
+  ],
+  "dependencies": [],
+  "entry_point": "code.plugin",
+  "min_core_version": "1.0.0",
+  "tags": [
+    "database",
+    "connector",
+    "as400",
+    "odbc",
+    "sql",
+    "query",
+    "mapping",
+    "validation",
+    "history"
+  ],
+  "readme": "README.md",
+  "changelog": "CHANGELOG.md",
+  "uuid": "6a8d3e2f-c7b1-4f9e-9e5a-7b0f8e0c2d3b",
+  "config_schema": {
+    "title": "Database Connector Plugin Settings",
+    "type": "object",
+    "properties": {
+      "default_connection_id": {
+        "type": "string",
+        "title": "Default Connection ID",
+        "description": "ID of the default connection to select on startup"
+      },
+      "recent_connections": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "title": "Recent Connections",
+        "description": "List of recently used connection IDs"
+      },
+      "max_result_rows": {
+        "type": "integer",
+        "title": "Maximum Result Rows",
+        "description": "Maximum number of rows to fetch for query results",
+        "default": 10000,
+        "minimum": 1,
+        "maximum": 100000
+      },
+      "query_history_limit": {
+        "type": "integer",
+        "title": "Query History Limit",
+        "description": "Maximum number of entries in query history",
+        "default": 100,
+        "minimum": 10,
+        "maximum": 1000
+      },
+      "auto_save_queries": {
+        "type": "boolean",
+        "title": "Auto-save Queries",
+        "description": "Automatically save executed queries",
+        "default": true
+      },
+      "syntax_highlighting": {
+        "type": "boolean",
+        "title": "Syntax Highlighting",
+        "description": "Enable SQL syntax highlighting in the query editor",
+        "default": true
+      },
+      "history_database_connection_id": {
+        "type": "string",
+        "title": "History Database Connection ID",
+        "description": "Connection ID for storing history data"
+      }
+    }
+  },
+  "extension_points": [
+    {
+      "id": "database.connector",
+      "name": "Database Connector",
+      "description": "Interface for adding new database connector types",
+      "interface": "code.connectors.base.BaseDatabaseConnector",
+      "version": "1.0.0"
+    },
+    {
+      "id": "database.validation.rule",
+      "name": "Validation Rule",
+      "description": "Interface for adding custom validation rule types",
+      "interface": "code.utils.validation.ValidationEngine",
+      "version": "1.0.0"
+    }
+  ],
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-05-17T00:00:00Z"
+}

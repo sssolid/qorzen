@@ -752,6 +752,7 @@ class PluginManager(QorzenManager):
         try:
             self._logger.debug(f'Creating instance of plugin class: {plugin_class.__name__}')
             plugin_instance = plugin_class()
+            plugin_instance.plugin_info = plugin_info
 
             if hasattr(plugin_instance, 'plugin_id'):
                 plugin_instance.plugin_id = plugin_id
@@ -790,6 +791,7 @@ class PluginManager(QorzenManager):
             module = importlib.import_module(module_name)
             plugin_class = getattr(module, class_name)
             plugin_instance = plugin_class()
+            plugin_instance.plugin_info = plugin_info
 
             if hasattr(plugin_instance, 'initialize'):
                 await self._initialize_plugin(plugin_instance, plugin_id)

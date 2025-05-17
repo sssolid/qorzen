@@ -1300,19 +1300,26 @@ class DatabaseConnectorTab(QWidget):
         current_widget = self._tab_widget.widget(index)
 
         # Execute action is only available for query editor
-        self._execute_action.setEnabled(
-            current_widget == self._query_editor and
-            self._current_connection_id and
-            self._current_connection_id in self._plugin._active_connectors and
-            self._plugin._active_connectors[self._current_connection_id].is_connected
-        )
+        try:
+            self._execute_action.setEnabled(
+                current_widget == self._query_editor and
+                self._current_connection_id and
+                self._current_connection_id in self._plugin._active_connectors and
+                self._plugin._active_connectors[self._current_connection_id].is_connected
+            )
+        except TypeError as e:
+            self._logger.warning(f"Failed to enable execute action, defaulting to False: {str(e)}")
 
         # Export action is only available for results with data
-        self._export_action.setEnabled(
-            current_widget == self._results_view and
-            self._current_query_result is not None and
-            self._current_query_result.records
-        )
+        try:
+            self._export_action.setEnabled(
+                current_widget == self._results_view and
+                self._current_query_result is not None and
+                self._current_query_result.records
+            )
+        except TypeError as e:
+            self._logger.warning(f"Error checking export action, defaulting to False: {str(e)}")
+            self._export_action.setEnabled(False)
 
     async def _refresh_current_view(self) -> None:
         """Refresh the current view based on the selected tab."""
