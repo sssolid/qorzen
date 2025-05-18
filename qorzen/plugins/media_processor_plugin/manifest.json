@@ -1,0 +1,51 @@
+{
+  "name": "media_processor",
+  "display_name": "Media Processor",
+  "version": "1.0.0",
+  "description": "Advanced media processing with background removal, batch processing, and multiple output formats",
+  "author": {
+    "name": "Qorzen Developer",
+    "email": "developer@qorzen.com",
+    "organization": "Qorzen"
+  },
+  "logo_path": "resources/logo.png",
+  "icon_path": "resources/icon.png",
+  "license": "MIT",
+  "homepage": "https://qorzen.com/plugins/media-processor",
+  "capabilities": [
+    "ui.extend",
+    "event.subscribe",
+    "event.publish",
+    "file.read",
+    "file.write",
+    "system.monitor"
+  ],
+  "dependencies": [],
+  "entry_point": "code.plugin",
+  "min_core_version": "1.0.0",
+  "tags": ["media", "image", "processing", "background removal", "batch processing"],
+  "config_schema": {
+    "processing": {
+      "default_output_dir": "output",
+      "temp_dir": "temp",
+      "max_concurrent_jobs": 4,
+      "thumbnail_size": 256,
+      "preview_quality": 85,
+      "default_format": "png"
+    },
+    "background_removal": {
+      "default_method": "alpha_matting",
+      "model_path": "models/u2net.onnx",
+      "enable_gpu": true
+    },
+    "formats": {
+      "allowed_input": ["jpg", "jpeg", "png", "tiff", "bmp", "webp", "psd", "gif"],
+      "allowed_output": ["jpg", "jpeg", "png", "tiff", "bmp", "webp", "pdf"]
+    },
+    "ui": {
+      "thumb_size": 128,
+      "max_recent_configs": 10,
+      "default_view": "grid"
+    }
+  }
+}
