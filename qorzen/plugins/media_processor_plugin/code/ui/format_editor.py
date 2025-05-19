@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .format_preview_widget import FormatPreviewWidget
+
 """
 Format editor dialog for the Media Processor Plugin.
 
@@ -17,7 +19,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox,
     QPushButton, QTabWidget, QWidget, QColorDialog, QFileDialog,
     QDialogButtonBox, QGroupBox, QRadioButton, QButtonGroup, QScrollArea,
-    QSizePolicy, QSlider, QToolButton, QFrame
+    QSizePolicy, QSlider, QToolButton, QFrame, QSplitter
 )
 
 from ..models.processing_config import (
@@ -171,13 +173,16 @@ class FormatEditorDialog(QDialog):
     def _init_ui(self) -> None:
         """Initialize the UI components."""
         # Main layout
-        main_layout = QVBoxLayout(self)
+        main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
 
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+
         # Create tab widget for organizing settings
         tab_widget = QTabWidget()
-        main_layout.addWidget(tab_widget)
+        left_layout.addWidget(tab_widget)
 
         # Basic settings tab
         basic_tab = self._create_basic_tab()
@@ -203,10 +208,141 @@ class FormatEditorDialog(QDialog):
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
-        main_layout.addWidget(button_box)
+        left_layout.addWidget(button_box)
+
+        right_panel = QWidget(self)
+        right_layout = QVBoxLayout(right_panel)
+
+        self._preview_widget = FormatPreviewWidget(self, self._logger)
+        right_layout.addWidget(self._preview_widget, 1)
+
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        splitter.setSizes([600, 400])
+
+        main_layout.addWidget(splitter)
+        self.setLayout(main_layout)
 
         # Set dialog size
-        self.resize(600, 500)
+        self.resize(1000, 600)
+
+        self._connect_preview_signals()
+
+    def _connect_preview_signals(self) -> None:
+        """Connect signals for updating the preview in real-time."""
+        # Detect changes in format settings to update preview
+        # Basic tab
+        if hasattr(self, '_name_edit'):
+            self._name_edit.textChanged.connect(self._on_format_changed)
+
+        if hasattr(self, '_format_combo'):
+            self._format_combo.currentIndexChanged.connect(self._on_format_changed)
+
+        if hasattr(self, '_quality_slider'):
+            self._quality_slider.valueChanged.connect(self._on_format_changed)
+
+        # Size & Cropping tab
+        if hasattr(self, '_resize_mode_combo'):
+            self._resize_mode_combo.currentIndexChanged.connect(self._on_format_changed)
+
+        if hasattr(self, '_width_spin'):
+            self._width_spin.valueChanged.connect(self._on_format_changed)
+
+        if hasattr(self, '_height_spin'):
+            self._height_spin.valueChanged.connect(self._on_format_changed)
+
+        if hasattr(self, '_percentage_spin'):
+            self._percentage_spin.valueChanged.connect(self._on_format_changed)
+
+        if hasattr(self, '_maintain_aspect_check'):
+            self._maintain_aspect_check.toggled.connect(self._on_format_changed)
+
+        if hasattr(self, '_crop_check'):
+            self._crop_check.toggled.connect(self._on_format_changed)
+
+        # Background tab
+        if hasattr(self, '_transparent_check'):
+            self._transparent_check.toggled.connect(self._on_format_changed)
+
+        if hasattr(self, '_bg_color_btn'):
+            self._bg_color_btn.colorChanged.connect(self._on_format_changed)
+
+        # Watermark tab
+        if hasattr(self, '_wm_type_combo'):
+            self._wm_type_combo.currentIndexChanged.connect(self._on_format_changed)
+
+    @Slot()
+    def _on_format_changed(self) -> None:
+        """Handle changes to format settings."""
+        if hasattr(self, '_save_values') and hasattr(self, '_edited_format'):
+            # Save current values to the format config
+            self._save_values()
+
+            # Update preview with the current format
+            if hasattr(self, '_preview_widget'):
+                self._preview_widget.set_format(self._edited_format)
+
+    def _set_preview_image(self, image_path: str) -> None:
+        """
+        Set the image to use for the preview.
+
+        Args:
+            image_path: Path to the preview image
+        """
+        if hasattr(self, '_preview_widget') and os.path.exists(image_path):
+            self._preview_widget.set_preview_image(image_path)
+
+    def showEvent(self, event: Any) -> None:
+        """
+        Handle dialog show event.
+
+        Args:
+            event: Show event
+        """
+        # Call the original showEvent if it exists
+        if hasattr(super(), 'showEvent'):
+            super().showEvent(event)
+
+        # Set up preview with current format
+        if hasattr(self, '_edited_format') and hasattr(self, '_preview_widget'):
+            self._preview_widget.set_format(self._edited_format)
+
+            # Try to find a suitable preview image
+            self._setup_preview_image()
+
+    def _setup_preview_image(self) -> None:
+        """Set up a preview image from the current file if available."""
+        # Try to get current file from parent (main widget)
+        current_file = None
+
+        if hasattr(self, 'parent') and self.parent():
+            parent = self.parent()
+
+            # Try commonly used attribute names
+            if hasattr(parent, '_current_file'):
+                current_file = parent._current_file
+            elif hasattr(parent, '_selected_files') and hasattr(parent, '_current_file_index'):
+                if parent._current_file_index >= 0 and parent._current_file_index < len(parent._selected_files):
+                    current_file = parent._selected_files[parent._current_file_index]
+
+            # If we found a file, set it as the preview image
+            if current_file and os.path.exists(current_file):
+                self._set_preview_image(current_file)
+                return
+
+        # If we couldn't get a file from the parent, try to find a sample image
+        sample_paths = [
+            os.path.join('resources', 'sample.jpg'),
+            os.path.join('resources', 'sample.png'),
+            os.path.join('sample.jpg'),
+            os.path.join('sample.png')
+        ]
+
+        for path in sample_paths:
+            if os.path.exists(path):
+                self._set_preview_image(path)
+                return
 
     def _create_basic_tab(self) -> QWidget:
         """

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .output_preview_table import OutputPreviewTable
+
 """
 Batch processing dialog for media processing.
 
@@ -198,7 +200,69 @@ class BatchProcessingDialog(QDialog):
     def _start_batch_job(self) -> None:
         """Start the batch processing job."""
         # Start in a separate task to avoid blocking UI
-        asyncio.create_task(self._start_batch_job_async())
+        if hasattr(self, '_file_paths') and hasattr(self, '_config'):
+            self._show_output_preview()
+        else:
+            asyncio.create_task(self._start_batch_job_async())
+
+    def _show_output_preview(self) -> None:
+        """
+        Show the output preview table before starting the batch job.
+        """
+        # Create the output preview dialog
+        preview_dialog = OutputPreviewTable(
+            self._file_paths,
+            self._config,
+            self._output_dir,
+            self._overwrite,
+            self._logger,
+            self
+        )
+
+        # Connect to the processing confirmed signal
+        preview_dialog.processingConfirmed.connect(self._on_preview_confirmed)
+
+        # Show the dialog
+        preview_dialog.exec()
+
+    @Slot(bool)
+    def _on_preview_confirmed(self, confirmed: bool) -> None:
+        """
+        Handle confirmation or cancellation from the output preview table.
+
+        Args:
+            confirmed: Whether processing was confirmed
+        """
+        if not confirmed:
+            # User cancelled, close the dialog
+            self.reject()
+            return
+
+        # Update settings from the preview dialog before starting
+        if hasattr(self, '_update_settings_from_preview'):
+            self._update_settings_from_preview()
+
+        # If confirmed, start the batch job with original method
+        if hasattr(self, '_original_start_batch_job'):
+            self._original_start_batch_job()
+
+    def _update_settings_from_preview(self) -> None:
+        """
+        Update batch processing settings from the preview dialog.
+        """
+        # Create a reference to the preview dialog to get updated settings
+        for child in self.children():
+            if isinstance(child, OutputPreviewTable):
+                # Update settings
+                self._output_dir = child.get_output_dir()
+                self._overwrite = child.get_overwrite()
+
+                # Update UI to reflect the changes if needed
+                if hasattr(self, '_status_label'):
+                    self._status_label.setText(f'Processing job with output directory: {self._output_dir}')
+
+                # Break after first match
+                break
 
     async def _start_batch_job_async(self) -> None:
         """Asynchronously start the batch processing job."""

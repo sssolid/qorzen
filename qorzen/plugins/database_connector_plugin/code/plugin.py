@@ -1076,7 +1076,7 @@ class DatabaseConnectorPlugin(BasePlugin):
                 return
 
             file_path = f"{self.name}/connections.json"
-            self._file_manager.ensure_directory(self.name, "plugin_data")
+            await self._file_manager.ensure_directory(self.name, "plugin_data")
 
             conn_list = []
             for conn in self._connections.values():
@@ -1087,7 +1087,7 @@ class DatabaseConnectorPlugin(BasePlugin):
                 conn_list.append(conn_dict)
 
             json_data = json.dumps(conn_list, indent=2)
-            self._file_manager.write_text(
+            await self._file_manager.write_text(
                 file_path,
                 json_data,
                 "plugin_data"
@@ -1162,7 +1162,7 @@ class DatabaseConnectorPlugin(BasePlugin):
                 return
 
             file_path = f"{self.name}/saved_queries.json"
-            self._file_manager.ensure_directory(self.name, "plugin_data")
+            await self._file_manager.ensure_directory(self.name, "plugin_data")
 
             query_list = []
             for query in self._saved_queries.values():
@@ -1176,7 +1176,7 @@ class DatabaseConnectorPlugin(BasePlugin):
                 query_list.append(query_dict)
 
             json_data = json.dumps(query_list, indent=2)
-            self._file_manager.write_text(
+            await self._file_manager.write_text(
                 file_path,
                 json_data,
                 "plugin_data"
@@ -1201,7 +1201,7 @@ class DatabaseConnectorPlugin(BasePlugin):
 
             file_path = f"{self.name}/field_mappings.json"
             try:
-                file_info = self._file_manager.get_file_info(
+                file_info = await self._file_manager.get_file_info(
                     file_path,
                     "plugin_data"
                 )
@@ -1210,7 +1210,7 @@ class DatabaseConnectorPlugin(BasePlugin):
             except:
                 return
 
-            json_data = self._file_manager.read_text(
+            json_data = await self._file_manager.read_text(
                 file_path,
                 "plugin_data"
             )
@@ -1251,7 +1251,7 @@ class DatabaseConnectorPlugin(BasePlugin):
                 return
 
             file_path = f"{self.name}/field_mappings.json"
-            self._file_manager.ensure_directory(self.name, "plugin_data")
+            await self._file_manager.ensure_directory(self.name, "plugin_data")
 
             mapping_list = []
             for mapping in self._field_mappings.values():
@@ -1265,7 +1265,7 @@ class DatabaseConnectorPlugin(BasePlugin):
                 mapping_list.append(mapping_dict)
 
             json_data = json.dumps(mapping_list, indent=2)
-            self._file_manager.write_text(
+            await self._file_manager.write_text(
                 file_path,
                 json_data,
                 "plugin_data"

@@ -759,7 +759,7 @@ class ConnectionManagerDialog(QDialog):
 
         # Start the test asynchronously
         import asyncio
-        plugin = self.parent()._plugin
+        plugin = self.parent().parent()._plugin
 
         # Create a new event loop and run the test
         loop = asyncio.new_event_loop()
@@ -797,7 +797,7 @@ class ConnectionManagerDialog(QDialog):
         import asyncio
 
         # Get the plugin instance
-        plugin = self.parent()._plugin
+        plugin = self.parent().parent()._plugin
 
         # Update settings
         if plugin._settings:

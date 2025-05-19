@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import io
 from io import BytesIO
 
 from PIL.Image import Resampling
+from blib2to3.pygram import initialize
+
+from ..utils.ai_background_remover import AIBackgroundRemover
+from ..utils.config_manager import ConfigManager
+from ..utils.font_manager import FontManager
 
 """
 Main media processor implementation.
@@ -21,6 +28,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union, BinaryIO, cast
 
 import PIL
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageEnhance
+
+import piexif
 
 from qorzen.core.file_manager import FileManager
 from qorzen.core.task_manager import TaskManager
@@ -75,6 +84,14 @@ class MediaProcessor:
         self._processing_config = processing_config
         self._background_removal_config = background_removal_config
 
+        self._config_manager = ConfigManager(self._file_manager, self._logger)
+        self._font_manager = FontManager(self._logger)
+        self._ai_background_remover = AIBackgroundRemover(
+            self._file_manager,
+            self._config_manager,
+            self._logger
+        )
+
         # Default output directory
         self._default_output_dir = processing_config.get("default_output_dir", "output")
         self._temp_dir = processing_config.get("temp_dir", "temp")
@@ -117,35 +134,103 @@ class MediaProcessor:
 
         self._logger.debug(f"Directories initialized. Output: {self._default_output_dir}, Temp: {self._temp_dir}")
 
+    async def load_image_from_bytes(self, image_data: bytes) -> Image.Image:
+        """
+        Load an image from bytes.
+
+        Args:
+            image_data: Image data as bytes
+
+        Returns:
+            Image.Image: PIL Image object
+
+        Raises:
+            MediaProcessingError: If image cannot be loaded
+        """
+        try:
+            return Image.open(io.BytesIO(image_data))
+        except Exception as e:
+            self._logger.error(f"Failed to load image from bytes: {str(e)}")
+            raise MediaProcessingError(f"Failed to load image from bytes: {str(e)}")
+
     async def load_image(self, image_path: str) -> Image.Image:
         """
-        Load an image from the specified path.
+        Load an image with enhanced format support.
 
         Args:
             image_path: Path to the image file
 
         Returns:
-            The loaded PIL Image
+            Image.Image: PIL Image object
 
         Raises:
-            MediaProcessingError: If the image cannot be loaded
+            MediaProcessingError: If image cannot be loaded
         """
         try:
-            # Use file manager to read the file
+            # Handle PSD files separately for better support
+            if image_path.lower().endswith('.psd'):
+                return await self._load_psd(image_path)
+
+            # Try standard loading via file manager or direct path
             if not os.path.isabs(image_path):
-                # Try to load using file manager first
                 try:
                     image_data = await self._file_manager.read_binary(image_path)
-                    return Image.open(BytesIO(image_data))
+                    return Image.open(io.BytesIO(image_data))
                 except Exception as e:
                     self._logger.warning(f"Could not load image via file manager: {e}, trying direct path")
 
-            # Fallback to direct file loading
+            # Direct loading
             return Image.open(image_path)
 
+        except PIL.UnidentifiedImageError:
+            self._logger.error(f"Unidentified image format: {image_path}")
+            raise MediaProcessingError(f"Unidentified image format. Please ensure the file is a valid image.")
         except Exception as e:
             self._logger.error(f"Failed to load image {image_path}: {str(e)}")
             raise MediaProcessingError(f"Failed to load image: {str(e)}")
+
+    async def _load_psd(self, image_path: str) -> Image.Image:
+        """
+        Load a PSD file with enhanced support.
+
+        Args:
+            image_path: Path to the PSD file
+
+        Returns:
+            Image.Image: PIL Image object
+
+        Raises:
+            MediaProcessingError: If PSD cannot be loaded
+        """
+        try:
+            # First try standard PIL loading (which has basic PSD support)
+            try:
+                if not os.path.isabs(image_path):
+                    try:
+                        image_data = await self._file_manager.read_binary(image_path)
+                        return Image.open(io.BytesIO(image_data))
+                    except Exception:
+                        pass
+
+                # Direct loading
+                return Image.open(image_path)
+
+            except Exception as e:
+                self._logger.warning(f"Standard PSD loading failed: {e}, trying enhanced method")
+
+            # If psd-tools is available, use it for better PSD support
+            try:
+                from psd_tools import PSDImage
+                psd = PSDImage.open(image_path)
+                return psd.composite()
+            except ImportError:
+                self._logger.warning("psd-tools not available, falling back to basic PSD support")
+                # Try one more time with PIL
+                return Image.open(image_path)
+
+        except Exception as e:
+            self._logger.error(f"Failed to load PSD {image_path}: {str(e)}")
+            raise MediaProcessingError(f"Failed to load PSD file: {str(e)}")
 
     async def remove_background(
             self,
@@ -991,74 +1076,119 @@ class MediaProcessor:
             overwrite: bool = False
     ) -> str:
         """
-        Save an image to disk according to format configuration.
+        Save image with enhanced EXIF metadata handling.
 
         Args:
-            image: The image to save
-            output_path: The target output path
-            format_config: Output format configuration
+            image: The PIL Image to save
+            output_path: Path where the image should be saved
+            format_config: Configuration for the output format
             overwrite: Whether to overwrite existing files
 
         Returns:
             The path where the image was saved
-
-        Raises:
-            MediaProcessingError: If saving fails
         """
         try:
-            # Determine the output format
             output_format = format_config.format.value.upper()
             if output_format == 'JPEG':
-                output_format = 'JPEG'  # PIL uses JPEG not JPG
+                output_format = 'JPEG'
 
-            # Create directory if needed
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-            # Check if file exists and handle accordingly
-            if os.path.exists(output_path) and not overwrite:
-                # Generate a new filename with a counter
+            if os.path.exists(output_path) and (not overwrite):
                 base_name, ext = os.path.splitext(output_path)
                 counter = 1
-                new_path = f"{base_name}_{counter}{ext}"
-
+                new_path = f'{base_name}_{counter}{ext}'
                 while os.path.exists(new_path):
                     counter += 1
-                    new_path = f"{base_name}_{counter}{ext}"
-
+                    new_path = f'{base_name}_{counter}{ext}'
                 output_path = new_path
 
-            # Prepare save arguments
-            save_args = {}
+            save_args: Dict[str, Any] = {}
 
+            # Handle format-specific settings
             if output_format in ('JPEG', 'WEBP'):
-                # JPEG doesn't support alpha, convert to RGB
                 if image.mode == 'RGBA':
-                    # Use white background
                     background = Image.new('RGB', image.size, (255, 255, 255))
                     background.paste(image, mask=image.split()[3])
                     image = background
-
                 save_args['quality'] = format_config.quality
-
             elif output_format == 'PNG':
                 save_args['optimize'] = True
-
             elif output_format == 'TIFF':
                 save_args['compression'] = 'tiff_lzw'
 
-            # Handle EXIF data
+            # Enhanced EXIF handling
+            exif_data = None
+
+            # Preserve original EXIF if requested and available
             if format_config.preserve_exif and hasattr(image, 'info') and 'exif' in image.info:
-                save_args['exif'] = image.info['exif']
+                exif_data = image.info['exif']
+
+                # If we have custom EXIF data to add, merge it with existing
+                if format_config.custom_exif and output_format in ('JPEG', 'TIFF'):
+                    try:
+                        # Parse the existing EXIF data
+                        exif_dict = piexif.load(exif_data)
+
+                        # Add custom EXIF data
+                        for key, value in format_config.custom_exif.items():
+                            # Map common keys to EXIF tags
+                            if key.lower() == 'artist':
+                                exif_dict['0th'][piexif.ImageIFD.Artist] = value.encode('utf-8')
+                            elif key.lower() == 'copyright':
+                                exif_dict['0th'][piexif.ImageIFD.Copyright] = value.encode('utf-8')
+                            elif key.lower() == 'description':
+                                exif_dict['0th'][piexif.ImageIFD.ImageDescription] = value.encode('utf-8')
+                            elif key.lower() == 'software':
+                                exif_dict['0th'][piexif.ImageIFD.Software] = value.encode('utf-8')
+                            elif key.lower() == 'datetime':
+                                exif_dict['0th'][piexif.ImageIFD.DateTime] = value.encode('utf-8')
+                            elif key.lower() == 'comment':
+                                exif_dict['Exif'][piexif.ExifIFD.UserComment] = value.encode('utf-8')
+                            # Add more mappings as needed
+
+                        # Convert back to binary EXIF data
+                        exif_data = piexif.dump(exif_dict)
+                    except Exception as e:
+                        self._logger.warning(f"Failed to merge custom EXIF data: {str(e)}")
+
+            # If we have custom EXIF but no original EXIF, create new EXIF data
+            elif format_config.custom_exif and output_format in ('JPEG', 'TIFF'):
+                try:
+                    exif_dict = {'0th': {}, 'Exif': {}, 'GPS': {}, '1st': {}, 'thumbnail': None}
+
+                    # Add custom EXIF data
+                    for key, value in format_config.custom_exif.items():
+                        if key.lower() == 'artist':
+                            exif_dict['0th'][piexif.ImageIFD.Artist] = value.encode('utf-8')
+                        elif key.lower() == 'copyright':
+                            exif_dict['0th'][piexif.ImageIFD.Copyright] = value.encode('utf-8')
+                        elif key.lower() == 'description':
+                            exif_dict['0th'][piexif.ImageIFD.ImageDescription] = value.encode('utf-8')
+                        elif key.lower() == 'software':
+                            exif_dict['0th'][piexif.ImageIFD.Software] = value.encode('utf-8')
+                        elif key.lower() == 'datetime':
+                            exif_dict['0th'][piexif.ImageIFD.DateTime] = value.encode('utf-8')
+                        elif key.lower() == 'comment':
+                            exif_dict['Exif'][piexif.ExifIFD.UserComment] = value.encode('utf-8')
+
+                    # Convert to binary EXIF data
+                    exif_data = piexif.dump(exif_dict)
+                except Exception as e:
+                    self._logger.warning(f"Failed to create custom EXIF data: {str(e)}")
+
+            # Add EXIF data to save arguments if available
+            if exif_data and output_format in ('JPEG', 'TIFF'):
+                save_args['exif'] = exif_data
 
             # Save the image
             image.save(output_path, format=output_format, **save_args)
-
-            self._logger.debug(f"Image saved to {output_path}")
+            self._logger.debug(f'Image saved to {output_path}')
             return output_path
 
         except Exception as e:
-            self._logger.error(f"Error saving image: {str(e)}")
-            raise MediaProcessingError(f"Error saving image: {str(e)}")
+            self._logger.error(f'Error saving image with EXIF: {str(e)}')
+            raise MediaProcessingError(f'Error saving image with EXIF: {str(e)}')
 
     async def load_processing_config(self, config_path: str) -> ProcessingConfig:
         """
@@ -1311,3 +1441,46 @@ class MediaProcessor:
         except Exception as e:
             self._logger.error(f"Error creating preview: {str(e)}")
             raise MediaProcessingError(f"Error creating preview: {str(e)}")
+
+    async def create_preview_from_image(
+            self,
+            image: Image.Image,
+            format_config: OutputFormat,
+            size: int = 0
+    ) -> bytes:
+        """
+        Create a preview directly from an image without loading from disk.
+
+        Args:
+            image: Input PIL Image
+            format_config: Format configuration
+            size: Maximum dimension for preview scaling (0 for no scaling)
+
+        Returns:
+            bytes: Preview image data
+        """
+        try:
+            # Make a copy to avoid modifying the original
+            preview_image = image.copy()
+
+            # Resize if needed
+            if size > 0 and (preview_image.width > size or preview_image.height > size):
+                if preview_image.width > preview_image.height:
+                    width = size
+                    height = int(preview_image.height * (width / preview_image.width))
+                else:
+                    height = size
+                    width = int(preview_image.width * (height / preview_image.height))
+                preview_image = preview_image.resize((width, height), Image.LANCZOS)
+
+            # Apply format settings
+            preview_image = await self.apply_format(preview_image, format_config)
+
+            # Convert to bytes
+            output = io.BytesIO()
+            preview_image.save(output, format="PNG")
+            return output.getvalue()
+
+        except Exception as e:
+            self._logger.error(f"Error creating preview from image: {str(e)}")
+            raise MediaProcessingError(f"Error creating preview from image: {str(e)}")

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from .processors.optimized_processor import OptimizedProcessor
+from .ui.ai_manager_dialog import AIModelManagerDialog
+from .utils.ai_background_remover import AIBackgroundRemover
+from .utils.font_manager import FontManager
+
 """
 Media Processor Plugin.
 
@@ -67,6 +72,9 @@ class MediaProcessorPlugin(BasePlugin):
         self._task_manager: Optional[TaskManager] = None
         self._file_manager: Optional[FileManager] = None
         self._config_manager: Optional[ConfigManager] = None
+        self._ai_background_remover = None
+        self._font_manager = None
+        self._optimized_processor = None
 
         self._media_processor: Optional[MediaProcessor] = None
         self._batch_processor: Optional[BatchProcessor] = None
@@ -77,6 +85,8 @@ class MediaProcessorPlugin(BasePlugin):
 
         # Track active batch processing jobs
         self._active_jobs: Set[str] = set()
+
+        self._initialized = False
 
     async def initialize(self, application_core: Any, **kwargs: Any) -> None:
         """
@@ -110,6 +120,8 @@ class MediaProcessorPlugin(BasePlugin):
                 self._icon_path = icon_path
                 self._logger.debug(f"Found plugin icon at: {icon_path}")
 
+        self._font_manager = FontManager(self._logger)
+
         # Initialize processors
         self._media_processor = MediaProcessor(
             self._file_manager,
@@ -118,6 +130,9 @@ class MediaProcessorPlugin(BasePlugin):
             self._plugin_config.get("processing", {}),
             self._plugin_config.get("background_removal", {})
         )
+
+        self._ai_background_remover = AIBackgroundRemover(self._file_manager, self._config_manager, self._logger)
+        await self._ai_background_remover.initialize()
 
         self._batch_processor = BatchProcessor(
             self._media_processor,
@@ -226,6 +241,13 @@ class MediaProcessorPlugin(BasePlugin):
                 callback=lambda: asyncio.create_task(self._show_active_jobs())
             )
 
+            await ui_integration.add_menu_item(
+                plugin_id=self.plugin_id,
+                parent_menu='Media',
+                title='AI Model Manager',
+                callback=lambda: asyncio.create_task(self._open_ai_model_manager())
+            )
+
             # Create main widget
             try:
                 if not self._main_widget:
@@ -293,6 +315,22 @@ class MediaProcessorPlugin(BasePlugin):
             parent=self._main_widget
         )
         config_editor.exec()
+
+    async def _open_ai_model_manager(self) -> None:
+        """Open the AI model manager dialog."""
+        if not self._concurrency_manager.is_main_thread():
+            await self._concurrency_manager.run_on_main_thread(
+                lambda: asyncio.create_task(self._open_ai_model_manager())
+            )
+            return
+
+        model_manager = AIModelManagerDialog(
+            self._ai_background_remover,
+            self._config_manager,
+            self._logger,
+            parent=self._main_widget
+        )
+        model_manager.exec()
 
     async def _show_active_jobs(self) -> None:
         """Show dialog with active processing jobs."""
