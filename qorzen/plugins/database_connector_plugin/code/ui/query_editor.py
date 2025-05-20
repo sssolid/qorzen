@@ -6,9 +6,9 @@ Enhanced SQL query editor for the Database Connector Plugin.
 This module provides a specialized editor for writing and executing SQL queries,
 with syntax highlighting, parameter support (with descriptions/tooltips), and field mapping integration.
 """
-
 import asyncio
 import re
+import logging
 from typing import Any, Dict, List, Optional, Set, Tuple, Union, cast
 
 from PySide6.QtCore import Qt, QRegularExpression, Signal, Slot, QSize, QPoint, QTimer
@@ -24,109 +24,121 @@ from PySide6.QtWidgets import (
 )
 
 from ..models import SavedQuery, FieldMapping, ParameterDescription
+from ..utils.mapping import FieldMappingManager
 
+# Regular expression for detecting parameters in SQL queries
 PARAMETER_PATTERN = r':([A-Za-z0-9_\-\.]+)(?:\{([^}]*)\})?'
 
 
-def detect_query_parameters(query: str, logger: Any) -> List[ParameterDescription]:
-    """
-    Detect parameters in a SQL query with improved pattern matching.
+class QueryParameterManager:
+    """Manager for handling query parameters and descriptions."""
 
-    Args:
-        query: The SQL query text to analyze
-        logger: Logger for diagnostic messages
-
-    Returns:
-        List of parameter descriptions found in the query
-    """
-    matches = re.finditer(PARAMETER_PATTERN, query)
-    param_descriptions: List[ParameterDescription] = []
-    seen_params = set()
-
-    for match in matches:
-        param_name = match.group(1)
-        description = match.group(2) or ''
-
-        if param_name not in seen_params:
-            logger.debug(f'Detected parameter: {param_name} with description: {description}')
-            param_descriptions.append(
-                ParameterDescription(
-                    name=param_name,
-                    description=description.strip()
-                )
-            )
-            seen_params.add(param_name)
-
-    return param_descriptions
-
-class SQLSyntaxHighlighter(QSyntaxHighlighter):
-    """Syntax highlighter for SQL queries."""
-
-    def __init__(self, document: QTextDocument) -> None:
-        """Initialize the SQL syntax highlighter.
+    def __init__(self, logger: Optional[Any] = None) -> None:
+        """Initialize the parameter manager.
 
         Args:
-            document: The document to highlight
+            logger: Optional logger for logging parameter information
+        """
+        self._logger = logger or logging.getLogger(__name__)
+
+    def detect_parameters(self, query: str) -> List[ParameterDescription]:
+        """Detect parameters in a SQL query.
+
+        Args:
+            query: SQL query text
+
+        Returns:
+            List of detected parameters with descriptions
+        """
+        matches = re.finditer(PARAMETER_PATTERN, query)
+        param_descriptions: List[ParameterDescription] = []
+        seen_params = set()
+
+        for match in matches:
+            param_name = match.group(1)
+            description = match.group(2) or ''
+
+            if param_name not in seen_params:
+                self._logger.debug(f'Detected parameter: {param_name} with description: {description}')
+                param_descriptions.append(
+                    ParameterDescription(name=param_name, description=description.strip())
+                )
+                seen_params.add(param_name)
+
+        return param_descriptions
+
+
+class SQLSyntaxHighlighter(QSyntaxHighlighter):
+    """Syntax highlighter for SQL queries in the editor."""
+
+    def __init__(self, document: QTextDocument) -> None:
+        """Initialize the syntax highlighter.
+
+        Args:
+            document: Text document to highlight
         """
         super().__init__(document)
         self.colors = self._get_syntax_highlighting_colors()
         self.highlighting_rules: List[Tuple[QRegularExpression, QTextCharFormat]] = []
 
-        # Keywords
+        # SQL keywords highlighting
         keyword_format = QTextCharFormat()
         keyword_format.setForeground(self.colors.get('keyword', QColor(0, 0, 255)))
         keyword_format.setFontWeight(QFont.Bold)
+
         keywords = self._get_sql_keywords()
         keyword_patterns = [f'\\b{keyword}\\b' for keyword in keywords]
+
         for pattern in keyword_patterns:
             regexp = QRegularExpression(pattern)
             regexp.setPatternOptions(QRegularExpression.CaseInsensitiveOption)
             self.highlighting_rules.append((regexp, keyword_format))
 
-        # Strings
+        # String literals
         string_format = QTextCharFormat()
         string_format.setForeground(self.colors.get('string', QColor(0, 128, 0)))
         self.highlighting_rules.append((QRegularExpression("'[^']*'"), string_format))
 
-        # Numbers
+        # Number literals
         number_format = QTextCharFormat()
         number_format.setForeground(self.colors.get('number', QColor(128, 0, 128)))
         self.highlighting_rules.append((QRegularExpression('\\b\\d+(\\.\\d+)?\\b'), number_format))
 
-        # Functions
+        # Function calls
         function_format = QTextCharFormat()
         function_format.setForeground(self.colors.get('function', QColor(255, 128, 0)))
         function_format.setFontWeight(QFont.Bold)
         self.highlighting_rules.append((QRegularExpression('\\b[A-Za-z0-9_]+(?=\\()'), function_format))
 
-        # Comments
+        # SQL comments
         comment_format = QTextCharFormat()
         comment_format.setForeground(self.colors.get('comment', QColor(128, 128, 128)))
         comment_format.setFontItalic(True)
-        self.highlighting_rules.append((QRegularExpression('--[^\n]*'), comment_format))
+        self.highlighting_rules.append((QRegularExpression('--[^\\n]*'), comment_format))
 
-        # Parameters (with or without description, like :param or :param{description})
+        # Parameter highlighting
         parameter_format = QTextCharFormat()
         parameter_format.setForeground(self.colors.get('parameter', QColor(0, 128, 128)))
         parameter_format.setFontWeight(QFont.Bold)
-        # Match :param or :param{description}
-        self.highlighting_rules.append((QRegularExpression(':[A-Za-z0-9_]+(\\{[^}]*\\})?'), parameter_format))
+        self.highlighting_rules.append(
+            (QRegularExpression(':[A-Za-z0-9_]+(\\{[^}]*\\})?'), parameter_format)
+        )
 
     def highlightBlock(self, text: str) -> None:
-        """Apply syntax highlighting to a block of text.
+        """Highlight a block of text.
 
         Args:
-            text: The text to highlight
+            text: Text to highlight
         """
+        # Apply all highlighting rules
         for pattern, format in self.highlighting_rules:
             match_iterator = pattern.globalMatch(text)
             while match_iterator.hasNext():
                 match = match_iterator.next()
                 self.setFormat(match.capturedStart(), match.capturedLength(), format)
 
-        self.setCurrentBlockState(0)
-
         # Handle multi-line comments
+        self.setCurrentBlockState(0)
         comment_start = QRegularExpression('/\\*')
         comment_end = QRegularExpression('\\*/')
         comment_format = QTextCharFormat()
@@ -149,6 +161,7 @@ class SQLSyntaxHighlighter(QSyntaxHighlighter):
                 comment_length = end_index - start_index + end_match.capturedLength()
 
             self.setFormat(start_index, comment_length, comment_format)
+
             start_match = comment_start.match(text, start_index + comment_length)
             start_index = start_match.capturedStart()
 
@@ -156,7 +169,7 @@ class SQLSyntaxHighlighter(QSyntaxHighlighter):
         """Get the colors for syntax highlighting.
 
         Returns:
-            A dictionary mapping syntax element names to colors
+            Dictionary mapping syntax elements to colors
         """
         return {
             'keyword': QColor(0, 128, 255),
@@ -175,7 +188,7 @@ class SQLSyntaxHighlighter(QSyntaxHighlighter):
         """Get the list of SQL keywords to highlight.
 
         Returns:
-            A list of SQL keywords
+            List of SQL keywords
         """
         return [
             'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'IN', 'BETWEEN', 'LIKE',
@@ -186,58 +199,70 @@ class SQLSyntaxHighlighter(QSyntaxHighlighter):
             'TRUNCATE', 'DELETE', 'UPDATE', 'SET', 'INSERT', 'INTO', 'VALUES', 'EXISTS',
             'GRANT', 'REVOKE', 'COMMIT', 'ROLLBACK', 'TRANSACTION', 'WITH', 'RECURSIVE',
             'LIMIT', 'OFFSET', 'FETCH', 'FIRST', 'NEXT', 'ROWS', 'ONLY',
+
             # Data types
-            'INT', 'INTEGER', 'SMALLINT', 'DECIMAL', 'NUMERIC', 'FLOAT', 'DOUBLE',
-            'REAL', 'CHAR', 'VARCHAR', 'TEXT', 'DATE', 'TIME', 'TIMESTAMP', 'DATETIME',
-            'BOOLEAN', 'BINARY', 'VARBINARY', 'BLOB', 'CLOB',
+            'INT', 'INTEGER', 'SMALLINT', 'DECIMAL', 'NUMERIC', 'FLOAT', 'DOUBLE', 'REAL',
+            'CHAR', 'VARCHAR', 'TEXT', 'DATE', 'TIME', 'TIMESTAMP', 'DATETIME', 'BOOLEAN',
+            'BINARY', 'VARBINARY', 'BLOB', 'CLOB',
+
             # Functions
-            'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'COALESCE', 'IFNULL', 'CAST',
-            'UPPER', 'LOWER', 'TRIM', 'LTRIM', 'RTRIM', 'SUBSTRING', 'LENGTH',
-            'CONCAT', 'REPLACE', 'CURRENT_DATE', 'CURRENT_TIME', 'CURRENT_TIMESTAMP',
-            'EXTRACT', 'TO_CHAR', 'TO_DATE', 'DATEADD', 'DATEDIFF'
+            'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'COALESCE', 'IFNULL', 'CAST', 'UPPER',
+            'LOWER', 'TRIM', 'LTRIM', 'RTRIM', 'SUBSTRING', 'LENGTH', 'CONCAT', 'REPLACE',
+            'CURRENT_DATE', 'CURRENT_TIME', 'CURRENT_TIMESTAMP', 'EXTRACT', 'TO_CHAR',
+            'TO_DATE', 'DATEADD', 'DATEDIFF'
         ]
 
 
 class SQLEditor(QTextEdit):
-    """Enhanced SQL editor with syntax highlighting and auto-indentation."""
+    """Enhanced text editor for SQL queries with syntax highlighting and auto-indentation."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """Initialize the SQL editor.
 
         Args:
-            parent: The parent widget
+            parent: Parent widget
         """
         super().__init__(parent)
+
+        # Set up editor appearance
         self.setFont(QFont('Courier New', 10))
         self.setAcceptRichText(False)
         self.setLineWrapMode(QTextEdit.NoWrap)
+
+        # Add SQL syntax highlighting
         self._highlighter = SQLSyntaxHighlighter(self.document())
+
+        # Highlight current line
         self._highlight_current_line()
         self.cursorPositionChanged.connect(self._highlight_current_line)
 
     def _highlight_current_line(self) -> None:
-        """Highlight the current line the cursor is positioned on."""
+        """Highlight the current line in the editor."""
         selection = QTextEdit.ExtraSelection()
-        line_color = QColor(144, 238, 144, 40)  # Light green with alpha
+        line_color = QColor(144, 238, 144, 40)  # Light green with transparency
+
         selection.format.setBackground(line_color)
         selection.format.setProperty(QTextCharFormat.FullWidthSelection, True)
         selection.cursor = self.textCursor()
         selection.cursor.clearSelection()
+
         self.setExtraSelections([selection])
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        """Handle key press events for auto-indentation and bracket matching.
+        """Handle key press events.
+
+        Implements auto-indentation and parentheses/quotes auto-completion.
 
         Args:
-            event: The key event
+            event: Key event
         """
-        # Handle Return/Enter key for auto-indentation
+        # Auto-indentation
         if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
             cursor = self.textCursor()
             cursor.select(QTextCursor.LineUnderCursor)
             current_line = cursor.selectedText()
 
-            # Get the indentation of the current line
+            # Extract indentation from current line
             indentation = ''
             for char in current_line:
                 if char in (' ', '\t'):
@@ -252,13 +277,13 @@ class SQLEditor(QTextEdit):
             )):
                 indentation += '    '
 
-            # Insert the newline and indentation
+            # Insert new line with indentation
             super().keyPressEvent(event)
             if indentation:
                 self.insertPlainText(indentation)
             return
 
-        # Auto-complete for parentheses
+        # Auto-insert closing parenthesis
         if event.key() == Qt.Key_ParenLeft:
             super().keyPressEvent(event)
             self.insertPlainText(')')
@@ -267,7 +292,7 @@ class SQLEditor(QTextEdit):
             self.setTextCursor(cursor)
             return
 
-        # Auto-complete for double quotes
+        # Auto-insert closing double quote
         if event.key() == Qt.Key_QuoteDbl:
             super().keyPressEvent(event)
             self.insertPlainText('"')
@@ -276,7 +301,7 @@ class SQLEditor(QTextEdit):
             self.setTextCursor(cursor)
             return
 
-        # Auto-complete for single quotes
+        # Auto-insert closing single quote
         if event.key() == Qt.Key_Apostrophe:
             super().keyPressEvent(event)
             self.insertPlainText("'")
@@ -289,7 +314,7 @@ class SQLEditor(QTextEdit):
         super().keyPressEvent(event)
 
     def format_sql(self) -> None:
-        """Format the SQL query text using sqlparse if available."""
+        """Format the SQL query with proper indentation and keyword casing."""
         try:
             import sqlparse
         except ImportError:
@@ -306,37 +331,49 @@ class SQLEditor(QTextEdit):
             identifier_case='lower',
             indent_width=4
         )
+
         self.setPlainText(formatted_sql)
 
 
 class ParameterWidget(QWidget):
-    def __init__(self, param_name: str, description: str = '', parent: Optional[QWidget] = None) -> None:
+    """Widget for displaying and editing a query parameter."""
+
+    valueChanged = Signal(str, object)  # Parameter name, new value
+
+    def __init__(
+            self, param_name: str, description: str = '',
+            parent: Optional[QWidget] = None
+    ) -> None:
+        """Initialize the parameter widget.
+
+        Args:
+            param_name: Parameter name
+            description: Parameter description
+            parent: Parent widget
+        """
         super().__init__(parent)
 
-        # Set up the layout
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(5)
 
-        # Store parameter info
         self.param_name = param_name
         self.description = description
 
-        # Create input field
+        # Input field for parameter value
         self.input_field = QLineEdit()
         self.input_field.setObjectName(f'param_{param_name}')
 
-        # Set placeholder text based on description
         if description:
             self.input_field.setPlaceholderText(description)
             self.input_field.setToolTip(description)
         else:
             self.input_field.setPlaceholderText('Enter value')
 
-        # Add input field to layout
+        self.input_field.textChanged.connect(self._on_value_changed)
         layout.addWidget(self.input_field)
 
-        # Create help button if we have a description
+        # Help button for parameter description
         self.help_button = None
         if description:
             self.help_button = QPushButton('?')
@@ -346,26 +383,54 @@ class ParameterWidget(QWidget):
             layout.addWidget(self.help_button)
 
     def _show_help(self) -> None:
-        """Show a tooltip with the parameter description."""
+        """Show parameter description in a tooltip."""
         if self.description and self.help_button:
-            # Calculate a good position for the tooltip
             pos = self.help_button.mapToGlobal(QPoint(0, self.help_button.height()))
             QToolTip.showText(pos, self.description, self.help_button)
 
+    def _on_value_changed(self, text: str) -> None:
+        """Handle value changes and emit signal.
+
+        Args:
+            text: New parameter value
+        """
+        value = self._convert_value(text)
+        self.valueChanged.emit(self.param_name, value)
+
     def get_value(self) -> Any:
-        value = self.input_field.text()
-        if not value or value.lower() == 'null':
+        """Get the parameter value with appropriate type conversion.
+
+        Returns:
+            Converted parameter value
+        """
+        return self._convert_value(self.input_field.text())
+
+    def _convert_value(self, text: str) -> Any:
+        """Convert text to appropriate type.
+
+        Args:
+            text: Text to convert
+
+        Returns:
+            Converted value with appropriate type
+        """
+        if not text or text.lower() == 'null':
             return None
-        elif value.isdigit():
-            return int(value)
-        elif value.replace('.', '', 1).isdigit():
-            return float(value)
-        elif value.lower() in ('true', 'false'):
-            return value.lower() == 'true'
+        elif text.isdigit():
+            return int(text)
+        elif text.replace('.', '', 1).isdigit():
+            return float(text)
+        elif text.lower() in ('true', 'false'):
+            return text.lower() == 'true'
         else:
-            return value
+            return text
 
     def set_value(self, value: Any) -> None:
+        """Set the parameter value.
+
+        Args:
+            value: Parameter value
+        """
         if value is None:
             self.input_field.setText('NULL')
         else:
@@ -373,7 +438,7 @@ class ParameterWidget(QWidget):
 
 
 class QueryEditorWidget(QWidget):
-    """Widget for editing and executing SQL queries with parameter support."""
+    """Widget for editing and executing SQL queries."""
 
     executeQueryRequested = Signal()
     saveQueryRequested = Signal()
@@ -382,20 +447,23 @@ class QueryEditorWidget(QWidget):
         """Initialize the query editor widget.
 
         Args:
-            plugin: The database connector plugin
-            logger: The logger instance
-            parent: The parent widget
+            plugin: Plugin instance
+            logger: Logger for logging messages
+            parent: Parent widget
         """
         super().__init__(parent)
+
         self._plugin = plugin
         self._logger = logger
         self._current_connection_id: Optional[str] = None
         self._current_query_id: Optional[str] = None
         self._current_mapping_id: Optional[str] = None
-        self._parameter_widgets: Dict[str, ParameterWidget] = {}  # Track parameter widgets by name
+        self._parameter_widgets: Dict[str, ParameterWidget] = {}
+        self._parameter_values: Dict[str, Any] = {}
+        self._parameter_manager = QueryParameterManager(logger)
+        self._mapping_manager = FieldMappingManager(logger=logger)
 
-        self._logger.debug("Initializing QueryEditorWidget")
-
+        self._logger.debug('Initializing QueryEditorWidget')
         self._init_ui()
         self._connect_signals()
 
@@ -403,10 +471,11 @@ class QueryEditorWidget(QWidget):
         """Initialize the user interface."""
         main_layout = QVBoxLayout(self)
 
-        # Toolbar
+        # Toolbar with actions
         toolbar = QToolBar('Query Tools')
         toolbar.setIconSize(QSize(16, 16))
 
+        # New/Save Query actions
         new_action = toolbar.addAction('New Query')
         new_action.triggered.connect(self._on_new_query)
 
@@ -415,11 +484,13 @@ class QueryEditorWidget(QWidget):
 
         toolbar.addSeparator()
 
+        # Format SQL action
         format_action = toolbar.addAction('Format SQL')
         format_action.triggered.connect(self._on_format_sql)
 
         toolbar.addSeparator()
 
+        # Results limit control
         limit_label = QLabel('Limit results:')
         toolbar.addWidget(limit_label)
 
@@ -432,6 +503,7 @@ class QueryEditorWidget(QWidget):
 
         toolbar.addSeparator()
 
+        # Field mapping selector
         mapping_label = QLabel('Apply field mapping:')
         toolbar.addWidget(mapping_label)
 
@@ -442,10 +514,10 @@ class QueryEditorWidget(QWidget):
 
         main_layout.addWidget(toolbar)
 
-        # Main content splitter
+        # Main splitter with query list and editor
         splitter = QSplitter(Qt.Horizontal)
 
-        # Left panel - saved queries
+        # Saved queries panel
         queries_widget = QWidget()
         queries_layout = QVBoxLayout(queries_widget)
         queries_layout.setContentsMargins(0, 0, 0, 0)
@@ -458,7 +530,9 @@ class QueryEditorWidget(QWidget):
         self._queries_list.itemDoubleClicked.connect(self._on_query_double_clicked)
         queries_layout.addWidget(self._queries_list)
 
+        # Query list actions
         query_list_toolbar = QToolBar()
+
         load_action = query_list_toolbar.addAction('Load')
         load_action.triggered.connect(self._on_load_query)
 
@@ -474,10 +548,9 @@ class QueryEditorWidget(QWidget):
         export_action.triggered.connect(self._on_export_queries)
 
         queries_layout.addWidget(query_list_toolbar)
-
         splitter.addWidget(queries_widget)
 
-        # Right panel - editor and parameters
+        # SQL Editor panel
         editor_widget = QWidget()
         editor_layout = QVBoxLayout(editor_widget)
         editor_layout.setContentsMargins(0, 0, 0, 0)
@@ -489,23 +562,20 @@ class QueryEditorWidget(QWidget):
         self._editor = SQLEditor()
         editor_layout.addWidget(self._editor)
 
-        # Parameters section
-        self._params_group = QGroupBox("Query Parameters")
+        # Parameters panel
+        self._params_group = QGroupBox('Query Parameters')
         self._params_layout = QFormLayout(self._params_group)
 
-        # Create a scroll area for parameters
         params_scroll = QScrollArea()
         params_scroll.setWidgetResizable(True)
         params_scroll.setWidget(self._params_group)
         params_scroll.setMaximumHeight(150)
 
         editor_layout.addWidget(params_scroll)
-
         splitter.addWidget(editor_widget)
 
         # Set initial splitter sizes
         splitter.setSizes([150, 450])
-
         main_layout.addWidget(splitter)
 
         # Execute button
@@ -515,14 +585,13 @@ class QueryEditorWidget(QWidget):
         self._execute_button = QPushButton('Execute Query')
         self._execute_button.setMinimumWidth(150)
         self._execute_button.clicked.connect(self._on_execute_query)
+        self._execute_button.setEnabled(False)
 
         execute_layout.addWidget(self._execute_button)
         execute_layout.addStretch()
-
         main_layout.addLayout(execute_layout)
 
-        # Set initial state
-        self._execute_button.setEnabled(False)
+        # Hide parameters initially
         self._params_group.setVisible(False)
 
     def _connect_signals(self) -> None:
@@ -530,13 +599,14 @@ class QueryEditorWidget(QWidget):
         self._editor.textChanged.connect(self._on_query_text_changed)
 
     async def refresh(self) -> None:
-        """Refresh the widget content."""
+        """Refresh the editor content and state."""
         await self.reload_queries()
+
         if self._current_connection_id:
             await self._load_field_mappings()
 
     async def reload_queries(self) -> None:
-        """Reload the saved queries list."""
+        """Reload the list of saved queries."""
         try:
             if not self._current_connection_id:
                 self._queries_list.clear()
@@ -545,7 +615,7 @@ class QueryEditorWidget(QWidget):
             saved_queries = await self._plugin.get_saved_queries(self._current_connection_id)
             self._queries_list.clear()
 
-            # Sort queries with favorites first
+            # Sort queries by name
             sorted_queries = sorted(saved_queries.values(), key=lambda q: q.name.lower())
 
             # Add favorites first
@@ -554,7 +624,7 @@ class QueryEditorWidget(QWidget):
                 item.setData(Qt.UserRole, query.id)
                 self._queries_list.addItem(item)
 
-            # Then add non-favorites
+            # Add non-favorites
             for query in [q for q in sorted_queries if not q.is_favorite]:
                 item = QListWidgetItem(query.name)
                 item.setData(Qt.UserRole, query.id)
@@ -583,13 +653,14 @@ class QueryEditorWidget(QWidget):
                 key=lambda m: f"{m.table_name}_{m.description or ''}"
             )
 
+            # Add all mappings to combo box
             for mapping in sorted_mappings:
                 display_text = mapping.table_name
                 if mapping.description:
                     display_text += f' ({mapping.description})'
                 self._mapping_combo.addItem(display_text, mapping.id)
 
-            # Restore previous selection if it still exists
+            # Restore previous selection if possible
             if current_id:
                 for i in range(self._mapping_combo.count()):
                     if self._mapping_combo.itemData(i) == current_id:
@@ -600,11 +671,11 @@ class QueryEditorWidget(QWidget):
             self._logger.error(f'Failed to load field mappings: {str(e)}')
 
     def set_connection_status(self, connection_id: str, connected: bool) -> None:
-        """Update the UI based on connection status.
+        """Update UI based on connection status.
 
         Args:
-            connection_id: The connection ID
-            connected: Whether the connection is active
+            connection_id: Connection ID
+            connected: Whether connection is established
         """
         if connected:
             self._current_connection_id = connection_id
@@ -619,15 +690,15 @@ class QueryEditorWidget(QWidget):
         """Get the current query text.
 
         Returns:
-            The query text
+            Current SQL query text
         """
         return self._editor.toPlainText()
 
     def get_parameters(self) -> Dict[str, Any]:
-        """Get the query parameters.
+        """Get the current parameter values.
 
         Returns:
-            A dictionary of parameter names to values
+            Dictionary of parameter values
         """
         params = {}
         for param_name, widget in self._parameter_widgets.items():
@@ -635,10 +706,10 @@ class QueryEditorWidget(QWidget):
         return params
 
     def get_limit(self) -> Optional[int]:
-        """Get the result limit setting.
+        """Get the current result limit.
 
         Returns:
-            The limit or None if no limit
+            Result limit or None for no limit
         """
         if self._limit_spin.value() == 0:
             return None
@@ -648,23 +719,23 @@ class QueryEditorWidget(QWidget):
         """Get the selected field mapping ID.
 
         Returns:
-            The mapping ID or None if no mapping selected
+            Field mapping ID or None if no mapping selected
         """
         return self._mapping_combo.currentData()
 
     def get_current_query_id(self) -> Optional[str]:
-        """Get the current query ID.
+        """Get the ID of the currently edited query.
 
         Returns:
-            The query ID or None if no query loaded
+            Query ID or None if editing a new query
         """
         return self._current_query_id
 
     def get_current_query_name(self) -> str:
-        """Get the name of the current query.
+        """Get the name of the currently edited query.
 
         Returns:
-            The query name or empty string if no query selected
+            Query name or empty string if unknown
         """
         selected_items = self._queries_list.selectedItems()
         if selected_items:
@@ -678,7 +749,8 @@ class QueryEditorWidget(QWidget):
         return ''
 
     def _on_query_text_changed(self) -> None:
-        """Handle query text changes with debouncing for parameter detection."""
+        """Handle query text changes."""
+        # Use debouncing to avoid excessive parameter updates
         if hasattr(self, '_param_update_timer'):
             self._param_update_timer.stop()
         else:
@@ -686,48 +758,27 @@ class QueryEditorWidget(QWidget):
             self._param_update_timer.setSingleShot(True)
             self._param_update_timer.timeout.connect(self._update_parameters_debounced)
 
-        self._param_update_timer.start(500)  # 500ms debounce delay
+        self._param_update_timer.start(500)
 
     def _update_parameters_debounced(self) -> None:
-        """Update parameters after debounce timeout."""
+        """Update parameter controls after debounce delay."""
         query_text = self._editor.toPlainText()
         self._logger.debug(f'Query changed, length: {len(query_text)}')
 
-        params = detect_query_parameters(query_text, self._logger)
+        # Detect parameters in query
+        params = self._parameter_manager.detect_parameters(query_text)
         self._logger.debug(f'Detected {len(params)} parameters')
 
+        # Update parameter controls
         self._update_parameter_controls(params)
 
-    def _detect_query_parameters_with_descriptions(self, query: str) -> List[ParameterDescription]:
-        """
-        Detect query parameters and their descriptions in the SQL text.
-        Parameters can be specified as :name or :name{description}
-        """
-        # Pattern to match parameters with optional descriptions
-        pattern = r':([A-Za-z0-9_]+)(?:\{([^}]*)\})?'
-        matches = re.finditer(pattern, query)
-
-        param_descriptions: List[ParameterDescription] = []
-        seen_params = set()
-
-        for match in matches:
-            param_name = match.group(1)
-            description = match.group(2) or ''
-
-            # Only add the parameter once
-            if param_name not in seen_params:
-                self._logger.debug(f"Detected parameter: {param_name} with description: {description}")
-                param_descriptions.append(ParameterDescription(
-                    name=param_name,
-                    description=description.strip()
-                ))
-                seen_params.add(param_name)
-
-        return param_descriptions
-
     def _update_parameter_controls(self, param_descriptions: List[ParameterDescription]) -> None:
-        """Update parameter UI controls based on detected parameters."""
-        # Save current parameter values to restore them after rebuilding controls
+        """Update parameter input controls based on detected parameters.
+
+        Args:
+            param_descriptions: List of parameter descriptions
+        """
+        # Save current values
         current_values = {}
         current_descriptions = {}
 
@@ -735,179 +786,148 @@ class QueryEditorWidget(QWidget):
             current_values[param_name] = widget.input_field.text()
             current_descriptions[param_name] = getattr(widget, 'description', '')
 
+        # Clear existing controls
         self._clear_parameter_controls()
 
+        # If no parameters, hide the panel
         if not param_descriptions:
             self._params_group.setVisible(False)
             return
 
+        # Show parameters panel
         self._params_group.setVisible(True)
+
+        # Create parameter widgets
         self._logger.debug(f'Creating parameters: {[p.name for p in param_descriptions]}')
 
         for param in param_descriptions:
-            # Create parameter widget
-            widget = self._create_parameter_widget(param.name, param.description)
+            # Get description from saved query if available
+            description = param.description
+            if (self._current_query_id and
+                    self._current_query_id in self._plugin._saved_queries and
+                    hasattr(self._plugin._saved_queries[self._current_query_id], 'parameter_descriptions')):
 
-            # Restore saved value if available
+                saved_desc = self._plugin._saved_queries[self._current_query_id].parameter_descriptions.get(
+                    param.name, ''
+                )
+                if saved_desc:
+                    description = saved_desc
+
+            # Create parameter widget
+            widget = ParameterWidget(param.name, description)
+
+            # Restore previous value if exists
             if param.name in current_values:
                 widget.input_field.setText(current_values[param.name])
 
             # Add to form layout
             self._params_layout.addRow(f'{param.name}:', widget)
-            self._parameter_widgets[param.name] = widget
 
-            # Add context menu for parameter
+            # Store widget and connect signals
+            self._parameter_widgets[param.name] = widget
+            widget.valueChanged.connect(self._on_parameter_value_changed)
+
+            # Add context menu for editing description
             self._add_parameter_context_menu(widget)
 
-    def _create_parameter_widget(self, param_name: str, description: str = '') -> Any:
-        """Create a parameter widget with input field and help button."""
-        from ..models import ParameterDescription
+    def _on_parameter_value_changed(self, param_name: str, value: Any) -> None:
+        """Handle parameter value changes.
 
-        # If saved query has descriptions for this parameter, use them
-        if (self._current_query_id and
-                self._current_query_id in self._plugin._saved_queries and
-                hasattr(self._plugin._saved_queries[self._current_query_id], 'parameter_descriptions')):
+        Args:
+            param_name: Name of the parameter
+            value: New value
+        """
+        self._parameter_values[param_name] = value
+        self._logger.debug(f'Parameter {param_name} changed to {value}')
 
-            saved_desc = self._plugin._saved_queries[self._current_query_id].parameter_descriptions.get(param_name, '')
-            if saved_desc:
-                description = saved_desc
+    def _add_parameter_context_menu(self, param_widget: ParameterWidget) -> None:
+        """Add context menu to parameter widget.
 
-        # Create widget
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
-
-        # Add properties to widget
-        widget.param_name = param_name
-        widget.description = description
-
-        # Create input field
-        input_field = QLineEdit()
-        input_field.setObjectName(f'param_{param_name}')
-        if description:
-            input_field.setPlaceholderText(description)
-            input_field.setToolTip(description)
-        else:
-            input_field.setPlaceholderText('Enter value')
-
-        widget.input_field = input_field
-        layout.addWidget(input_field)
-
-        # Add help button if we have a description
-        if description:
-            help_button = self._create_help_button(widget)
-            widget.help_button = help_button
-            layout.addWidget(help_button)
-        else:
-            widget.help_button = None
-
-        return widget
-
-    def _create_help_button(self, param_widget: Any) -> QPushButton:
-        """Create a help button for a parameter."""
-        help_button = QPushButton('?')
-        help_button.setFixedSize(24, 24)
-        help_button.setToolTip(param_widget.description)
-
-        # Show tooltip when clicked
-        def show_tooltip():
-            pos = help_button.mapToGlobal(QPoint(0, help_button.height()))
-            QToolTip.showText(pos, param_widget.description, help_button)
-
-        help_button.clicked.connect(show_tooltip)
-        return help_button
-
-    def _add_parameter_context_menu(self, param_widget: Any) -> None:
-        """Add context menu to parameter widget for editing descriptions."""
+        Args:
+            param_widget: Parameter widget
+        """
         input_field = param_widget.input_field
-
-        # Set up context menu policy
         input_field.setContextMenuPolicy(Qt.CustomContextMenu)
 
-        # Create context menu handler
         def show_context_menu(pos: QPoint) -> None:
             menu = QMenu()
-
-            edit_desc_action = menu.addAction("Edit Description")
+            edit_desc_action = menu.addAction('Edit Description')
             edit_desc_action.triggered.connect(
                 lambda: self._edit_parameter_description(param_widget)
             )
-
             menu.exec_(input_field.mapToGlobal(pos))
 
-        # Connect the handler
         input_field.customContextMenuRequested.connect(show_context_menu)
 
-    def _edit_parameter_description(self, param_widget: Any) -> None:
-        """Show dialog to edit parameter description."""
+    def _edit_parameter_description(self, param_widget: ParameterWidget) -> None:
+        """Edit parameter description.
+
+        Args:
+            param_widget: Parameter widget
+        """
         description, ok = QInputDialog.getText(
             self,
-            f"Edit Parameter Description",
-            f"Enter description for parameter {param_widget.param_name}:",
+            f'Edit Parameter Description',
+            f'Enter description for parameter {param_widget.param_name}:',
             text=param_widget.description
         )
 
         if ok:
-            # Update the widget description
+            # Update widget
             param_widget.description = description
             param_widget.input_field.setPlaceholderText(description)
             param_widget.input_field.setToolTip(description)
 
-            # Update or create help button
+            # Update help button
             if param_widget.help_button:
                 param_widget.help_button.setToolTip(description)
             elif description:
-                # Only add help button if we have a description
-                param_widget.help_button = self._create_help_button(param_widget)
-                param_widget.layout().addWidget(param_widget.help_button)
+                # Create help button if it doesn't exist
+                layout = param_widget.layout()
+                param_widget.help_button = QPushButton('?')
+                param_widget.help_button.setFixedSize(24, 24)
+                param_widget.help_button.setToolTip(description)
+                param_widget.help_button.clicked.connect(param_widget._show_help)
+                layout.addWidget(param_widget.help_button)
 
-            # Update the parameter description in the current query
+            # Update saved query
             if self._current_query_id and self._current_query_id in self._plugin._saved_queries:
                 query = self._plugin._saved_queries[self._current_query_id]
-
-                # Initialize parameter descriptions if not present
                 if not hasattr(query, 'parameter_descriptions'):
                     query.parameter_descriptions = {}
 
-                # Update the description
                 if description:
                     query.parameter_descriptions[param_widget.param_name] = description
                 elif param_widget.param_name in query.parameter_descriptions:
                     del query.parameter_descriptions[param_widget.param_name]
 
-                # Save the updated query
                 asyncio.create_task(self._plugin.save_query(query))
 
     def _clear_parameter_controls(self) -> None:
-        # Clear the parameter widgets dictionary
+        """Clear all parameter controls."""
         self._parameter_widgets.clear()
 
-        # Create a new QFormLayout
+        # Create new layout for parameters
         new_layout = QFormLayout()
-
-        # Get the parent widget (QGroupBox)
         parent = self._params_group
-
-        # Remove and delete the old layout
         old_layout = parent.layout()
+
         if old_layout:
-            # Remove each widget from the layout and delete it
+            # Remove all widgets from old layout
             while old_layout.count():
                 item = old_layout.takeAt(0)
                 if item.widget():
                     item.widget().deleteLater()
 
-            # Remove the old layout from the parent
+            # Set new layout
             parent.setLayout(None)
             old_layout.deleteLater()
 
-        # Set the new layout
         parent.setLayout(new_layout)
         self._params_layout = new_layout
 
     def _on_new_query(self) -> None:
-        """Create a new empty query."""
+        """Create a new query."""
         self._editor.clear()
         self._current_query_id = None
         self._queries_list.clearSelection()
@@ -927,14 +947,15 @@ class QueryEditorWidget(QWidget):
         self.executeQueryRequested.emit()
 
     def _on_query_double_clicked(self, item: QListWidgetItem) -> None:
-        """Handle double-click on a saved query.
+        """Load query when double-clicked in the list.
 
         Args:
-            item: The clicked list item
+            item: Selected list item
         """
         query_id = item.data(Qt.UserRole)
         if not query_id:
             return
+
         asyncio.create_task(self._load_query_by_id(query_id))
 
     def _on_load_query(self) -> None:
@@ -951,31 +972,34 @@ class QueryEditorWidget(QWidget):
         asyncio.create_task(self._load_query_by_id(query_id))
 
     async def _load_query_by_id(self, query_id: str) -> None:
+        """Load a query by ID.
+
+        Args:
+            query_id: Query ID
+        """
         try:
             query = await self._plugin.get_saved_query(query_id)
             if not query:
-                self._logger.warning(f"Query not found: {query_id}")
+                self._logger.warning(f'Query not found: {query_id}')
                 return
 
-            self._logger.debug(f"Loading query: {query.name} with text length: {len(query.query_text)}")
-            self._current_query_id = query_id
+            self._logger.debug(f'Loading query: {query.name} with text length: {len(query.query_text)}')
 
-            # Set the query text
+            # Store the query ID and update the editor
+            self._current_query_id = query_id
             self._editor.setText(query.query_text)
 
-            # Give UI time to update and detect parameters
+            # Short delay to ensure text change event is processed
             await asyncio.sleep(0.1)
 
-            # Log parameter detection
-            self._logger.debug(f"Query parameters: {query.parameters}")
-
-            # Set parameter values if any
+            # Set parameter values
+            self._logger.debug(f'Query parameters: {query.parameters}')
             if query.parameters:
                 self._set_parameter_values(query.parameters)
 
-            # Set field mapping if any
+            # Set field mapping
             if query.field_mapping_id:
-                self._logger.debug(f"Setting field mapping: {query.field_mapping_id}")
+                self._logger.debug(f'Setting field mapping: {query.field_mapping_id}')
                 for i in range(self._mapping_combo.count()):
                     if self._mapping_combo.itemData(i) == query.field_mapping_id:
                         self._mapping_combo.setCurrentIndex(i)
@@ -988,7 +1012,7 @@ class QueryEditorWidget(QWidget):
         """Set parameter values.
 
         Args:
-            params: Dictionary of parameter values
+            params: Parameter values
         """
         for param_name, value in params.items():
             if param_name in self._parameter_widgets:
@@ -1007,9 +1031,11 @@ class QueryEditorWidget(QWidget):
             return
 
         reply = QMessageBox.question(
-            self, 'Confirm Deletion',
+            self,
+            'Confirm Deletion',
             f'Are you sure you want to delete this query?\n\n{item.text()}',
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
         )
 
         if reply != QMessageBox.Yes:
@@ -1021,7 +1047,7 @@ class QueryEditorWidget(QWidget):
         """Delete a query.
 
         Args:
-            query_id: The query ID
+            query_id: Query ID
         """
         try:
             success = await self._plugin.delete_query(query_id)
@@ -1031,16 +1057,19 @@ class QueryEditorWidget(QWidget):
                     self._current_query_id = None
                     self._clear_parameter_controls()
                     self._params_group.setVisible(False)
+
                 await self.reload_queries()
+
         except Exception as e:
             self._logger.error(f'Failed to delete query: {str(e)}')
             QMessageBox.critical(self, 'Delete Error', f'Failed to delete query: {str(e)}')
 
     def _on_import_queries(self) -> None:
-        """Import queries from a file."""
+        """Import queries from file."""
         if not self._current_connection_id:
             QMessageBox.warning(
-                self, 'No Connection Selected',
+                self,
+                'No Connection Selected',
                 'Please connect to a database before importing queries.'
             )
             return
@@ -1049,10 +1078,8 @@ class QueryEditorWidget(QWidget):
             self, 'Import Queries', '', 'JSON Files (*.json);;All Files (*.*)'
         )
 
-        if not file_path:
-            return
-
-        asyncio.create_task(self._import_queries_from_file(file_path))
+        if file_path:
+            asyncio.create_task(self._import_queries_from_file(file_path))
 
     async def _import_queries_from_file(self, file_path: str) -> None:
         """Import queries from a file.
@@ -1077,15 +1104,18 @@ class QueryEditorWidget(QWidget):
                     if not isinstance(item, dict):
                         continue
 
+                    # Set new ID and connection ID
                     item['id'] = str(uuid.uuid4())
                     item['connection_id'] = self._current_connection_id
 
-                    # Convert string dates to datetime objects
+                    # Convert date strings to datetime objects
                     if 'created_at' in item and isinstance(item['created_at'], str):
                         item['created_at'] = datetime.datetime.fromisoformat(item['created_at'])
+
                     if 'updated_at' in item and isinstance(item['updated_at'], str):
                         item['updated_at'] = datetime.datetime.fromisoformat(item['updated_at'])
 
+                    # Create and save query
                     query = SavedQuery(**item)
                     await self._plugin.save_query(query)
                     imported_count += 1
@@ -1093,18 +1123,23 @@ class QueryEditorWidget(QWidget):
                 except Exception as e:
                     self._logger.warning(f'Failed to import query: {str(e)}')
 
+            # Reload query list
             await self.reload_queries()
-            QMessageBox.information(self, 'Import Successful', f'Imported {imported_count} queries.')
+
+            QMessageBox.information(
+                self, 'Import Successful', f'Imported {imported_count} queries.'
+            )
 
         except Exception as e:
             self._logger.error(f'Failed to import queries: {str(e)}')
             QMessageBox.critical(self, 'Import Error', f'Failed to import queries: {str(e)}')
 
     def _on_export_queries(self) -> None:
-        """Export queries to a file."""
+        """Export queries to file."""
         if not self._current_connection_id:
             QMessageBox.warning(
-                self, 'No Connection Selected',
+                self,
+                'No Connection Selected',
                 'Please connect to a database before exporting queries.'
             )
             return
@@ -1140,9 +1175,10 @@ class QueryEditorWidget(QWidget):
             for query in queries.values():
                 query_dict = query.dict()
 
-                # Convert datetime objects to ISO format strings for JSON serialization
+                # Convert datetime objects to ISO format strings
                 if 'created_at' in query_dict and isinstance(query_dict['created_at'], datetime.datetime):
                     query_dict['created_at'] = query_dict['created_at'].isoformat()
+
                 if 'updated_at' in query_dict and isinstance(query_dict['updated_at'], datetime.datetime):
                     query_dict['updated_at'] = query_dict['updated_at'].isoformat()
 
@@ -1152,7 +1188,8 @@ class QueryEditorWidget(QWidget):
                 json.dump(query_list, f, indent=2)
 
             QMessageBox.information(
-                self, 'Export Successful',
+                self,
+                'Export Successful',
                 f'Exported {len(query_list)} queries to {file_path}'
             )
 
