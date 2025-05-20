@@ -50,6 +50,67 @@ from .utils.history import HistoryManager
 from .utils.validation import ValidationEngine
 
 
+class SettingsManager:
+    """Manages plugin settings stored in the plugin's data directory."""
+
+    def __init__(
+            self,
+            plugin_name: str,
+            file_manager: Any,
+            logger: Optional[logging.Logger] = None
+    ) -> None:
+        """Initialize the settings manager."""
+        self.plugin_name = plugin_name
+        self._file_manager = file_manager
+        self._logger = logger or logging.getLogger(plugin_name)
+
+    async def load_settings(self, settings_class: Any) -> Any:
+        """Load settings from the plugin's data directory."""
+        try:
+            if not self._file_manager:
+                self._logger.warning("No file manager available, using default settings")
+                return settings_class()
+
+            file_path = f"{self.plugin_name}/settings.json"
+
+            try:
+                file_info = await self._file_manager.get_file_info(file_path, "plugin_data")
+                if not file_info:
+                    self._logger.info("No settings file found, using default settings")
+                    return settings_class()
+            except Exception as e:
+                self._logger.debug(f"Error checking settings file: {str(e)}")
+                return settings_class()
+
+            json_data = await self._file_manager.read_text(file_path, "plugin_data")
+            settings_dict = json.loads(json_data)
+            settings = settings_class(**settings_dict)
+            self._logger.debug("Loaded plugin settings successfully")
+            return settings
+        except Exception as e:
+            self._logger.error(f"Failed to load settings: {str(e)}")
+            return settings_class()
+
+    async def save_settings(self, settings: Any) -> None:
+        """Save settings to the plugin's data directory."""
+        try:
+            if not self._file_manager:
+                self._logger.warning("No file manager available, settings not saved")
+                return
+
+            file_path = f"{self.plugin_name}/settings.json"
+            await self._file_manager.ensure_directory(self.plugin_name, "plugin_data")
+
+            settings_dict = settings.dict()
+            json_data = json.dumps(settings_dict, indent=2, default=str)
+
+            await self._file_manager.write_text(file_path, json_data, "plugin_data")
+            self._logger.debug("Saved plugin settings successfully")
+        except Exception as e:
+            self._logger.error(f"Failed to save settings: {str(e)}")
+            raise PluginError(f"Failed to save settings: {str(e)}")
+
+
 class DatabaseConnectorPlugin(BasePlugin):
     """Main plugin class for the Database Connector Plugin."""
 
@@ -73,6 +134,7 @@ class DatabaseConnectorPlugin(BasePlugin):
         self._concurrency_manager = None
         self._security_manager = None
         self._file_manager = None
+        self._settings_manager = None
 
         # Plugin state
         self._initialized = False
@@ -956,41 +1018,31 @@ class DatabaseConnectorPlugin(BasePlugin):
         return None
 
     async def _load_settings(self) -> None:
-        """
-        Load plugin settings from the config manager.
-
-        Raises:
-            PluginError: If loading fails
-        """
+        """Load plugin settings from the plugin data directory."""
         try:
-            if not self._config_manager:
-                return
-
-            settings_dict = await self._config_manager.get(
-                f"plugins.{self.name}.settings",
-                {}
+            self._settings_manager = SettingsManager(
+                plugin_name=self.name,
+                file_manager=self._file_manager,
+                logger=self._logger
             )
 
-            if settings_dict:
-                self._settings = PluginSettings(**settings_dict)
-            else:
-                self._settings = PluginSettings()
-
-            self._logger.debug("Loaded plugin settings")
-
+            self._settings = await self._settings_manager.load_settings(PluginSettings)
+            self._logger.debug('Loaded plugin settings')
         except Exception as e:
-            self._logger.error(f"Failed to load settings: {str(e)}")
+            self._logger.error(f'Failed to load settings: {str(e)}')
             self._settings = PluginSettings()
-            raise PluginError(f"Failed to load settings: {str(e)}")
 
     async def _save_settings(self) -> None:
+        """Save plugin settings to the plugin data directory."""
         try:
-            if not self._config_manager or not self._settings:
-                return
-            settings_dict = self._settings.dict()
-            # Add debug logging
-            self._logger.debug(f'Saving settings: {settings_dict}')
-            await self._config_manager.set(f'plugins.{self.name}.settings', settings_dict)
+            if not self._settings_manager or not self._settings:
+                self._settings_manager = SettingsManager(
+                    plugin_name=self.name,
+                    file_manager=self._file_manager,
+                    logger=self._logger
+                )
+
+            await self._settings_manager.save_settings(self._settings)
             self._logger.debug('Saved plugin settings')
         except Exception as e:
             self._logger.error(f'Failed to save settings: {str(e)}')
@@ -1088,6 +1140,32 @@ class DatabaseConnectorPlugin(BasePlugin):
         except Exception as e:
             self._logger.error(f"Failed to save connections: {str(e)}")
             raise PluginError(f"Failed to save connections: {str(e)}")
+
+    async def _get_connector_direct(self, connection_id: str) -> BaseDatabaseConnector:
+        """
+        Get a connector directly without using locks - for initialization only.
+
+        This version ensures the connector is created and connected for new connections.
+        """
+        try:
+            if connection_id in self._active_connectors:
+                connector = self._active_connectors[connection_id]
+                if not connector.is_connected:
+                    await connector.connect()
+                return connector
+
+            config = self._connections.get(connection_id)
+            if not config:
+                raise PluginError(f'Connection not found: {connection_id}')
+
+            connector = get_connector_for_config(config=config, logger=self._logger,
+                                                 security_manager=self._security_manager)
+            await connector.connect()
+            self._active_connectors[connection_id] = connector
+            return connector
+        except Exception as e:
+            self._logger.error(f'Failed to get connector directly: {str(e)}')
+            raise PluginError(f'Failed to get connector directly: {str(e)}')
 
     async def _load_saved_queries(self) -> None:
         """

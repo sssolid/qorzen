@@ -1,20 +1,113 @@
 from __future__ import annotations
 
-"""
-Settings dialog for the Database Connector Plugin.
+import time
 
-This module provides a dialog for configuring plugin settings, including
-database connections for storing history and validation data.
 """
+Enhanced settings dialog for the Database Connector Plugin.
+
+This module provides an improved dialog for configuring plugin settings,
+with better handling of SQLite database creation and connection setup.
+"""
+
 import os
 import asyncio
-from typing import Any, Dict, List, Optional, Set, Tuple, Union, cast
-from PySide6.QtCore import Qt, QSize, QTimer
+import threading
+from typing import Any, Dict, List, Optional, Tuple, cast
+
+from PySide6.QtCore import Qt, QSize, QTimer, QObject, Signal
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QDialogButtonBox, \
-    QFormLayout, QCheckBox, QSpinBox, QTabWidget, QWidget, QScrollArea, QGroupBox, QListWidget, QListWidgetItem, \
-    QMessageBox, QComboBox, QStackedWidget, QFileDialog
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QDialogButtonBox, QFormLayout, QCheckBox, QSpinBox, QTabWidget,
+    QWidget, QScrollArea, QGroupBox, QListWidget, QListWidgetItem,
+    QMessageBox, QComboBox, QStackedWidget, QFileDialog, QProgressDialog
+)
+
 from ..models import PluginSettings, SQLiteConnectionConfig
+
+
+class DatabaseSetupWorker(QObject):
+    """Worker for asynchronous database setup operations."""
+
+    finished = Signal(bool, str)
+    progress = Signal(str)
+
+    def __init__(
+            self,
+            plugin: Any,
+            config: SQLiteConnectionConfig,
+            parent: Optional[QWidget] = None
+    ) -> None:
+        """Initialize the worker with plugin and config references."""
+        super().__init__(parent)
+        self._plugin = plugin
+        self._config = config
+        self._is_running = False
+
+    def setup_database(self) -> None:
+        """Set up the database in a separate thread with proper connection handling."""
+        if self._is_running:
+            return
+
+        self._is_running = True
+        self.progress.emit("Creating database connection...")
+
+        try:
+            # Create a new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # Save the connection and ensure it's accessible
+            self.progress.emit("Saving connection configuration...")
+            conn_id = loop.run_until_complete(self._plugin.save_connection(self._config))
+
+            # Make sure the connection is properly registered
+            self.progress.emit("Registering connection...")
+            # Explicitly get the connector to ensure it's registered
+            connector = loop.run_until_complete(self._plugin._get_connector_direct(conn_id))
+
+            # Update settings
+            self.progress.emit("Updating settings...")
+            settings = self._plugin._settings
+            settings.history_database_connection_id = conn_id
+            loop.run_until_complete(self._plugin._save_settings())
+
+            # Initialize the history manager - with careful error handling
+            self.progress.emit("Initializing history manager...")
+            history_manager = self._plugin._history_manager
+            history_manager._history_connection_id = conn_id
+
+            # Explicitly connect before initialization
+            self.progress.emit("Connecting to database...")
+            loop.run_until_complete(connector.connect())
+
+            # Try initialization with retries
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    self.progress.emit(f"Creating history tables (attempt {attempt + 1}/{max_retries})...")
+                    loop.run_until_complete(history_manager.initialize())
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        self.progress.emit(f"Retry after error: {str(e)}")
+                        # Sleep briefly before retry
+                        time.sleep(1)
+                    else:
+                        raise
+
+            # Initialize validation engine
+            self.progress.emit("Initializing validation engine...")
+            validation_engine = self._plugin._validation_engine
+            validation_engine._validation_connection_id = conn_id
+            loop.run_until_complete(validation_engine.initialize())
+
+            loop.close()
+            self.finished.emit(True, "Database setup completed successfully")
+        except Exception as e:
+            self.finished.emit(False, str(e))
+        finally:
+            self._is_running = False
 
 
 class SettingsDialog(QDialog):
@@ -67,8 +160,9 @@ class SettingsDialog(QDialog):
         self._create_sqlite_button = QPushButton('Create New SQLite Database')
         self._create_sqlite_button.clicked.connect(self._create_new_sqlite_db)
 
-        help_label = QLabel(
-            'Select a database connection to store history and validation data. This should be a separate database from your data sources. SQLite is recommended for most users.')
+        help_label = QLabel('Select a database connection to store history and validation data. '
+                            'This should be a separate database from your data sources. '
+                            'SQLite is recommended for most users.')
         help_label.setWordWrap(True)
         help_label.setStyleSheet('color: #666; font-size: 11px;')
 
@@ -102,13 +196,10 @@ class SettingsDialog(QDialog):
 
     def _load_connections(self) -> None:
         try:
-            # Run the async method in a synchronous way
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # If loop is already running, create a task
                 asyncio.create_task(self._async_load_connections())
             else:
-                # Otherwise, run the task to completion
                 loop.run_until_complete(self._async_load_connections())
         except Exception as e:
             self._status_label.setText(f'Error loading connections: {str(e)}')
@@ -116,18 +207,18 @@ class SettingsDialog(QDialog):
     async def _async_load_connections(self) -> None:
         try:
             connections = await self._plugin.get_connections()
-
-            # Remember current selections
             current_storage_id = self._storage_connection_combo.currentData()
             current_default_id = self._default_connection_combo.currentData()
 
-            # Clear and refill dropdowns
+            # Clear and repopulate storage combo
             self._storage_connection_combo.clear()
-            self._default_connection_combo.clear()
-
             self._storage_connection_combo.addItem('None (Disabled)', None)
+
+            # Clear and repopulate default combo
+            self._default_connection_combo.clear()
             self._default_connection_combo.addItem('None', None)
 
+            # Add all connections to both combos
             for conn_id, conn in sorted(connections.items(), key=lambda x: x[1].name.lower()):
                 conn_text = conn.name
                 if conn.connection_type == 'sqlite':
@@ -135,21 +226,31 @@ class SettingsDialog(QDialog):
                 self._storage_connection_combo.addItem(conn_text, conn_id)
                 self._default_connection_combo.addItem(conn.name, conn_id)
 
-            # Set selected items based on current settings
+            # Set current storage connection
             storage_id = self._settings.history_database_connection_id
             if storage_id:
                 for i in range(self._storage_connection_combo.count()):
                     if self._storage_connection_combo.itemData(i) == storage_id:
                         self._storage_connection_combo.setCurrentIndex(i)
                         break
+            elif current_storage_id:
+                for i in range(self._storage_connection_combo.count()):
+                    if self._storage_connection_combo.itemData(i) == current_storage_id:
+                        self._storage_connection_combo.setCurrentIndex(i)
+                        break
 
+            # Set current default connection
             default_id = self._settings.default_connection_id
             if default_id:
                 for i in range(self._default_connection_combo.count()):
                     if self._default_connection_combo.itemData(i) == default_id:
                         self._default_connection_combo.setCurrentIndex(i)
                         break
-
+            elif current_default_id:
+                for i in range(self._default_connection_combo.count()):
+                    if self._default_connection_combo.itemData(i) == current_default_id:
+                        self._default_connection_combo.setCurrentIndex(i)
+                        break
         except Exception as e:
             if hasattr(self, '_status_label'):
                 self._status_label.setText(f'Error loading connections: {str(e)}')
@@ -157,9 +258,7 @@ class SettingsDialog(QDialog):
     def _create_new_sqlite_db(self) -> None:
         try:
             file_path, _ = QFileDialog.getSaveFileName(
-                self,
-                'Create SQLite Database for History/Validation',
-                '',
+                self, 'Create SQLite Database for History/Validation', '',
                 'SQLite Databases (*.db *.sqlite *.sqlite3);;All Files (*.*)'
             )
 
@@ -172,7 +271,7 @@ class SettingsDialog(QDialog):
             db_name = os.path.basename(file_path)
             connection_name = f'History DB ({db_name})'
 
-            # Create the config object but don't try to save it yet
+            # Create the SQLite database configuration
             config = SQLiteConnectionConfig(
                 name=connection_name,
                 database=file_path,
@@ -181,48 +280,60 @@ class SettingsDialog(QDialog):
                 read_only=False
             )
 
-            # Store the config to use when dialog is accepted
-            self._new_sqlite_config = config
+            # Create a progress dialog to show setup progress
+            progress_dialog = QProgressDialog("Setting up database...", "Cancel", 0, 0, self)
+            progress_dialog.setWindowTitle("Database Setup")
+            progress_dialog.setWindowModality(Qt.WindowModal)
+            progress_dialog.setAutoClose(False)
+            progress_dialog.setAutoReset(False)
+            progress_dialog.setMinimumDuration(0)
+            progress_dialog.setValue(0)
 
-            # Tell the user what will happen when they click OK
-            QMessageBox.information(
-                self,
-                'Database Ready',
-                f'SQLite database configured and will be created when you click OK.\n\n'
-                f'The database will be added as connection "{connection_name}" '
-                f'and set as your storage database.'
-            )
+            # Create the worker to perform the database setup
+            worker = DatabaseSetupWorker(self._plugin, config, self)
+
+            # Setup thread for database creation
+            thread = threading.Thread(target=worker.setup_database)
+            thread.daemon = True
+
+            # Update progress dialog with current status
+            def update_progress(message: str) -> None:
+                progress_dialog.setLabelText(message)
+
+            # Handle completion of database setup
+            def on_finished(success: bool, message: str) -> None:
+                progress_dialog.close()
+
+                if success:
+                    QMessageBox.information(
+                        self, 'Database Created',
+                        f'Successfully created SQLite database for history/validation storage.\n\n'
+                        f'Database: {file_path}\n\n'
+                        f'The database has been configured and is ready to use.'
+                    )
+
+                    # Refresh the connection combos
+                    self._load_connections()
+                else:
+                    QMessageBox.critical(
+                        self, 'Database Setup Failed',
+                        f'Failed to set up the database: {message}'
+                    )
+
+            # Connect signals
+            worker.progress.connect(update_progress)
+            worker.finished.connect(on_finished)
+
+            # Start the worker thread
+            thread.start()
+
+            # Show the progress dialog
+            progress_dialog.exec()
 
         except Exception as e:
             QMessageBox.critical(self, 'Error Creating Database', f'Failed to create SQLite database: {str(e)}')
 
-    def _save_connection_sync(self, config: SQLiteConnectionConfig) -> None:
-        try:
-            # Save connection in a synchronous way
-            loop = asyncio.get_event_loop()
-            conn_id = loop.run_until_complete(self._plugin.save_connection(config))
-
-            # Update the current setting directly
-            if self._settings:
-                self._settings.history_database_connection_id = conn_id
-
-            # Reload connections
-            self._load_connections()
-
-            # Show success message
-            QMessageBox.information(
-                self,
-                'Database Created',
-                f'Successfully created SQLite database for history/validation storage.\n\n'
-                f'This database has been added as connection "{config.name}" '
-                f'and will be set as your storage database when you click OK.'
-            )
-
-        except Exception as e:
-            QMessageBox.critical(self, 'Error Saving Connection', f'Failed to save new connection: {str(e)}')
-
     def get_settings(self) -> PluginSettings:
-        # Create a new settings object with the current values
         settings = PluginSettings(
             max_result_rows=self._max_rows_spin.value(),
             query_history_limit=self._history_limit_spin.value(),
@@ -236,70 +347,49 @@ class SettingsDialog(QDialog):
 
     def accept(self) -> None:
         try:
-            # Get updated settings
+            # Get the settings from the dialog
             new_settings = self.get_settings()
 
-            # Check if we have a new database to add
-            if hasattr(self, '_new_sqlite_config'):
-                # Defer this work to after dialog closes
-                QTimer.singleShot(0, lambda: self._finish_setup(new_settings))
-                super().accept()
-                return
-
-            # Otherwise, do normal settings update
+            # Update the plugin settings
             self._plugin._settings = new_settings
 
-            # Use a timer to perform async operations after dialog closes
+            # Save the settings in a background task
             QTimer.singleShot(0, lambda: self._save_settings_async())
 
-            # Accept the dialog
             super().accept()
-
         except Exception as e:
             QMessageBox.critical(self, 'Error Saving Settings', f'Failed to save settings: {str(e)}')
 
-    def _save_settings_async(self):
-        """Save settings asynchronously after dialog closes."""
-
-        async def save_task():
+    def _save_settings_async(self) -> None:
+        async def save_task() -> None:
             try:
                 await self._plugin._save_settings()
-                self._logger.info("Settings saved successfully")
-            except Exception as e:
-                QMessageBox.critical(None, 'Error', f'Failed to save settings: {str(e)}')
+                self._logger.info('Settings saved successfully')
 
-        # Create and start the task
+                # Initialize history and validation if needed
+                if self._plugin._settings.history_database_connection_id:
+                    history_id = self._plugin._settings.history_database_connection_id
+
+                    # Update history manager if needed
+                    if (self._plugin._history_manager and
+                            self._plugin._history_manager._history_connection_id != history_id):
+                        self._plugin._history_manager._history_connection_id = history_id
+                        await self._plugin._history_manager.initialize()
+
+                    # Update validation engine if needed
+                    if (self._plugin._validation_engine and
+                            self._plugin._validation_engine._validation_connection_id != history_id):
+                        self._plugin._validation_engine._validation_connection_id = history_id
+                        await self._plugin._validation_engine.initialize()
+
+            except Exception as e:
+                # Show error message on the main thread
+                def show_error() -> None:
+                    QMessageBox.critical(None, 'Error', f'Failed to save settings: {str(e)}')
+
+                if self._plugin._concurrency_manager and not self._plugin._concurrency_manager.is_main_thread():
+                    await self._plugin._concurrency_manager.run_on_main_thread(show_error)
+                else:
+                    show_error()
+
         asyncio.create_task(save_task())
-
-    def _finish_setup(self, settings):
-        """Complete the database setup after dialog closes."""
-
-        async def setup_task():
-            try:
-                # First save the connection
-                conn_id = await self._plugin.save_connection(self._new_sqlite_config)
-                self._logger.info(f"Created new database connection: {conn_id}")
-
-                # Update and save settings to use this connection
-                settings.history_database_connection_id = conn_id
-                self._plugin._settings = settings
-                await self._plugin._save_settings()
-                self._logger.info(f"Updated settings with new history database: {conn_id}")
-
-                # Initialize services
-                if self._plugin._history_manager:
-                    self._plugin._history_manager._history_connection_id = conn_id
-                    await self._plugin._history_manager.initialize()
-
-                if self._plugin._validation_engine:
-                    self._plugin._validation_engine._validation_connection_id = conn_id
-                    await self._plugin._validation_engine.initialize()
-
-                QMessageBox.information(None, 'Success',
-                                        'Database configured successfully.\n\n'
-                                        'History and validation features are now available.')
-            except Exception as e:
-                QMessageBox.critical(None, 'Error', f'Failed to complete setup: {str(e)}')
-
-        # Create and start the task
-        asyncio.create_task(setup_task())

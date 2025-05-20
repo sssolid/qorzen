@@ -11,7 +11,7 @@ import asyncio
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple, Union, cast
 
-from PySide6.QtCore import Qt, QRegularExpression, Signal, Slot, QSize, QPoint
+from PySide6.QtCore import Qt, QRegularExpression, Signal, Slot, QSize, QPoint, QTimer
 from PySide6.QtGui import (
     QColor, QTextCharFormat, QFont, QPalette, QSyntaxHighlighter,
     QTextCursor, QKeyEvent, QTextDocument, QIcon
@@ -25,6 +25,39 @@ from PySide6.QtWidgets import (
 
 from ..models import SavedQuery, FieldMapping, ParameterDescription
 
+PARAMETER_PATTERN = r':([A-Za-z0-9_\-\.]+)(?:\{([^}]*)\})?'
+
+
+def detect_query_parameters(query: str, logger: Any) -> List[ParameterDescription]:
+    """
+    Detect parameters in a SQL query with improved pattern matching.
+
+    Args:
+        query: The SQL query text to analyze
+        logger: Logger for diagnostic messages
+
+    Returns:
+        List of parameter descriptions found in the query
+    """
+    matches = re.finditer(PARAMETER_PATTERN, query)
+    param_descriptions: List[ParameterDescription] = []
+    seen_params = set()
+
+    for match in matches:
+        param_name = match.group(1)
+        description = match.group(2) or ''
+
+        if param_name not in seen_params:
+            logger.debug(f'Detected parameter: {param_name} with description: {description}')
+            param_descriptions.append(
+                ParameterDescription(
+                    name=param_name,
+                    description=description.strip()
+                )
+            )
+            seen_params.add(param_name)
+
+    return param_descriptions
 
 class SQLSyntaxHighlighter(QSyntaxHighlighter):
     """Syntax highlighter for SQL queries."""
@@ -645,10 +678,24 @@ class QueryEditorWidget(QWidget):
         return ''
 
     def _on_query_text_changed(self) -> None:
+        """Handle query text changes with debouncing for parameter detection."""
+        if hasattr(self, '_param_update_timer'):
+            self._param_update_timer.stop()
+        else:
+            self._param_update_timer = QTimer(self)
+            self._param_update_timer.setSingleShot(True)
+            self._param_update_timer.timeout.connect(self._update_parameters_debounced)
+
+        self._param_update_timer.start(500)  # 500ms debounce delay
+
+    def _update_parameters_debounced(self) -> None:
+        """Update parameters after debounce timeout."""
         query_text = self._editor.toPlainText()
-        self._logger.debug(f"Query changed, length: {len(query_text)}")
-        params = self._detect_query_parameters_with_descriptions(query_text)
-        self._logger.debug(f"Detected {len(params)} parameters")
+        self._logger.debug(f'Query changed, length: {len(query_text)}')
+
+        params = detect_query_parameters(query_text, self._logger)
+        self._logger.debug(f'Detected {len(params)} parameters')
+
         self._update_parameter_controls(params)
 
     def _detect_query_parameters_with_descriptions(self, query: str) -> List[ParameterDescription]:
@@ -679,38 +726,158 @@ class QueryEditorWidget(QWidget):
         return param_descriptions
 
     def _update_parameter_controls(self, param_descriptions: List[ParameterDescription]) -> None:
-        """Update the parameter controls based on the detected parameters."""
-        # Store current values from existing widgets
+        """Update parameter UI controls based on detected parameters."""
+        # Save current parameter values to restore them after rebuilding controls
         current_values = {}
+        current_descriptions = {}
+
         for param_name, widget in self._parameter_widgets.items():
             current_values[param_name] = widget.input_field.text()
+            current_descriptions[param_name] = getattr(widget, 'description', '')
 
-        # Clear existing controls
         self._clear_parameter_controls()
 
-        # If no parameters, hide the group and return
         if not param_descriptions:
             self._params_group.setVisible(False)
             return
 
-        # Add new parameter controls
         self._params_group.setVisible(True)
-
-        self._logger.debug(f"Creating parameters: {[p.name for p in param_descriptions]}")
+        self._logger.debug(f'Creating parameters: {[p.name for p in param_descriptions]}')
 
         for param in param_descriptions:
-            # Create the parameter widget
-            widget = ParameterWidget(param.name, param.description)
+            # Create parameter widget
+            widget = self._create_parameter_widget(param.name, param.description)
 
-            # Set previous value if available
+            # Restore saved value if available
             if param.name in current_values:
                 widget.input_field.setText(current_values[param.name])
 
-            # Add to layout
+            # Add to form layout
             self._params_layout.addRow(f'{param.name}:', widget)
-
-            # Store in dictionary
             self._parameter_widgets[param.name] = widget
+
+            # Add context menu for parameter
+            self._add_parameter_context_menu(widget)
+
+    def _create_parameter_widget(self, param_name: str, description: str = '') -> Any:
+        """Create a parameter widget with input field and help button."""
+        from ..models import ParameterDescription
+
+        # If saved query has descriptions for this parameter, use them
+        if (self._current_query_id and
+                self._current_query_id in self._plugin._saved_queries and
+                hasattr(self._plugin._saved_queries[self._current_query_id], 'parameter_descriptions')):
+
+            saved_desc = self._plugin._saved_queries[self._current_query_id].parameter_descriptions.get(param_name, '')
+            if saved_desc:
+                description = saved_desc
+
+        # Create widget
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+
+        # Add properties to widget
+        widget.param_name = param_name
+        widget.description = description
+
+        # Create input field
+        input_field = QLineEdit()
+        input_field.setObjectName(f'param_{param_name}')
+        if description:
+            input_field.setPlaceholderText(description)
+            input_field.setToolTip(description)
+        else:
+            input_field.setPlaceholderText('Enter value')
+
+        widget.input_field = input_field
+        layout.addWidget(input_field)
+
+        # Add help button if we have a description
+        if description:
+            help_button = self._create_help_button(widget)
+            widget.help_button = help_button
+            layout.addWidget(help_button)
+        else:
+            widget.help_button = None
+
+        return widget
+
+    def _create_help_button(self, param_widget: Any) -> QPushButton:
+        """Create a help button for a parameter."""
+        help_button = QPushButton('?')
+        help_button.setFixedSize(24, 24)
+        help_button.setToolTip(param_widget.description)
+
+        # Show tooltip when clicked
+        def show_tooltip():
+            pos = help_button.mapToGlobal(QPoint(0, help_button.height()))
+            QToolTip.showText(pos, param_widget.description, help_button)
+
+        help_button.clicked.connect(show_tooltip)
+        return help_button
+
+    def _add_parameter_context_menu(self, param_widget: Any) -> None:
+        """Add context menu to parameter widget for editing descriptions."""
+        input_field = param_widget.input_field
+
+        # Set up context menu policy
+        input_field.setContextMenuPolicy(Qt.CustomContextMenu)
+
+        # Create context menu handler
+        def show_context_menu(pos: QPoint) -> None:
+            menu = QMenu()
+
+            edit_desc_action = menu.addAction("Edit Description")
+            edit_desc_action.triggered.connect(
+                lambda: self._edit_parameter_description(param_widget)
+            )
+
+            menu.exec_(input_field.mapToGlobal(pos))
+
+        # Connect the handler
+        input_field.customContextMenuRequested.connect(show_context_menu)
+
+    def _edit_parameter_description(self, param_widget: Any) -> None:
+        """Show dialog to edit parameter description."""
+        description, ok = QInputDialog.getText(
+            self,
+            f"Edit Parameter Description",
+            f"Enter description for parameter {param_widget.param_name}:",
+            text=param_widget.description
+        )
+
+        if ok:
+            # Update the widget description
+            param_widget.description = description
+            param_widget.input_field.setPlaceholderText(description)
+            param_widget.input_field.setToolTip(description)
+
+            # Update or create help button
+            if param_widget.help_button:
+                param_widget.help_button.setToolTip(description)
+            elif description:
+                # Only add help button if we have a description
+                param_widget.help_button = self._create_help_button(param_widget)
+                param_widget.layout().addWidget(param_widget.help_button)
+
+            # Update the parameter description in the current query
+            if self._current_query_id and self._current_query_id in self._plugin._saved_queries:
+                query = self._plugin._saved_queries[self._current_query_id]
+
+                # Initialize parameter descriptions if not present
+                if not hasattr(query, 'parameter_descriptions'):
+                    query.parameter_descriptions = {}
+
+                # Update the description
+                if description:
+                    query.parameter_descriptions[param_widget.param_name] = description
+                elif param_widget.param_name in query.parameter_descriptions:
+                    del query.parameter_descriptions[param_widget.param_name]
+
+                # Save the updated query
+                asyncio.create_task(self._plugin.save_query(query))
 
     def _clear_parameter_controls(self) -> None:
         # Clear the parameter widgets dictionary

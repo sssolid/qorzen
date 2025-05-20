@@ -24,6 +24,39 @@ from ..models import FieldMapping, ColumnMetadata, TableMetadata
 from ..utils.mapping import standardize_field_name
 
 
+async def load_tables_optimized(connector: Any, logger: Any, progress_callback: Optional[callable] = None) -> List[str]:
+    """Load tables optimized for large databases."""
+    try:
+        # Try different approaches to get table count efficiently
+        table_count = None
+        try:
+            # Try generic query that works on many databases
+            result = await connector.execute_query(
+                "SELECT COUNT(*) AS table_count FROM information_schema.tables "
+                "WHERE table_type IN ('BASE TABLE', 'TABLE', 'VIEW')"
+            )
+            if result.records and 'table_count' in result.records[0]:
+                table_count = result.records[0]['table_count']
+        except Exception:
+            pass
+
+        # Log the table count if we found it
+        if table_count:
+            logger.debug(f"Database has approximately {table_count} tables")
+
+        # Let's load all tables - for very large databases, we might want to
+        # implement pagination or filtering here
+        tables = await connector.get_tables()
+        table_names = [table.name for table in tables]
+        table_names.sort(key=str.lower)
+
+        return table_names
+
+    except Exception as e:
+        logger.error(f"Failed to load tables: {str(e)}")
+        return []
+
+
 class FieldMappingDialog(QDialog):
     """Dialog for creating and editing field mappings."""
 
@@ -70,11 +103,34 @@ class FieldMappingDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
+        # Add search functionality above the table combo
+        search_layout = QHBoxLayout()
+        search_label = QLabel("Search tables:")
+        self._search_input = QLineEdit()
+        self._search_input.setPlaceholderText("Type to filter tables...")
+        self._search_button = QPushButton("Find")
+        self._search_button.clicked.connect(self._search_tables)
+        self._search_input.returnPressed.connect(self._search_tables)
+
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(self._search_input, 1)
+        search_layout.addWidget(self._search_button)
+
         # Information section
         info_group = QGroupBox("Mapping Information")
         info_form = QFormLayout(info_group)
 
         self._table_combo = QComboBox()
+        form_layout = self._table_combo.parent().layout()
+        if form_layout:
+            # Insert search layout at the beginning
+            form_layout.insertRow(0, '', QWidget())  # Add a placeholder
+            form_layout_item = form_layout.itemAt(0, QFormLayout.FieldRole)
+            if form_layout_item and form_layout_item.widget():
+                search_widget = QWidget()
+                search_widget.setLayout(search_layout)
+                form_layout.setWidget(0, QFormLayout.FieldRole, search_widget)
+
         self._table_combo.setMinimumWidth(300)
         self._table_combo.currentIndexChanged.connect(self._on_table_selected)
 
@@ -174,38 +230,69 @@ class FieldMappingDialog(QDialog):
         asyncio.create_task(self._async_load_tables())
 
     async def _async_load_tables(self) -> None:
-        """Asynchronously load database tables."""
         try:
             connector = await self._plugin.get_connector(self._connection_id)
-            self._tables = await connector.get_tables()
 
-            # Sort tables by name
-            self._tables.sort(key=lambda t: t.name.lower())
+            # Use optimized table loading
+            self._tables = await load_tables_optimized(connector, self._logger)
 
-            # Update combo box
+            # Update UI on main thread
             self._table_combo.clear()
-            self._table_combo.addItem("Select a table...", None)
+            self._table_combo.addItem('Select a table...', None)
 
-            for table in self._tables:
-                self._table_combo.addItem(table.name, table.name)
+            for table_name in self._tables:
+                self._table_combo.addItem(table_name, table_name)
 
-            # Select table if editing an existing mapping
             if self._mapping:
                 for i in range(self._table_combo.count()):
                     if self._table_combo.itemData(i) == self._mapping.table_name:
                         self._table_combo.setCurrentIndex(i)
-                        self._description_edit.setText(self._mapping.description or "")
+                        self._description_edit.setText(self._mapping.description or '')
                         break
 
-            self._status_label.setText(f"Loaded {len(self._tables)} tables")
+            self._status_label.setText(f'Loaded {len(self._tables)} tables')
             self._progress_bar.setVisible(False)
             self._table_combo.setEnabled(True)
 
+            # If table search is enabled, make sure it's functional
+            if hasattr(self, '_search_input'):
+                self._search_input.setEnabled(True)
+            if hasattr(self, '_search_button'):
+                self._search_button.setEnabled(True)
+
         except Exception as e:
-            self._logger.error(f"Failed to load tables: {str(e)}")
-            self._status_label.setText(f"Error: {str(e)}")
+            self._logger.error(f'Failed to load tables: {str(e)}')
+            self._status_label.setText(f'Error: {str(e)}')
             self._progress_bar.setVisible(False)
-            QMessageBox.critical(self, "Error", f"Failed to load tables: {str(e)}")
+            QMessageBox.critical(self, 'Error', f'Failed to load tables: {str(e)}')
+
+    def _search_tables(self) -> None:
+        """Search and filter tables in the combo box."""
+        search_text = self._search_input.text().strip().lower()
+        if not search_text:
+            # If search is empty, just show the dropdown
+            self._table_combo.showPopup()
+            return
+
+        # Filter items in the combo box
+        filtered_count = 0
+        for i in range(1, self._table_combo.count()):  # Skip the first "Select a table" item
+            table_name = self._table_combo.itemText(i).lower()
+            if search_text in table_name:
+                self._table_combo.setItemData(i, True, Qt.UserRole + 1)
+                filtered_count += 1
+            else:
+                self._table_combo.setItemData(i, False, Qt.UserRole + 1)
+
+        if filtered_count > 0:
+            # Show the dropdown with filtered results
+            self._table_combo.showPopup()
+        else:
+            QMessageBox.information(
+                self,
+                "No Matches",
+                f"No tables found matching '{search_text}'"
+            )
 
     def _on_table_selected(self, index: int) -> None:
         """Handle table selection change.

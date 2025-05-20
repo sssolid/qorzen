@@ -50,30 +50,34 @@ class HistoryManager:
         self._running_schedules: Dict[str, asyncio.Task] = {}
 
     async def initialize(self) -> None:
-        """
-        Initialize the history manager, creating necessary database tables.
-
-        Raises:
-            DatabaseError: If initialization fails
-        """
         if not self._history_connection_id:
-            self._logger.warning("No history database connection configured")
+            self._logger.warning('No history database connection configured')
             return
 
         try:
-            # Create history tables if they don't exist
+            # Make sure we have a valid connection ID
+            if not self._history_connection_id:
+                raise DatabaseError(message='No history database connection ID provided', details={})
+
+            # Check if the connection exists
+            if not self._db_manager:
+                raise DatabaseError(message='No database manager available', details={})
+
+            # Verify the connection exists before trying to use it
+            if not self._db_manager.has_connection(self._history_connection_id):
+                raise DatabaseError(
+                    message=f'Database connection {self._history_connection_id} not found',
+                    details={'connection_id': self._history_connection_id}
+                )
+
+            # Try to create tables
             await self._create_history_tables()
-
-            # Load and start all active schedules
             await self._load_and_start_schedules()
-
-            self._logger.info("History manager initialized")
+            self._logger.info('History manager initialized')
         except Exception as e:
-            self._logger.error(f"Failed to initialize history manager: {str(e)}")
-            raise DatabaseError(
-                message=f"Failed to initialize history manager: {str(e)}",
-                details={"original_error": str(e)}
-            )
+            self._logger.error(f'Failed to initialize history manager: {str(e)}')
+            raise DatabaseError(message=f'Failed to initialize history manager: {str(e)}',
+                                details={'original_error': str(e)})
 
     async def _create_history_tables(self) -> None:
         """
@@ -187,20 +191,30 @@ class HistoryManager:
             """
         ]
 
-        try:
-            for stmt in statements:
-                await self._db_manager.execute_raw(
-                    sql=stmt,
-                    connection_name=self._history_connection_id
-                )
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                for stmt in statements:
+                    # Log before executing to help with debugging
+                    self._logger.debug(f'Executing SQL: {stmt[:100]}...')
 
-            self._logger.debug("History tables created or already exist")
-        except Exception as e:
-            self._logger.error(f"Failed to create history tables: {str(e)}")
-            raise DatabaseError(
-                message=f"Failed to create history tables: {str(e)}",
-                details={"original_error": str(e)}
-            )
+                    # Execute with the connection name
+                    await self._db_manager.execute_raw(
+                        sql=stmt,
+                        connection_name=self._history_connection_id
+                    )
+
+                self._logger.debug('Validation tables created or already exist')
+                return
+            except Exception as e:
+                self._logger.warning(f'Attempt {attempt + 1}/{max_retries} failed: {str(e)}')
+                if attempt < max_retries - 1:
+                    # Sleep briefly between retries
+                    await asyncio.sleep(1)
+                else:
+                    self._logger.error(f'Failed to create validation tables after {max_retries} attempts: {str(e)}')
+                    raise DatabaseError(message=f'Failed to create validation tables: {str(e)}',
+                                        details={'original_error': str(e)})
 
     async def _load_and_start_schedules(self) -> None:
         """

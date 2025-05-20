@@ -182,7 +182,8 @@ class FieldMapping(BaseModel):
 
 
 class SavedQuery(BaseModel):
-    """Saved query configuration."""
+    """Model for a saved database query with parameter descriptions."""
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique identifier for this query")
     name: str = Field(..., description="User-friendly name for this query")
     description: Optional[str] = Field(None, description="Optional description of the query's purpose")
@@ -193,10 +194,7 @@ class SavedQuery(BaseModel):
     updated_at: datetime.datetime = Field(default_factory=datetime.datetime.now,
                                           description="When this query was last updated")
     parameters: Dict[str, Any] = Field(default_factory=dict, description="Query parameters if any")
-    parameter_descriptions: Dict[str, str] = Field(
-        default_factory=dict,
-        description='Descriptions for parameters'
-    )
+    parameter_descriptions: Dict[str, str] = Field(default_factory=dict, description="Descriptions for parameters")
     tags: List[str] = Field(default_factory=list, description="Tags for categorizing queries")
     is_favorite: bool = Field(False, description="Whether this query is marked as a favorite")
     field_mapping_id: Optional[str] = Field(None, description="ID of field mapping to apply to results")
