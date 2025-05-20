@@ -203,9 +203,8 @@ class SQLiteConnector(BaseDatabaseConnector):
 
             # Execute the query
             if params:
-                # Convert parameter dict to the format SQLite expects
-                param_values = self._prepare_parameters(params)
-                cursor = await self._connection.execute(query, param_values)
+                prepared_query, param_values = self._convert_to_prepared_statement(query, params)
+                cursor = await self._connection.execute(prepared_query, param_values)
             else:
                 cursor = await self._connection.execute(query)
 
@@ -264,6 +263,16 @@ class SQLiteConnector(BaseDatabaseConnector):
 
         finally:
             self._query_cancel_event = None
+
+    def _convert_to_prepared_statement(self, query: str, params: Dict[str, Any]) -> Tuple[str, List[Any]]:
+        param_names = re.findall(':(\\w+)', query)
+        param_values = []
+        for name in param_names:
+            if name not in params:
+                raise ValueError(f"Parameter '{name}' not provided in params dictionary")
+            param_values.append(params[name])
+            query = query.replace(f':{name}', '?', 1)
+        return (query, param_values)
 
     async def get_tables(self, schema: Optional[str] = None) -> List[TableMetadata]:
         """Get a list of tables in the database.

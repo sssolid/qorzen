@@ -1102,7 +1102,7 @@ class ValidationWidget(QWidget):
         """
         if connection_id == self._current_connection_id:
             self._new_rule_button.setEnabled(connected)
-            self._run_button.setEnabled(connected and self._rules_list.selectedItems())
+            self._run_button.setEnabled(connected and bool(self._rules_list.selectedItems()))
 
             if not connected:
                 self._clear_rule_details()

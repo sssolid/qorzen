@@ -11,7 +11,7 @@ import asyncio
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple, Union, cast
 
-from PySide6.QtCore import Qt, QRegularExpression, Signal, Slot, QSize
+from PySide6.QtCore import Qt, QRegularExpression, Signal, Slot, QSize, QPoint
 from PySide6.QtGui import (
     QColor, QTextCharFormat, QFont, QPalette, QSyntaxHighlighter,
     QTextCursor, QKeyEvent, QTextDocument, QIcon
@@ -277,60 +277,51 @@ class SQLEditor(QTextEdit):
 
 
 class ParameterWidget(QWidget):
-    """Widget for a single query parameter with description tooltip."""
-
-    def __init__(self, param_name: str, description: str = "", parent: Optional[QWidget] = None) -> None:
-        """Initialize a parameter widget.
-
-        Args:
-            param_name: The name of the parameter
-            description: The description/tooltip for the parameter
-            parent: The parent widget
-        """
+    def __init__(self, param_name: str, description: str = '', parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+
+        # Set up the layout
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
 
+        # Store parameter info
         self.param_name = param_name
         self.description = description
 
+        # Create input field
         self.input_field = QLineEdit()
-        self.input_field.setObjectName(f"param_{param_name}")
-        self.input_field.setPlaceholderText(description if description else "Enter value")
+        self.input_field.setObjectName(f'param_{param_name}')
 
-        # Add tooltip
+        # Set placeholder text based on description
         if description:
+            self.input_field.setPlaceholderText(description)
             self.input_field.setToolTip(description)
+        else:
+            self.input_field.setPlaceholderText('Enter value')
 
+        # Add input field to layout
+        layout.addWidget(self.input_field)
+
+        # Create help button if we have a description
         self.help_button = None
         if description:
-            self.help_button = QPushButton("?")
-            self.help_button.setFixedWidth(20)
+            self.help_button = QPushButton('?')
+            self.help_button.setFixedSize(24, 24)
             self.help_button.setToolTip(description)
             self.help_button.clicked.connect(self._show_help)
-
-        layout.addWidget(self.input_field)
-        if self.help_button:
             layout.addWidget(self.help_button)
 
     def _show_help(self) -> None:
-        """Show the parameter description in a tooltip or message box."""
-        if self.description:
-            QToolTip.showText(self.help_button.mapToGlobal(
-                self.help_button.rect().bottomRight()),
-                self.description
-            )
+        """Show a tooltip with the parameter description."""
+        if self.description and self.help_button:
+            # Calculate a good position for the tooltip
+            pos = self.help_button.mapToGlobal(QPoint(0, self.help_button.height()))
+            QToolTip.showText(pos, self.description, self.help_button)
 
     def get_value(self) -> Any:
-        """Get the parameter value with appropriate type conversion.
-
-        Returns:
-            The parameter value converted to the appropriate type
-        """
         value = self.input_field.text()
-
-        # Convert to appropriate type
-        if value.lower() == 'null':
+        if not value or value.lower() == 'null':
             return None
         elif value.isdigit():
             return int(value)
@@ -342,11 +333,6 @@ class ParameterWidget(QWidget):
             return value
 
     def set_value(self, value: Any) -> None:
-        """Set the parameter value.
-
-        Args:
-            value: The value to set
-        """
         if value is None:
             self.input_field.setText('NULL')
         else:
@@ -374,6 +360,8 @@ class QueryEditorWidget(QWidget):
         self._current_query_id: Optional[str] = None
         self._current_mapping_id: Optional[str] = None
         self._parameter_widgets: Dict[str, ParameterWidget] = {}  # Track parameter widgets by name
+
+        self._logger.debug("Initializing QueryEditorWidget")
 
         self._init_ui()
         self._connect_signals()
@@ -657,81 +645,99 @@ class QueryEditorWidget(QWidget):
         return ''
 
     def _on_query_text_changed(self) -> None:
-        """Handle changes to the query text."""
         query_text = self._editor.toPlainText()
+        self._logger.debug(f"Query changed, length: {len(query_text)}")
         params = self._detect_query_parameters_with_descriptions(query_text)
+        self._logger.debug(f"Detected {len(params)} parameters")
         self._update_parameter_controls(params)
 
     def _detect_query_parameters_with_descriptions(self, query: str) -> List[ParameterDescription]:
-        """Detect parameters with optional descriptions in the query.
-
-        Format: :param_name or :param_name{description}
-
-        Args:
-            query: The query text
-
-        Returns:
-            A list of parameter descriptions
         """
-        # Match both :param and :param{description} formats
-        matches = re.finditer(r':([A-Za-z0-9_]+)(?:\{([^}]*)\})?', query)
+        Detect query parameters and their descriptions in the SQL text.
+        Parameters can be specified as :name or :name{description}
+        """
+        # Pattern to match parameters with optional descriptions
+        pattern = r':([A-Za-z0-9_]+)(?:\{([^}]*)\})?'
+        matches = re.finditer(pattern, query)
 
         param_descriptions: List[ParameterDescription] = []
         seen_params = set()
 
         for match in matches:
             param_name = match.group(1)
-            description = match.group(2) or ""
+            description = match.group(2) or ''
 
-            # Avoid duplicates
+            # Only add the parameter once
             if param_name not in seen_params:
-                param_descriptions.append(
-                    ParameterDescription(name=param_name, description=description)
-                )
+                self._logger.debug(f"Detected parameter: {param_name} with description: {description}")
+                param_descriptions.append(ParameterDescription(
+                    name=param_name,
+                    description=description.strip()
+                ))
                 seen_params.add(param_name)
 
         return param_descriptions
 
     def _update_parameter_controls(self, param_descriptions: List[ParameterDescription]) -> None:
-        """Update the parameter input controls.
-
-        Args:
-            param_descriptions: List of parameter descriptions
-        """
-        # Store current values to preserve them when updating the UI
+        """Update the parameter controls based on the detected parameters."""
+        # Store current values from existing widgets
         current_values = {}
         for param_name, widget in self._parameter_widgets.items():
             current_values[param_name] = widget.input_field.text()
 
-        # Clear existing parameters
+        # Clear existing controls
         self._clear_parameter_controls()
 
+        # If no parameters, hide the group and return
         if not param_descriptions:
             self._params_group.setVisible(False)
             return
 
+        # Add new parameter controls
         self._params_group.setVisible(True)
 
-        # Create new parameter widgets
+        self._logger.debug(f"Creating parameters: {[p.name for p in param_descriptions]}")
+
         for param in param_descriptions:
+            # Create the parameter widget
             widget = ParameterWidget(param.name, param.description)
 
-            # Restore previous value if available
+            # Set previous value if available
             if param.name in current_values:
                 widget.input_field.setText(current_values[param.name])
 
+            # Add to layout
             self._params_layout.addRow(f'{param.name}:', widget)
+
+            # Store in dictionary
             self._parameter_widgets[param.name] = widget
 
     def _clear_parameter_controls(self) -> None:
-        """Clear all parameter controls."""
+        # Clear the parameter widgets dictionary
         self._parameter_widgets.clear()
 
-        # Remove all widgets from the layout
-        while self._params_layout.count() > 0:
-            item = self._params_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        # Create a new QFormLayout
+        new_layout = QFormLayout()
+
+        # Get the parent widget (QGroupBox)
+        parent = self._params_group
+
+        # Remove and delete the old layout
+        old_layout = parent.layout()
+        if old_layout:
+            # Remove each widget from the layout and delete it
+            while old_layout.count():
+                item = old_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
+            # Remove the old layout from the parent
+            parent.setLayout(None)
+            old_layout.deleteLater()
+
+        # Set the new layout
+        parent.setLayout(new_layout)
+        self._params_layout = new_layout
 
     def _on_new_query(self) -> None:
         """Create a new empty query."""
@@ -778,29 +784,31 @@ class QueryEditorWidget(QWidget):
         asyncio.create_task(self._load_query_by_id(query_id))
 
     async def _load_query_by_id(self, query_id: str) -> None:
-        """Load a query by its ID.
-
-        Args:
-            query_id: The query ID
-        """
         try:
             query = await self._plugin.get_saved_query(query_id)
             if not query:
+                self._logger.warning(f"Query not found: {query_id}")
                 return
 
+            self._logger.debug(f"Loading query: {query.name} with text length: {len(query.query_text)}")
             self._current_query_id = query_id
+
+            # Set the query text
             self._editor.setText(query.query_text)
 
-            # This will trigger parameter detection and UI updates
-            # We'll set parameter values in a second step
+            # Give UI time to update and detect parameters
+            await asyncio.sleep(0.1)
+
+            # Log parameter detection
+            self._logger.debug(f"Query parameters: {query.parameters}")
+
+            # Set parameter values if any
             if query.parameters:
-                # Wait for parameter controls to be created
-                # This is a bit of a hack, but we need to ensure the controls exist
-                # before we try to set their values
-                await asyncio.sleep(0.1)
                 self._set_parameter_values(query.parameters)
 
+            # Set field mapping if any
             if query.field_mapping_id:
+                self._logger.debug(f"Setting field mapping: {query.field_mapping_id}")
                 for i in range(self._mapping_combo.count()):
                     if self._mapping_combo.itemData(i) == query.field_mapping_id:
                         self._mapping_combo.setCurrentIndex(i)

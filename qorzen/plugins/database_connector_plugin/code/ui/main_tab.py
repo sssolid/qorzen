@@ -818,35 +818,38 @@ class DatabaseConnectorTab(QWidget):
 
     def open_settings_dialog(self) -> None:
         """Open the settings dialog."""
-        dialog = SettingsDialog(self._plugin, parent=self)
+        dialog = SettingsDialog(self._plugin, logger=self._logger, parent=self)
         if dialog.exec() == SettingsDialog.Accepted:
             # Save settings and update UI as needed
             asyncio.create_task(self.refresh_after_settings_update())
 
     async def refresh_after_settings_update(self) -> None:
-        """Refresh components after settings update.
-
-        Args:
-            main_tab_instance: The DatabaseConnectorTab instance
-        """
-        # Refresh history and validation managers with new database if needed
         history_manager = self._plugin._history_manager
         validation_engine = self._plugin._validation_engine
-
         settings = self._plugin._settings
+
         if settings and settings.history_database_connection_id:
-            # Update the history/validation database connection
+            # Set the database connection ID
             history_manager._history_connection_id = settings.history_database_connection_id
             validation_engine._validation_connection_id = settings.history_database_connection_id
 
-            # Initialize the components with the new connection
             try:
+                # Initialize services
                 await history_manager.initialize()
                 await validation_engine.initialize()
-            except Exception as e:
-                self._logger.error(f"Error initializing history/validation: {str(e)}")
 
-        # Refresh UI components
+                # Also update the tabs to reflect these changes
+                self._logger.info("History and validation services initialized successfully")
+            except Exception as e:
+                self._logger.error(f'Error initializing history/validation: {str(e)}')
+                QMessageBox.warning(
+                    self,
+                    'Initialization Error',
+                    f'Error initializing history/validation services: {str(e)}\n\n'
+                    f'Please check your database configuration.'
+                )
+
+        # Refresh all tabs
         await self._query_editor.refresh()
         await self._field_mapping.refresh()
         await self._validation.refresh()

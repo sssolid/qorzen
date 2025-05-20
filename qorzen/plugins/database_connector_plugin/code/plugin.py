@@ -984,27 +984,17 @@ class DatabaseConnectorPlugin(BasePlugin):
             raise PluginError(f"Failed to load settings: {str(e)}")
 
     async def _save_settings(self) -> None:
-        """
-        Save plugin settings to the config manager.
-
-        Raises:
-            PluginError: If saving fails
-        """
         try:
             if not self._config_manager or not self._settings:
                 return
-
             settings_dict = self._settings.dict()
-            await self._config_manager.set(
-                f"plugins.{self.name}.settings",
-                settings_dict
-            )
-
-            self._logger.debug("Saved plugin settings")
-
+            # Add debug logging
+            self._logger.debug(f'Saving settings: {settings_dict}')
+            await self._config_manager.set(f'plugins.{self.name}.settings', settings_dict)
+            self._logger.debug('Saved plugin settings')
         except Exception as e:
-            self._logger.error(f"Failed to save settings: {str(e)}")
-            raise PluginError(f"Failed to save settings: {str(e)}")
+            self._logger.error(f'Failed to save settings: {str(e)}')
+            raise PluginError(f'Failed to save settings: {str(e)}')
 
     async def _load_connections(self) -> None:
         """

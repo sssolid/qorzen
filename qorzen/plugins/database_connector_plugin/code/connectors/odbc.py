@@ -235,17 +235,13 @@ class ODBCConnector(BaseDatabaseConnector):
                 start_time = time.time()
                 cursor = self._connection.cursor()
                 self._cursor = cursor
-
-                # Set query timeout if supported
                 try:
                     cursor.timeout = self._config.query_timeout
                 except:
                     pass
-
-                # Execute the query with parameters if provided
                 if params:
-                    param_values = self._prepare_parameters(params)
-                    cursor.execute(query, param_values)
+                    prepared_query, param_values = self._convert_to_prepared_statement(query, params or {})
+                    cursor.execute(prepared_query, param_values)
                 else:
                     cursor.execute(query)
 
@@ -317,6 +313,16 @@ class ODBCConnector(BaseDatabaseConnector):
 
         finally:
             self._query_cancel_event = None
+
+    def _convert_to_prepared_statement(self, query: str, params: Dict[str, Any]) -> Tuple[str, List[Any]]:
+        param_names = re.findall(':(\\w+)', query)
+        param_values = []
+        for name in param_names:
+            if name not in params:
+                raise ValueError(f"Parameter '{name}' not provided in params dictionary")
+            param_values.append(params[name])
+            query = query.replace(f':{name}', '?', 1)
+        return (query, param_values)
 
     async def get_tables(self, schema: Optional[str] = None) -> List[TableMetadata]:
         """Get a list of tables from the database.
