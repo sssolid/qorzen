@@ -36,50 +36,50 @@ class Base(DeclarativeBase):
 
 
 class DatabaseConnectionConfig:
-    """Configuration for a database connection.
-
-    Attributes:
-        name: Name of the connection
-        db_type: Database type (postgresql, mysql, etc.)
-        host: Database host
-        port: Database port
-        database: Database name
-        user: Database user
-        password: Database password
-        pool_size: Connection pool size
-        max_overflow: Maximum overflow connections
-        pool_recycle: Connection recycle time in seconds
-        echo: Whether to echo SQL statements
-    """
-
     def __init__(
             self,
             name: str,
             db_type: str,
-            host: str,
-            port: int,
-            database: str,
-            user: str,
-            password: str,
+            host: str = "",
+            port: int = 0,
+            database: str = "",
+            user: str = "",
+            password: str = "",
             pool_size: int = 5,
             max_overflow: int = 10,
             pool_recycle: int = 3600,
-            echo: bool = False
+            echo: bool = False,
+            connection_string: Optional[str] = None,
+            url: Optional[URL] = None,
+            properties: Optional[Dict[str, Any]] = None,
+            read_only: bool = False,
+            ssl: bool = False,
+            allowed_tables: Optional[List[str]] = None,
+            dsn: Optional[str] = None,
+            jt400_jar_path: Optional[str] = None,
     ) -> None:
-        """Initialize database connection configuration.
+        """Initialize a database connection configuration.
 
         Args:
-            name: Name of the connection
-            db_type: Database type (postgresql, mysql, etc.)
-            host: Database host
-            port: Database port
-            database: Database name
-            user: Database user
+            name: Unique name for the connection
+            db_type: Type of database (postgresql, mysql, sqlite, odbc, etc.)
+            host: Database server hostname or IP
+            port: Database server port
+            database: Database name or path
+            user: Database username
             password: Database password
             pool_size: Connection pool size
-            max_overflow: Maximum overflow connections
-            pool_recycle: Connection recycle time in seconds
+            max_overflow: Maximum number of connections to overflow
+            pool_recycle: Seconds before connections are recycled
             echo: Whether to echo SQL statements
+            connection_string: Full connection string (alternative to individual parameters)
+            url: SQLAlchemy URL object (alternative to connection_string)
+            properties: Additional connection properties
+            read_only: Whether this connection is read-only
+            ssl: Whether to use SSL for connection
+            allowed_tables: List of allowed tables (for security restrictions)
+            dsn: ODBC data source name
+            jt400_jar_path: Path to JT400 JAR file for AS400 connections
         """
         self.name = name
         self.db_type = db_type.lower()
@@ -92,6 +92,14 @@ class DatabaseConnectionConfig:
         self.max_overflow = max_overflow
         self.pool_recycle = pool_recycle
         self.echo = echo
+        self.connection_string = connection_string
+        self.url = url
+        self.properties = properties or {}
+        self.read_only = read_only
+        self.ssl = ssl
+        self.allowed_tables = allowed_tables
+        self.dsn = dsn
+        self.jt400_jar_path = jt400_jar_path
 
 
 class DatabaseConnection:
@@ -231,23 +239,53 @@ class DatabaseManager(QorzenManager):
             ) from e
 
     async def _init_connection(self, connection: DatabaseConnection) -> None:
-        """Initialize a database connection.
-
-        Sets up both synchronous and asynchronous engines and session factories.
-
-        Args:
-            connection: The connection to initialize
-
-        Raises:
-            Exception: If connection initialization fails
-        """
         config = connection.config
 
-        # Create database URLs
-        if config.db_type == 'sqlite':
+        # Handle connection through URL or connection string first
+        if config.url:
+            db_url = config.url
+            db_async_url = None  # Will be determined later if possible
+        elif config.connection_string:
+            # For database types using direct connection strings (ODBC, etc.)
+            db_url = config.connection_string
+            db_async_url = None
+        elif config.db_type == 'sqlite':
             db_url = f'sqlite:///{config.database}'
             db_async_url = f'sqlite+aiosqlite:///{config.database}'
+        elif config.db_type == 'odbc':
+            # Construct ODBC connection string if not provided directly
+            if not config.connection_string:
+                conn_str = f'DRIVER={{ODBC}};'
+                if config.dsn:
+                    conn_str += f'DSN={config.dsn};'
+                if config.host:
+                    conn_str += f'SERVER={config.host};'
+                if config.port:
+                    conn_str += f'PORT={config.port};'
+                if config.database:
+                    conn_str += f'DATABASE={config.database};'
+                if config.user:
+                    conn_str += f'UID={config.user};'
+                if config.password:
+                    conn_str += f'PWD={config.password};'
+                db_url = f'odbc://{conn_str}'
+            else:
+                db_url = f'odbc://{config.connection_string}'
+            db_async_url = None
+        elif config.db_type == 'jdbc':
+            # For JDBC connections (like AS400)
+            if not config.connection_string:
+                # Construct a JDBC URL if not provided
+                db_url = f'jdbc:{config.db_type}://{config.host}'
+                if config.port:
+                    db_url += f':{config.port}'
+                if config.database:
+                    db_url += f'/{config.database}'
+            else:
+                db_url = config.connection_string
+            db_async_url = None
         else:
+            # For standard SQL databases, create URL from components
             db_url = URL.create(
                 config.db_type,
                 username=config.user,
@@ -257,6 +295,7 @@ class DatabaseManager(QorzenManager):
                 database=config.database
             )
 
+            # Set up async URL for supported database types
             if config.db_type == 'postgresql':
                 db_async_url = URL.create(
                     'postgresql+asyncpg',
@@ -266,19 +305,44 @@ class DatabaseManager(QorzenManager):
                     port=config.port,
                     database=config.database
                 )
+            elif config.db_type == 'mysql':
+                db_async_url = URL.create(
+                    'mysql+aiomysql',
+                    username=config.user,
+                    password=config.password,
+                    host=config.host,
+                    port=config.port,
+                    database=config.database
+                )
             else:
                 db_async_url = None
 
-        # Create synchronous engine
-        connection.engine = create_engine(
-            db_url,
-            pool_size=config.pool_size,
-            max_overflow=config.max_overflow,
-            pool_recycle=config.pool_recycle,
-            echo=config.echo
-        )
+        # Create engine with additional properties if provided
+        engine_args = {
+            'pool_size': config.pool_size,
+            'max_overflow': config.max_overflow,
+            'pool_recycle': config.pool_recycle,
+            'echo': config.echo
+        }
 
-        # Create asynchronous engine if supported
+        # Add SSL settings if specified
+        if config.ssl:
+            engine_args['connect_args'] = engine_args.get('connect_args', {})
+            engine_args['connect_args']['ssl'] = True
+
+        # Add any additional properties from the config
+        if config.properties:
+            for key, value in config.properties.items():
+                if key == 'connect_args':
+                    engine_args['connect_args'] = engine_args.get('connect_args', {})
+                    if isinstance(value, dict):
+                        engine_args['connect_args'].update(value)
+                else:
+                    engine_args[key] = value
+
+        # Create the engines
+        connection.engine = create_engine(db_url, **engine_args)
+
         if db_async_url:
             connection.async_engine = create_async_engine(
                 db_async_url,
@@ -288,11 +352,8 @@ class DatabaseManager(QorzenManager):
                 pool_recycle=config.pool_recycle
             )
 
-        # Create session factories
-        connection.session_factory = sessionmaker(
-            bind=connection.engine,
-            expire_on_commit=False
-        )
+        # Set up session factories
+        connection.session_factory = sessionmaker(bind=connection.engine, expire_on_commit=False)
 
         if connection.async_engine:
             connection.async_session_factory = sessionmaker(
@@ -301,7 +362,7 @@ class DatabaseManager(QorzenManager):
                 class_=AsyncSession
             )
 
-        # Set up query metrics
+        # Set up event listeners
         event.listen(
             connection.engine,
             'before_cursor_execute',

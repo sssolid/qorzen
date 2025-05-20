@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import time
+
 """
 Base connector interface for the Database Connector Plugin.
 
@@ -70,31 +73,19 @@ class DatabaseConnectorProtocol(Protocol[T]):
 class BaseDatabaseConnector(abc.ABC):
     """Base class for database connectors."""
 
-    def __init__(
-            self,
-            config: BaseConnectionConfig,
-            logger: Any,
-            database_manager: Optional[Any] = None,
-            security_manager: Optional[Any] = None
-    ) -> None:
-        """Initialize the database connector.
-
-        Args:
-            config: Connection configuration
-            logger: Logger for logging messages
-            database_manager: Optional database manager for centralized operations
-            security_manager: Optional security manager for security checks
-        """
-        self._config = config
-        self._logger = logger if logger else logging.getLogger(__name__)
-        self._database_manager = database_manager
-        self._security_manager = security_manager
-        self._connected = False
-        self._connect_lock = asyncio.Lock()
-        self._last_error: Optional[str] = None
-        self._last_connect_time: Optional[float] = None
-        self._query_cancel_event: Optional[asyncio.Event] = None
-        self._accessed_tables: Set[str] = set()
+    class BaseDatabaseConnector(abc.ABC):
+        def __init__(self, config: BaseConnectionConfig, logger: Any, security_manager: Optional[Any] = None) -> None:
+            self._config = config
+            self._logger = logger if logger else logging.getLogger(__name__)
+            self._security_manager = security_manager
+            self._database_manager: Optional[Any] = None
+            self._connected = False
+            self._connect_lock = asyncio.Lock()
+            self._last_error: Optional[str] = None
+            self._last_connect_time: Optional[float] = None
+            self._query_cancel_event: Optional[asyncio.Event] = None
+            self._accessed_tables: Set[str] = set()
+            self._registered_connection_id: Optional[str] = None
 
     @property
     def config(self) -> BaseConnectionConfig:
@@ -307,3 +298,272 @@ class BaseDatabaseConnector(abc.ABC):
         """
         if table_name:
             self._accessed_tables.add(table_name.upper())
+
+    async def _register_with_database_manager(self) -> bool:
+        """Register this connector with the database manager.
+
+        Returns:
+            bool: True if registration was successful, False otherwise
+        """
+        if not self._database_manager:
+            return False
+
+        try:
+            # Create a unique connection ID for this connector
+            self._registered_connection_id = f"{self._config.connection_type}_{self._config.id}"
+
+            # Check if already registered
+            if await self._database_manager.has_connection(self._registered_connection_id):
+                self._logger.debug(f'Connection {self._registered_connection_id} already registered')
+                return True
+
+            # Create configuration for database manager
+            db_config = self._create_database_manager_config()
+
+            # Register the connection
+            await self._database_manager.register_connection(db_config)
+            self._logger.debug(f'Registered connection with database_manager: {self._registered_connection_id}')
+            return True
+        except Exception as e:
+            self._logger.warning(f'Could not register connection with database_manager: {str(e)}')
+            return False
+
+    def _create_database_manager_config(self) -> Any:
+        """Create a DatabaseConnectionConfig from this connector's config.
+
+        This method should be overridden by subclasses for specific database types.
+
+        Returns:
+            Any: A DatabaseConnectionConfig instance
+        """
+        from qorzen.core.database_manager import DatabaseConnectionConfig
+
+        return DatabaseConnectionConfig(
+            name=self._registered_connection_id or f"{self._config.connection_type}_{self._config.id}",
+            db_type=str(self._config.connection_type),
+            host=getattr(self._config, 'host', getattr(self._config, 'server', '')),
+            port=getattr(self._config, 'port', 0),
+            database=self._config.database,
+            user=getattr(self._config, 'username', ''),
+            password=getattr(self._config, 'password', '').get_secret_value(),
+            pool_size=1,
+            max_overflow=0,
+            pool_recycle=3600,
+            echo=False,
+            read_only=getattr(self._config, 'read_only', False)
+        )
+
+    async def _execute_query_with_database_manager(
+            self,
+            query: str,
+            params: Optional[Dict[str, Any]] = None,
+            limit: Optional[int] = None
+    ) -> QueryResult:
+        """Execute a query using the database manager.
+
+        Args:
+            query: SQL query to execute
+            params: Query parameters
+            limit: Maximum number of rows to return
+
+        Returns:
+            QueryResult: Query result
+
+        Raises:
+            DatabaseError: If query execution fails
+        """
+        from qorzen.utils.exceptions import DatabaseError
+
+        if not self._database_manager or not self._registered_connection_id:
+            raise DatabaseError(
+                message="Cannot execute query with database manager: not registered",
+                details={'connection_id': self._config.id}
+            )
+
+        start_time = time.time()
+
+        try:
+            # Execute the query
+            if params:
+                prepared_params = self._prepare_params_for_database_manager(params)
+                records = await self._database_manager.execute_raw(
+                    sql=query,
+                    params=prepared_params,
+                    connection_name=self._registered_connection_id
+                )
+            else:
+                records = await self._database_manager.execute_raw(
+                    sql=query,
+                    connection_name=self._registered_connection_id
+                )
+
+            # Extract table name from query if possible
+            table_name = None
+            match = re.search(r'FROM\s+(["\[\]`]?\w+["\[\]`]?)', query.upper())
+            if match:
+                table_name = match.group(1).strip('"[]`')
+                if table_name:
+                    self._accessed_tables.add(table_name.upper())
+
+            # Get column metadata from records
+            columns = self._extract_columns_from_records(records, table_name)
+
+            # Calculate execution time
+            execution_time = time.time() - start_time
+
+            # Create and return the result
+            result = QueryResult(
+                query=query,
+                connection_id=self._config.id,
+                executed_at=datetime.now(),
+                records=records,
+                columns=columns,
+                row_count=len(records),
+                execution_time_ms=int(execution_time * 1000),
+                truncated=limit is not None and len(records) >= limit
+            )
+
+            return result
+        except Exception as e:
+            error_msg = str(e)
+            sanitized_error = self._sanitize_error_message(error_msg)
+            self._logger.error(
+                f'Error executing query with database manager: {sanitized_error}',
+                extra={'query': self._sanitize_sql_for_logging(query)}
+            )
+
+            # Create an error result
+            result = QueryResult(
+                query=query,
+                connection_id=self._config.id,
+                executed_at=datetime.now(),
+                has_error=True,
+                error_message=sanitized_error
+            )
+
+            # Re-raise the exception
+            raise DatabaseError(
+                message=f'Failed to execute query: {sanitized_error}',
+                details={'original_error': sanitized_error, 'query': self._sanitize_sql_for_logging(query)}
+            ) from e
+
+    def _prepare_params_for_database_manager(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare parameters for the database manager.
+
+        This method can be overridden by subclasses for specific parameter conversion.
+
+        Args:
+            params: Parameters to prepare
+
+        Returns:
+            Dict[str, Any]: Prepared parameters
+        """
+        return params
+
+    def _extract_columns_from_records(
+            self,
+            records: List[Dict[str, Any]],
+            table_name: Optional[str]
+    ) -> List[ColumnMetadata]:
+        """Extract column metadata from query results.
+
+        Args:
+            records: Query result records
+            table_name: Optional table name
+
+        Returns:
+            List[ColumnMetadata]: Column metadata
+        """
+        columns = []
+
+        if not records:
+            return columns
+
+        # Get the first record to extract column information
+        record = records[0]
+
+        # Create column metadata for each field
+        for name, value in record.items():
+            type_name = self._get_type_name_from_value(value)
+            type_code = self._get_type_code_from_name(type_name)
+
+            precision = 0
+            scale = 0
+
+            if isinstance(value, (int, float)):
+                precision = 10
+                if isinstance(value, float):
+                    scale = 2
+
+            columns.append(ColumnMetadata(
+                name=name,
+                type_name=type_name,
+                type_code=type_code,
+                precision=precision,
+                scale=scale,
+                nullable=True,
+                table_name=table_name
+            ))
+
+        return columns
+
+    def _get_type_name_from_value(self, value: Any) -> str:
+        """Get SQL type name from a Python value.
+
+        Args:
+            value: Value to get type for
+
+        Returns:
+            str: SQL type name
+        """
+        if value is None:
+            return 'NULL'
+        elif isinstance(value, int):
+            return 'INTEGER'
+        elif isinstance(value, float):
+            return 'REAL'
+        elif isinstance(value, str):
+            return 'VARCHAR'
+        elif isinstance(value, bytes):
+            return 'BINARY'
+        elif isinstance(value, bool):
+            return 'BOOLEAN'
+        elif hasattr(value, 'isoformat'):  # datetime or date
+            if hasattr(value, 'hour'):  # datetime
+                return 'TIMESTAMP'
+            else:  # date
+                return 'DATE'
+        else:
+            return 'VARCHAR'
+
+    def _get_type_code_from_name(self, type_name: str) -> int:
+        """Get type code from SQL type name.
+
+        Args:
+            type_name: SQL type name
+
+        Returns:
+            int: Type code
+        """
+        # Default implementation - subclasses can override
+        type_codes = {
+            'NULL': 0,
+            'INTEGER': 4,
+            'SMALLINT': 5,
+            'DECIMAL': 3,
+            'NUMERIC': 2,
+            'FLOAT': 6,
+            'REAL': 7,
+            'DOUBLE': 8,
+            'CHAR': 1,
+            'VARCHAR': 12,
+            'LONGVARCHAR': -1,
+            'DATE': 91,
+            'TIME': 92,
+            'TIMESTAMP': 93,
+            'BINARY': -2,
+            'VARBINARY': -3,
+            'BOOLEAN': 16
+        }
+
+        return type_codes.get(type_name, 0)

@@ -13,9 +13,22 @@ from typing import Any, Dict, List, Optional, Set, Union, cast, Callable, Awaita
 import structlog
 from pythonjsonlogger import jsonlogger
 
+from colorlog import ColoredFormatter
+
 from qorzen.core.base import QorzenManager
 from qorzen.core.event_model import EventType
 from qorzen.utils.exceptions import ManagerInitializationError, ManagerShutdownError, EventBusError
+
+
+class ClickablePathFormatter(ColoredFormatter):
+    """
+    Colours only timestamp/level but emits the file path
+    as a posix-style string so PyCharm will hyperlink it.
+    """
+    def format(self, record):
+        # ensure forward‑slash path
+        record.clickable_path = pathlib.Path(record.pathname).as_posix()
+        return super().format(record)
 
 
 class ExcludeLoggerFilter(logging.Filter):
@@ -167,7 +180,7 @@ class LoggingManager(QorzenManager):
         self._enable_structlog = False
         self._handlers: List[logging.Handler] = []
         self._event_bus_manager = None
-        self._event_bus_handler: Optional[EventBusLogHandler] = None
+        self._event_bus_handler: Optional[EventBusManagerLogHandler] = None
 
     async def initialize(self) -> None:
         """Initialize the logging manager asynchronously.
@@ -200,9 +213,33 @@ class LoggingManager(QorzenManager):
             # Set up formatter
             if log_format == 'json':
                 self._enable_structlog = True
-                formatter = self._create_json_formatter()
+                # formatter = self._create_json_formatter()
+                formatter = self._create_json_formatter(
+                    fmt='%(asctime)s %(name)s %(levelname)s %(filename)s:%(lineno)d %(message)s'
+                )
             else:
-                formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                if ColoredFormatter:
+                    fmt = (
+                        "%(asctime)s [%(log_color)s%(levelname)-8s%(reset)s] "
+                        'File "%(clickable_path)s", line %(lineno)d - '
+                        "Message: %(log_color)s%(message)s%(reset)s"
+                    )
+                    formatter = ClickablePathFormatter(
+                        fmt=fmt,
+                        datefmt="%Y-%m-%d %H:%M:%S",
+                        reset=True,
+                        log_colors={
+                            'DEBUG': 'white',
+                            'INFO': 'green',
+                            'WARNING': 'yellow',
+                            'ERROR': 'red',
+                            'CRITICAL': 'bold_red',
+                        }
+                    )
+                else:
+                    # fallback: no colour at all, but clickable_path still works
+                    fmt = "%(asctime)s [%(clickable_path)s:%(lineno)d] %(levelname)s: %(message)s"
+                    formatter = logging.Formatter(fmt=fmt, datefmt="%Y-%m-%d %H:%M:%S")
 
             # Console handler
             if logging_config.get('console', {}).get('enabled', True):
@@ -273,14 +310,14 @@ class LoggingManager(QorzenManager):
                 manager_name=self.name
             ) from e
 
-    def _create_json_formatter(self) -> logging.Formatter:
+    def _create_json_formatter(self, fmt: str = '%(asctime)s %(name)s %(levelname)s %(message)s') -> logging.Formatter:
         """Create a JSON formatter for log records.
 
         Returns:
             A configured JSON formatter
         """
         return jsonlogger.JsonFormatter(
-            fmt='%(asctime)s %(name)s %(levelname)s %(message)s',
+            fmt=fmt,
             datefmt='%Y-%m-%dT%H:%M:%S%z',
             json_ensure_ascii=False
         )

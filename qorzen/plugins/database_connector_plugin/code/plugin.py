@@ -287,31 +287,34 @@ class DatabaseConnectorPlugin(BasePlugin):
 
     async def get_connector(self, connection_id: str) -> BaseDatabaseConnector:
         try:
-            # Create connection lock if it doesn't exist
             if connection_id not in self._connector_locks:
                 self._connector_locks[connection_id] = asyncio.Lock()
 
-            # Use lock to ensure thread safety
             async with self._connector_locks[connection_id]:
-                # Return existing connector if already connected
                 if connection_id in self._active_connectors:
                     connector = self._active_connectors[connection_id]
                     if not connector.is_connected:
                         await connector.connect()
                     return connector
 
-                # Get connection config
                 config = self._connections.get(connection_id)
                 if not config:
                     raise PluginError(f'Connection not found: {connection_id}')
 
-                # Create new connector
+                # Create connector with database_manager and security_manager
                 connector = get_connector_for_config(
                     config=config,
                     logger=self._logger,
                     security_manager=self._security_manager
                 )
+
+                # Set the database_manager
+                if self._database_manager:
+                    connector.set_database_manager(self._database_manager)
+
+                # Connect
                 await connector.connect()
+
                 self._active_connectors[connection_id] = connector
                 return connector
         except Exception as e:
@@ -412,16 +415,13 @@ class DatabaseConnectorPlugin(BasePlugin):
             self._logger.error(f'Failed to delete query: {str(e)}')
             raise PluginError(f'Failed to delete query: {str(e)}') from e
 
-    async def execute_query(
-            self,
-            connection_id: str,
-            query: str,
-            params: Optional[Dict[str, Any]] = None,
-            limit: Optional[int] = None,
-            mapping_id: Optional[str] = None
-    ) -> QueryResult:
+    async def execute_query(self, connection_id: str, query: str, params: Optional[Dict[str, Any]] = None,
+                            limit: Optional[int] = None, mapping_id: Optional[str] = None) -> QueryResult:
         try:
+            # Get the connector, which will register with database_manager if possible
             connector = await self.get_connector(connection_id)
+
+            # Execute the query
             result = await connector.execute_query(query=query, params=params, limit=limit)
 
             # Apply field mapping if specified
