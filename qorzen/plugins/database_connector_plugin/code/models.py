@@ -50,6 +50,64 @@ class BaseConnectionConfig(BaseModel):
         extra = "forbid"
 
 
+class ParameterDescription(BaseModel):
+    """Model for a query parameter with optional description."""
+
+    name: str = Field(..., description='Parameter name')
+    description: str = Field("", description='Parameter description/help text')
+
+
+class SQLiteConnectionConfig(BaseConnectionConfig):
+    """Configuration model for SQLite database connections."""
+
+    connection_type: Literal[ConnectionType.SQLITE] = Field(
+        ConnectionType.SQLITE,
+        description='Connection type'
+    )
+    database: str = Field(
+        ...,
+        description='SQLite database file path (or :memory: for in-memory database)'
+    )
+    username: str = Field(
+        "sqlite",
+        description='Username (not used for SQLite but required by base model)'
+    )
+    password: SecretStr = Field(
+        SecretStr(""),
+        description='Password (not used for SQLite but required by base model)'
+    )
+
+    @field_validator('database')
+    def validate_database(cls, v: str) -> str:
+        """Validate the database path.
+
+        Args:
+            v: The database path
+
+        Returns:
+            The validated database path
+
+        Raises:
+            ValueError: If the database path is invalid
+        """
+        import os
+        # Allow :memory: database
+        if v == ':memory:':
+            return v
+
+        # Check if path exists or parent directory exists
+        db_path = os.path.abspath(os.path.expanduser(v))
+        if os.path.exists(db_path):
+            return db_path
+
+        parent_dir = os.path.dirname(db_path)
+        if not os.path.exists(parent_dir):
+            raise ValueError(f"Database directory does not exist: {parent_dir}")
+
+        # Path is valid but file doesn't exist yet - will be created
+        return db_path
+
+
 class AS400ConnectionConfig(BaseConnectionConfig):
     """AS400-specific connection configuration."""
     connection_type: Literal[ConnectionType.AS400] = Field(ConnectionType.AS400, description="Connection type")
@@ -135,6 +193,10 @@ class SavedQuery(BaseModel):
     updated_at: datetime.datetime = Field(default_factory=datetime.datetime.now,
                                           description="When this query was last updated")
     parameters: Dict[str, Any] = Field(default_factory=dict, description="Query parameters if any")
+    parameter_descriptions: Dict[str, str] = Field(
+        default_factory=dict,
+        description='Descriptions for parameters'
+    )
     tags: List[str] = Field(default_factory=list, description="Tags for categorizing queries")
     is_favorite: bool = Field(False, description="Whether this query is marked as a favorite")
     field_mapping_id: Optional[str] = Field(None, description="ID of field mapping to apply to results")

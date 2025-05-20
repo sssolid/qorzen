@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from .settings_dialog import SettingsDialog
+
 """
 Main UI tab for the Database Connector Plugin.
 
@@ -37,7 +39,7 @@ from ..models import (
     SavedQuery,
     FieldMapping,
     ValidationRule,
-    QueryResult
+    QueryResult, SQLiteConnectionConfig, PluginSettings
 )
 
 from .connection_dialog import ConnectionDialog, ConnectionManagerDialog
@@ -155,6 +157,12 @@ class DatabaseConnectorTab(QWidget):
         self._export_action.triggered.connect(self._export_results)
         self._export_action.setEnabled(False)
         toolbar.addAction(self._export_action)
+
+        toolbar.addSeparator()
+        self._settings_action = QAction("Settings", toolbar)
+        self._settings_action.triggered.connect(self.open_settings_dialog)
+        self._settings_action.setEnabled(True)
+        toolbar.addAction(self._settings_action)
 
         # Add the toolbar
         main_layout.addWidget(toolbar)
@@ -420,6 +428,7 @@ class DatabaseConnectorTab(QWidget):
         else:
             # Connect
             self._connect_to_database()
+
 
     def _connect_to_database(self) -> None:
         """Connect to the selected database."""
@@ -806,6 +815,136 @@ class DatabaseConnectorTab(QWidget):
 
             # Save all connections asynchronously
             asyncio.create_task(self._async_save_all_connections(updated_connections))
+
+    def open_settings_dialog(self) -> None:
+        """Open the settings dialog."""
+        dialog = SettingsDialog(self._plugin, parent=self)
+        if dialog.exec() == SettingsDialog.Accepted:
+            # Save settings and update UI as needed
+            asyncio.create_task(self.refresh_after_settings_update())
+
+    async def refresh_after_settings_update(self) -> None:
+        """Refresh components after settings update.
+
+        Args:
+            main_tab_instance: The DatabaseConnectorTab instance
+        """
+        # Refresh history and validation managers with new database if needed
+        history_manager = self._plugin._history_manager
+        validation_engine = self._plugin._validation_engine
+
+        settings = self._plugin._settings
+        if settings and settings.history_database_connection_id:
+            # Update the history/validation database connection
+            history_manager._history_connection_id = settings.history_database_connection_id
+            validation_engine._validation_connection_id = settings.history_database_connection_id
+
+            # Initialize the components with the new connection
+            try:
+                await history_manager.initialize()
+                await validation_engine.initialize()
+            except Exception as e:
+                self._logger.error(f"Error initializing history/validation: {str(e)}")
+
+        # Refresh UI components
+        await self._query_editor.refresh()
+        await self._field_mapping.refresh()
+        await self._validation.refresh()
+        await self._history.refresh()
+
+    def prompt_for_history_db_setup(self) -> None:
+        """Prompt the user to set up a history/validation database if none is configured.
+
+        Args:
+            main_tab_instance: The DatabaseConnectorTab instance
+        """
+        settings = self._plugin._settings
+
+        # Check if history database is already configured
+        if settings and settings.history_database_connection_id:
+            return
+
+        # Ask the user if they want to configure it
+        reply = QMessageBox.question(
+            self,
+            'Configure History and Validation',
+            'Would you like to set up a database for storing history and validation data?\n\n'
+            'This enables features like query history, data validation, and field mappings.',
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            # Show file dialog to create SQLite database
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                'Create SQLite Database for History/Validation',
+                '',
+                'SQLite Databases (*.db *.sqlite *.sqlite3);;All Files (*.*)'
+            )
+
+            if file_path:
+                # Add .db extension if none specified
+                if not any(file_path.lower().endswith(ext) for ext in ['.db', '.sqlite', '.sqlite3']):
+                    file_path += '.db'
+
+                # Create and save SQLite connection
+                connection_name = "History and Validation Database"
+
+                config = SQLiteConnectionConfig(
+                    name=connection_name,
+                    database=file_path,
+                    username="sqlite",
+                    password="",
+                    read_only=False  # Need write access
+                )
+
+                # Save the connection and update settings
+                asyncio.create_task(self.setup_history_db(config))
+
+    async def setup_history_db(self, config: SQLiteConnectionConfig) -> None:
+        """Set up the history database.
+
+        Args:
+            main_tab_instance: The DatabaseConnectorTab instance
+            config: SQLite connection configuration
+        """
+        try:
+            # Save the connection
+            conn_id = await self._plugin.save_connection(config)
+
+            # Update settings to use this connection for history/validation
+            settings = self._plugin._settings
+
+            settings.history_database_connection_id = conn_id
+            await self._plugin._save_settings()
+
+            # Initialize history and validation with new connection
+            history_manager = self._plugin._history_manager
+            validation_engine = self._plugin._validation_engine
+
+            history_manager._history_connection_id = conn_id
+            validation_engine._validation_connection_id = conn_id
+
+            await history_manager.initialize()
+            await validation_engine.initialize()
+
+            # Refresh UI
+            await self.refresh_after_settings_update()
+
+            QMessageBox.information(
+                self,
+                'Setup Complete',
+                f'History and validation database has been configured.\n\n'
+                f'Database: {config.database}\n'
+                f'History and validation features are now available.'
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                'Setup Error',
+                f'Failed to set up history database: {str(e)}'
+            )
 
     async def _async_save_all_connections(
             self,
