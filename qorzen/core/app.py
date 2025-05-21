@@ -386,12 +386,10 @@ class ApplicationCore:
         return None
 
     async def shutdown(self) -> None:
-        """Shutdown the application core.
+        """Shut down the application core.
 
-        Shuts down all managers in reverse dependency order.
-
-        Raises:
-            ApplicationError: If shutdown fails
+        This method ensures a clean shutdown of all managers and resources.
+        It uses timeouts to prevent hanging on problematic components.
         """
         if not self._initialized:
             return
@@ -400,17 +398,77 @@ class ApplicationCore:
             if self._logger:
                 self._logger.info('Shutting down Qorzen')
 
-            # Shutdown all managers through the dependency manager
-            if self._dependency_manager:
-                await self._dependency_manager.shutdown()
+            # Publish shutdown event for plugins
+            try:
+                event_bus_manager = self.get_manager('event_bus_manager')
+                if event_bus_manager:
+                    await asyncio.wait_for(
+                        event_bus_manager.publish(
+                            event_type='system/shutting_down',
+                            source='app_core'
+                        ),
+                        timeout=2.0
+                    )
+            except (asyncio.TimeoutError, Exception) as e:
+                if self._logger:
+                    self._logger.warning(f'Error publishing shutdown event: {str(e)}')
 
+            # First, stop the plugin manager to close out all plugins
+            plugin_manager = self.get_manager('plugin_manager')
+            if plugin_manager:
+                try:
+                    await asyncio.wait_for(plugin_manager.shutdown(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    if self._logger:
+                        self._logger.warning('Timeout shutting down plugin manager')
+                except Exception as e:
+                    if self._logger:
+                        self._logger.error(f'Error shutting down plugin manager: {str(e)}')
+
+            # Use dependency manager for orderly shutdown of remaining components
+            if self._dependency_manager:
+                try:
+                    await asyncio.wait_for(self._dependency_manager.shutdown(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    if self._logger:
+                        self._logger.warning('Timeout during dependency manager shutdown')
+
+                    # Force clean-up of any managers that might be hanging
+                    for name, manager in list(self._managers.items()):
+                        if hasattr(manager, '_initialized') and getattr(manager, '_initialized', False):
+                            try:
+                                self._logger.warning(f'Force shutting down {name}')
+                                setattr(manager, '_initialized', False)
+                                setattr(manager, '_healthy', False)
+                            except Exception:
+                                pass
+                except Exception as e:
+                    if self._logger:
+                        self._logger.error(f'Error during dependency manager shutdown: {str(e)}')
+
+            # Clear all manager references
             self._managers.clear()
             self._initialized = False
+
+            # Set shutdown event to unblock any waiters
+            self._shutdown_event.set()
 
             if self._logger:
                 self._logger.info('Qorzen shutdown complete')
 
-            self._shutdown_event.set()
+            # Force exit if we're still running after everything is done
+            # This catches any lingering threads/tasks that might be preventing exit
+            # We give the application 2 seconds to exit gracefully before forcing
+            def force_exit():
+                import os, sys, time
+                time.sleep(2)
+                print("Forcing exit after timeout")
+                os._exit(0)  # Force exit
+
+            import threading
+            exit_thread = threading.Thread(target=force_exit, daemon=True)
+            exit_thread.start()
+
         except Exception as e:
             if self._logger:
                 self._logger.error(f'Error during shutdown: {str(e)}', exc_info=True)
@@ -418,7 +476,12 @@ class ApplicationCore:
                 print(f'Error during shutdown: {str(e)}')
                 traceback.print_exc()
 
-            raise ApplicationError(f'Failed to shutdown application: {str(e)}') from e
+            # Set shutdown event even on error
+            self._shutdown_event.set()
+
+            raise ApplicationError(
+                f'Failed to shutdown application: {str(e)}'
+            ) from e
 
     def set_ui_integration(self, ui_integration: Any) -> None:
         """Set the UI integration.

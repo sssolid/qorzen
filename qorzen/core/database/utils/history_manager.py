@@ -43,57 +43,60 @@ class HistoryManager:
         self._is_initialized = False
 
     async def initialize(self) -> None:
-        """Initialize the history tracking system.
+        """Initialize the history manager.
 
-        This creates necessary tables and starts any active schedules.
+        This method sets up the history tracking system and creates necessary tables.
+        It handles database systems that don't support async sessions.
 
         Raises:
-            DatabaseError: If initialization fails
+            DatabaseError: If initialization fails and is critical.
         """
         if not self._history_connection_id:
-            self._logger.warning("No history database connection configured")
+            self._logger.warning('No history database connection configured')
             return
 
         try:
+            # Check if history tracking is enabled
+            config = await self._db_manager._config_manager.get('database.history', {})
+            if not config.get('enabled', True):
+                self._logger.info('History tracking system disabled in configuration')
+                return
+
             if not self._history_connection_id:
-                raise DatabaseError(
-                    message="No history database connection ID provided",
-                    details={}
-                )
+                raise DatabaseError(message='No history database connection ID provided', details={})
 
             if not self._db_manager:
-                raise DatabaseError(
-                    message="No database manager available",
-                    details={}
-                )
+                raise DatabaseError(message='No database manager available', details={})
 
             if not await self._db_manager.has_connection(self._history_connection_id):
                 raise DatabaseError(
-                    message=f"Database connection {self._history_connection_id} not found",
-                    details={"connection_id": self._history_connection_id}
+                    message=f'Database connection {self._history_connection_id} not found',
+                    details={'connection_id': self._history_connection_id}
                 )
 
-            await self._create_history_tables()
-            await self._load_and_start_schedules()
+            # Try to create tables with async session first, then fall back to raw SQL if needed
+            try:
+                await self._create_history_tables_async()
+            except Exception as e:
+                self._logger.warning(f"Could not create tables with async session: {str(e)}")
+                try:
+                    await self._create_history_tables_sync()
+                except Exception as e2:
+                    self._logger.warning(f"Failed to create history tables with sync session: {str(e2)}")
+                    # We'll continue without history tracking
 
+            await self._load_and_start_schedules()
             self._is_initialized = True
-            self._logger.info("History manager initialized")
+            self._logger.info('History manager initialized')
 
         except Exception as e:
-            self._logger.error(f"Failed to initialize history manager: {str(e)}")
-            raise DatabaseError(
-                message=f"Failed to initialize history manager: {str(e)}",
-                details={"original_error": str(e)}
-            ) from e
+            self._logger.warning(f'History manager initialization failed but will continue: {str(e)}')
+            # Don't propagate the error to prevent blocking app startup
 
-    async def _create_history_tables(self) -> None:
-        """Create necessary tables for history tracking.
-
-        Raises:
-            DatabaseError: If table creation fails
-        """
+    async def _create_history_tables_async(self) -> None:
+        """Create history tables using async session."""
         statements = [
-            """
+            '''
             CREATE TABLE IF NOT EXISTS db_history_schedules
             (
                 id
@@ -124,8 +127,8 @@ class HistoryManager:
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
-            """,
-            """
+            ''',
+            '''
             CREATE TABLE IF NOT EXISTS db_history_entries
             (
                 id
@@ -168,8 +171,8 @@ class HistoryManager:
                 id
             ) ON DELETE CASCADE
                 )
-            """,
-            """
+            ''',
+            '''
             CREATE TABLE IF NOT EXISTS db_history_data
             (
                 id
@@ -183,40 +186,141 @@ class HistoryManager:
             ) NOT NULL,
                 data_json TEXT NOT NULL,
                 schema_json TEXT NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                INDEX
-            (
-                snapshot_id
-            )
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
-            """
+            '''
         ]
 
         max_retries = 3
-
         for attempt in range(max_retries):
             try:
                 async with self._db_manager.async_session(self._history_connection_id) as session:
                     for stmt in statements:
-                        self._logger.debug(f"Creating history table: {stmt[:100]}...")
+                        self._logger.debug(f'Creating history table (async): {stmt[:50]}...')
                         await session.execute(text(stmt))
-
-                self._logger.debug("History tables created or already exist")
+                self._logger.debug('History tables created or already exist (async)')
                 return
-
             except Exception as e:
-                self._logger.warning(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
-
+                self._logger.warning(f'Async attempt {attempt + 1}/{max_retries} failed: {str(e)}')
                 if attempt < max_retries - 1:
+                    import asyncio
                     await asyncio.sleep(1)
                 else:
-                    self._logger.error(
-                        f"Failed to create history tables after {max_retries} attempts: {str(e)}"
-                    )
-                    raise DatabaseError(
-                        message=f"Failed to create history tables: {str(e)}",
-                        details={"original_error": str(e)}
-                    ) from e
+                    raise
+
+    async def _create_history_tables_sync(self) -> None:
+        """Create history tables using synchronous execution.
+
+        This is a fallback for database systems that don't support async sessions.
+        """
+        statements = [
+            '''
+            CREATE TABLE IF NOT EXISTS db_history_schedules
+            (
+                id
+                VARCHAR
+            (
+                36
+            ) PRIMARY KEY,
+                connection_id VARCHAR
+            (
+                36
+            ) NOT NULL,
+                name VARCHAR
+            (
+                255
+            ) NOT NULL,
+                description TEXT,
+                query_id VARCHAR
+            (
+                36
+            ) NOT NULL,
+                frequency VARCHAR
+            (
+                100
+            ) NOT NULL,
+                retention_days INTEGER NOT NULL DEFAULT 365,
+                active BOOLEAN NOT NULL DEFAULT TRUE,
+                last_run TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            ''',
+            '''
+            CREATE TABLE IF NOT EXISTS db_history_entries
+            (
+                id
+                VARCHAR
+            (
+                36
+            ) PRIMARY KEY,
+                schedule_id VARCHAR
+            (
+                36
+            ) NOT NULL,
+                connection_id VARCHAR
+            (
+                36
+            ) NOT NULL,
+                query_id VARCHAR
+            (
+                36
+            ) NOT NULL,
+                table_name VARCHAR
+            (
+                255
+            ) NOT NULL,
+                collected_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                snapshot_id VARCHAR
+            (
+                36
+            ) NOT NULL,
+                record_count INTEGER NOT NULL DEFAULT 0,
+                status VARCHAR
+            (
+                50
+            ) NOT NULL DEFAULT 'success',
+                error_message TEXT,
+                FOREIGN KEY
+            (
+                schedule_id
+            ) REFERENCES db_history_schedules
+            (
+                id
+            ) ON DELETE CASCADE
+                )
+            ''',
+            '''
+            CREATE TABLE IF NOT EXISTS db_history_data
+            (
+                id
+                VARCHAR
+            (
+                36
+            ) PRIMARY KEY,
+                snapshot_id VARCHAR
+            (
+                36
+            ) NOT NULL,
+                data_json TEXT NOT NULL,
+                schema_json TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            '''
+        ]
+
+        for stmt in statements:
+            self._logger.debug(f'Creating history table (sync): {stmt[:50]}...')
+            try:
+                await self._db_manager.execute_raw(
+                    sql=stmt,
+                    connection_name=self._history_connection_id
+                )
+            except Exception as e:
+                self._logger.warning(f'Error creating table with execute_raw: {str(e)}')
+                raise
+
+        self._logger.debug('History tables created or already exist (sync)')
 
     async def _load_and_start_schedules(self) -> None:
         """Load and start all active history schedules.

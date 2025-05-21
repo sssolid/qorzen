@@ -132,12 +132,13 @@ class TaskManager(QorzenManager):
                                              manager_name=self.name) from e
 
     async def shutdown(self) -> None:
-        """Shutdown the task manager.
+        """Shut down the task manager.
 
-        Cancels all running tasks and cleans up resources.
+        This method ensures all tasks are properly cancelled and cleaned up
+        during application shutdown.
 
         Raises:
-            ManagerShutdownError: If shutdown fails
+            ManagerShutdownError: If the shutdown process fails critically.
         """
         if not self._initialized:
             return
@@ -145,35 +146,63 @@ class TaskManager(QorzenManager):
         try:
             self._logger.info('Shutting down task manager')
 
-            # Cancel all running tasks
+            # Set a flag to prevent new tasks from being created
+            self._shutting_down = True
+
+            # Get a list of running tasks that can be cancelled
             async with self._task_lock:
                 running_tasks = [
                     task_id for task_id, task_info in self._tasks.items()
                     if task_info.status == TaskStatus.RUNNING and task_info.cancellable
                 ]
 
+            # Cancel each running task
             for task_id in running_tasks:
                 try:
-                    await self.cancel_task(task_id)
+                    # Give each cancellation a short timeout
+                    try:
+                        await asyncio.wait_for(self.cancel_task(task_id), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        self._logger.warning(f'Timeout cancelling task {task_id} during shutdown')
                 except Exception as e:
                     self._logger.warning(f'Error cancelling task {task_id} during shutdown: {e}')
 
-            # Wait for tasks to finish
+            # Forcibly cancel all remaining task futures
             for task_id, future in list(self._task_futures.items()):
                 if not future.done():
                     try:
+                        self._logger.debug(f'Force cancelling task future {task_id}')
                         future.cancel()
+
+                        # Wait briefly for the task to actually cancel
+                        try:
+                            await asyncio.wait_for(asyncio.shield(asyncio.create_task(future)), timeout=0.5)
+                        except (asyncio.TimeoutError, asyncio.CancelledError):
+                            pass
                     except Exception as e:
                         self._logger.warning(f'Error cancelling future for task {task_id}: {e}')
 
+            # Clean up event handlers
             await self._config_manager.unregister_listener('tasks', self._on_config_changed)
+
+            # Clear all task data structures
+            async with self._task_lock:
+                self._tasks.clear()
+
+            # Clear other data structures without needing the lock
+            self._task_futures.clear()
+            self._task_events.clear()
+
             self._initialized = False
             self._healthy = False
             self._logger.info('Task manager shut down successfully')
+
         except Exception as e:
             self._logger.error(f'Failed to shut down task manager: {str(e)}')
-            raise ManagerShutdownError(f'Failed to shut down TaskManager: {str(e)}',
-                                       manager_name=self.name) from e
+            raise ManagerShutdownError(
+                f'Failed to shut down TaskManager: {str(e)}',
+                manager_name=self.name
+            ) from e
 
     async def submit_task(
             self,

@@ -274,29 +274,46 @@ class DatabaseManager(QorzenManager):
         self._connector_registry: Dict[str, Type[DatabaseConnectorProtocol]] = {}
 
     async def initialize(self) -> None:
-        """Initialize the database manager.
+        """Initialize the Database Manager.
+
+        This method sets up the database manager, establishes the default connection,
+        and initializes utility features if configured.
 
         Raises:
-            DatabaseManagerInitializationError: If initialization fails
+            DatabaseManagerInitializationError: If critical initialization fails.
         """
         try:
+            # Register built-in connectors
             await self._register_builtin_connectors()
 
-            db_config = await self._config_manager.get("database", {})
-            self._db_type = db_config.get("type", "postgresql").lower()
-            host = db_config.get("host", "localhost")
-            port = db_config.get("port", self._get_default_port(self._db_type))
-            name = db_config.get("name", "qorzen")
-            user = db_config.get("user", "")
-            password = db_config.get("password", "")
-            self._pool_size = db_config.get("pool_size", 5)
-            self._max_overflow = db_config.get("max_overflow", 10)
-            self._pool_recycle = db_config.get("pool_recycle", 3600)
-            self._echo = db_config.get("echo", False)
+            # Get database configuration
+            db_config = await self._config_manager.get('database', {})
+            db_enabled = db_config.get('enabled', True)
+            print(db_config.get('enabled'))
+            print(db_config)
+            print(db_enabled)
 
-            # Create default connection
+            if not db_enabled:
+                self._logger.info("Database connections disabled in configuration")
+                self._initialized = True
+                self._healthy = True
+                return
+
+            # Setup default database connection
+            self._db_type = db_config.get('type', 'postgresql').lower()
+            host = db_config.get('host', 'localhost')
+            port = db_config.get('port', self._get_default_port(self._db_type))
+            name = db_config.get('name', 'qorzen')
+            user = db_config.get('user', '')
+            password = db_config.get('password', '')
+            self._pool_size = db_config.get('pool_size', 5)
+            self._max_overflow = db_config.get('max_overflow', 10)
+            self._pool_recycle = db_config.get('pool_recycle', 3600)
+            self._echo = db_config.get('echo', False)
+
+            # Create default connection configuration
             default_config = DatabaseConnectionConfig(
-                name="default",
+                name='default',
                 db_type=self._db_type,
                 host=host,
                 port=port,
@@ -309,36 +326,151 @@ class DatabaseManager(QorzenManager):
                 echo=self._echo
             )
 
+            # Initialize the default connection
             connection = DatabaseConnection(default_config)
+            try:
+                await self._init_connection(connection)
+                async with self._connections_lock:
+                    self._default_connection = connection
+                    self._connections['default'] = self._default_connection
+            except Exception as e:
+                self._logger.warning(f"Failed to initialize default database connection: {str(e)}")
+                # We'll continue even without a default connection
 
-            await self._init_connection(connection)
+            # Register for configuration changes
+            await self._config_manager.register_listener('database', self._on_config_changed)
 
-            async with self._connections_lock:
-                self._default_connection = connection
-                self._connections["default"] = self._default_connection
-                # await self._init_connection(self._default_connection)
-
-            await self._config_manager.register_listener("database", self._on_config_changed)
-
+            # The manager is initialized even if some features fail
             self._initialized = True
 
-            # Initialize advanced features if configured
+            # Initialize utility features - these should not block startup if they fail
             await self._init_field_mapper()
             await self._init_history_manager()
             await self._init_validation_engine()
 
-            self._logger.info(
-                f"Database Manager initialized with {self._db_type} database",
-                extra={"host": host, "port": port, "database": name}
-            )
-
+            self._logger.info(f'Database Manager initialized with {self._db_type} database',
+                              extra={'host': host, 'port': port, 'database': name})
             self._healthy = True
+
         except Exception as e:
-            self._logger.error(f"Failed to initialize Database Manager: {str(e)}")
+            self._logger.error(f'Failed to initialize Database Manager: {str(e)}')
             raise DatabaseManagerInitializationError(
-                f"Failed to initialize Database Manager: {str(e)}",
+                f'Failed to initialize Database Manager: {str(e)}',
                 manager_name=self.name
             ) from e
+
+    async def _init_field_mapper(self) -> None:
+        """Initialize the field mapping system if configured.
+
+        This method sets up the field mapping system for standardizing field names
+        between database tables. It's tolerant of configuration and connection errors.
+        """
+        try:
+            # Check if field mapping is enabled in config
+            field_mapping_config = await self._config_manager.get('database.field_mapping', {})
+            if not field_mapping_config.get('enabled', True):
+                self._logger.info('Field mapping system disabled in configuration')
+                return
+
+            from qorzen.core.database.utils.field_mapper import FieldMapperManager
+            self._field_mapper = FieldMapperManager(self, self._logger)
+
+            try:
+                await self._field_mapper.initialize()
+                self._logger.info('Field mapping system initialized')
+            except Exception as e:
+                self._logger.warning(f'Field mapping system initialization failed but will continue: {str(e)}')
+                # Don't re-raise, allow system to function without field mapping
+
+        except Exception as e:
+            self._logger.warning(f'Failed to initialize field mapping system: {str(e)}')
+            # Don't propagate this error to the main initialization
+
+    async def _init_history_manager(self) -> None:
+        """Initialize the history tracking system if configured.
+
+        This method sets up the history tracking system for maintaining historical
+        records of database queries. It's tolerant of configuration and connection errors.
+        """
+        try:
+            # Check if history tracking is enabled in config
+            history_config = await self._config_manager.get('database.history', {})
+            if not history_config.get('enabled', True):
+                self._logger.info('History tracking system disabled in configuration')
+                return
+
+            # Get the connection ID to use for history tables
+            history_connection_id = history_config.get('connection_id')
+            if not history_connection_id:
+                self._logger.info('No history connection specified, using default')
+                if self._default_connection and self._default_connection.initialized:
+                    history_connection_id = 'default'
+                else:
+                    self._logger.warning('Cannot initialize history system: default connection not available')
+                    return
+
+            # Check if the connection exists and supports the features we need
+            if not await self.has_connection(history_connection_id):
+                self._logger.warning(f'History connection {history_connection_id} not found')
+                return
+
+            from qorzen.core.database.utils.history_manager import HistoryManager
+            self._history_manager = HistoryManager(self, self._logger, history_connection_id)
+
+            try:
+                await self._history_manager.initialize()
+                self._logger.info('History tracking system initialized',
+                                  extra={'history_connection_id': history_connection_id})
+            except Exception as e:
+                self._logger.warning(f'History system initialization failed but will continue: {str(e)}')
+                # Don't re-raise, allow system to function without history tracking
+
+        except Exception as e:
+            self._logger.warning(f'Failed to initialize history tracking system: {str(e)}')
+            # Don't propagate this error to the main initialization
+
+    async def _init_validation_engine(self) -> None:
+        """Initialize the validation engine if configured.
+
+        This method sets up the validation engine for verifying data against defined rules.
+        It's tolerant of configuration and connection errors.
+        """
+        try:
+            # Check if validation is enabled in config
+            validation_config = await self._config_manager.get('database.validation', {})
+            if not validation_config.get('enabled', True):
+                self._logger.info('Validation engine disabled in configuration')
+                return
+
+            # Get the connection ID to use for validation tables
+            validation_connection_id = validation_config.get('connection_id')
+            if not validation_connection_id:
+                self._logger.info('No validation connection specified, using default')
+                if self._default_connection and self._default_connection.initialized:
+                    validation_connection_id = 'default'
+                else:
+                    self._logger.warning('Cannot initialize validation system: default connection not available')
+                    return
+
+            # Check if the connection exists and supports the features we need
+            if not await self.has_connection(validation_connection_id):
+                self._logger.warning(f'Validation connection {validation_connection_id} not found')
+                return
+
+            from qorzen.core.database.utils.validation_engine import ValidationEngine
+            self._validation_engine = ValidationEngine(self, self._logger, validation_connection_id)
+
+            try:
+                await self._validation_engine.initialize()
+                self._logger.info('Validation engine initialized',
+                                  extra={'validation_connection_id': validation_connection_id})
+            except Exception as e:
+                self._logger.warning(f'Validation engine initialization failed but will continue: {str(e)}')
+                # Don't re-raise, allow system to function without validation
+
+        except Exception as e:
+            self._logger.warning(f'Failed to initialize validation engine: {str(e)}')
+            # Don't propagate this error to the main initialization
 
     async def _register_builtin_connectors(self) -> None:
         """Register built-in database connectors."""

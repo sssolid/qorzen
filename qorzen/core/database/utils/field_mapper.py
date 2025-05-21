@@ -33,48 +33,52 @@ class FieldMapperManager:
         self._default_mapping_connection_id: Optional[str] = None
 
     async def initialize(self) -> None:
-        """Initialize the field mapper system.
+        """Initialize the field mapper.
 
-        This creates necessary tables for storing mappings.
+        This method sets up the field mapper and creates necessary tables.
+        It gracefully handles cases where async sessions aren't supported.
 
         Raises:
-            DatabaseError: If initialization fails
+            DatabaseError: If initialization fails and is critical.
         """
         try:
-            # Get configuration from database manager
-            config = await self._db_manager._config_manager.get("database.field_mapping", {})
-            self._default_mapping_connection_id = config.get("connection_id", "default")
+            # Check if field mapping is enabled
+            config = await self._db_manager._config_manager.get('database.field_mapping', {})
+            if not config.get('enabled', True):
+                self._logger.info('Field mapping system disabled in configuration')
+                return
+
+            self._default_mapping_connection_id = config.get('connection_id', 'default')
 
             if not await self._db_manager.has_connection(self._default_mapping_connection_id):
                 self._logger.warning(
-                    f"Field mapping connection '{self._default_mapping_connection_id}' not found, using default"
-                )
-                self._default_mapping_connection_id = "default"
+                    f"Field mapping connection '{self._default_mapping_connection_id}' not found, using default")
+                self._default_mapping_connection_id = 'default'
 
-            # Create tables for field mappings
-            await self._create_mapping_tables()
+            # Try to create tables with async session first
+            try:
+                await self._create_mapping_tables_async()
+            except Exception as e:
+                self._logger.warning(f"Could not create tables with async session: {str(e)}")
+                # Fall back to synchronous session if async fails
+                try:
+                    await self._create_mapping_tables_sync()
+                except Exception as e2:
+                    self._logger.warning(f"Failed to create field mapping tables with sync session: {str(e2)}")
+                    # Don't raise an exception here - we'll proceed without field mapping
 
             self._is_initialized = True
-            self._logger.info(
-                "Field mapper initialized",
-                extra={"default_connection_id": self._default_mapping_connection_id}
-            )
+            self._logger.info('Field mapper initialized',
+                              extra={'default_connection_id': self._default_mapping_connection_id})
 
         except Exception as e:
-            self._logger.error(f"Failed to initialize field mapper: {str(e)}")
-            raise DatabaseError(
-                message=f"Failed to initialize field mapper: {str(e)}",
-                details={"original_error": str(e)}
-            ) from e
+            self._logger.warning(f'Field mapper initialization failed but will continue: {str(e)}')
+            # Don't propagate this exception up to prevent blocking application startup
 
-    async def _create_mapping_tables(self) -> None:
-        """Create necessary tables for field mappings.
-
-        Raises:
-            DatabaseError: If table creation fails
-        """
+    async def _create_mapping_tables_async(self) -> None:
+        """Create mapping tables using async session."""
         statements = [
-            """
+            '''
             CREATE TABLE IF NOT EXISTS db_field_mappings
             (
                 id
@@ -99,8 +103,8 @@ class FieldMapperManager:
                 table_name
             )
                 )
-            """,
-            """
+            ''',
+            '''
             CREATE TABLE IF NOT EXISTS db_field_mapping_entries
             (
                 id
@@ -134,35 +138,107 @@ class FieldMapperManager:
                 original_field
             )
                 )
-            """
+            '''
         ]
 
         max_retries = 3
-
         for attempt in range(max_retries):
             try:
                 async with self._db_manager.async_session(self._default_mapping_connection_id) as session:
                     for stmt in statements:
-                        self._logger.debug(f"Creating field mapping table: {stmt[:50]}...")
+                        self._logger.debug(f'Creating field mapping table (async): {stmt[:50]}...')
                         await session.execute(text(stmt))
-
-                self._logger.debug("Field mapping tables created or already exist")
+                self._logger.debug('Field mapping tables created or already exist (async)')
                 return
-
             except Exception as e:
-                self._logger.warning(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
-
+                self._logger.warning(f'Async attempt {attempt + 1}/{max_retries} failed: {str(e)}')
                 if attempt < max_retries - 1:
                     import asyncio
                     await asyncio.sleep(1)
                 else:
-                    self._logger.error(
-                        f"Failed to create field mapping tables after {max_retries} attempts: {str(e)}"
-                    )
-                    raise DatabaseError(
-                        message=f"Failed to create field mapping tables: {str(e)}",
-                        details={"original_error": str(e)}
-                    ) from e
+                    raise
+
+    async def _create_mapping_tables_sync(self) -> None:
+        """Create mapping tables using synchronous execution.
+
+        This is a fallback for database systems that don't support async sessions.
+        """
+        statements = [
+            '''
+            CREATE TABLE IF NOT EXISTS db_field_mappings
+            (
+                id
+                VARCHAR
+            (
+                36
+            ) PRIMARY KEY,
+                connection_id VARCHAR
+            (
+                36
+            ) NOT NULL,
+                table_name VARCHAR
+            (
+                255
+            ) NOT NULL,
+                description TEXT,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE
+            (
+                connection_id,
+                table_name
+            )
+                )
+            ''',
+            '''
+            CREATE TABLE IF NOT EXISTS db_field_mapping_entries
+            (
+                id
+                VARCHAR
+            (
+                36
+            ) PRIMARY KEY,
+                mapping_id VARCHAR
+            (
+                36
+            ) NOT NULL,
+                original_field VARCHAR
+            (
+                255
+            ) NOT NULL,
+                mapped_field VARCHAR
+            (
+                255
+            ) NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY
+            (
+                mapping_id
+            ) REFERENCES db_field_mappings
+            (
+                id
+            ) ON DELETE CASCADE,
+                UNIQUE
+            (
+                mapping_id,
+                original_field
+            )
+                )
+            '''
+        ]
+
+        for stmt in statements:
+            self._logger.debug(f'Creating field mapping table (sync): {stmt[:50]}...')
+            try:
+                await self._db_manager.execute_raw(
+                    sql=stmt,
+                    connection_name=self._default_mapping_connection_id
+                )
+            except Exception as e:
+                self._logger.warning(f'Error creating table with execute_raw: {str(e)}')
+                raise
+
+        self._logger.debug('Field mapping tables created or already exist (sync)')
 
     @staticmethod
     def standardize_field_name(field_name: str) -> str:

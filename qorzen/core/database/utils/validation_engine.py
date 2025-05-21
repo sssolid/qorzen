@@ -58,35 +58,42 @@ class ValidationEngine:
     async def initialize(self) -> None:
         """Initialize the validation engine.
 
-        This creates necessary tables for storing validation rules and results.
-
-        Raises:
-            DatabaseError: If initialization fails
+        This method sets up the validation engine and creates necessary tables.
+        It gracefully handles cases where async sessions aren't supported.
         """
         if not self._validation_connection_id:
-            self._logger.warning("No validation database connection configured")
+            self._logger.warning('No validation database connection configured')
             return
 
         try:
-            await self._create_validation_tables()
+            # Check if validation is enabled
+            config = await self._db_manager._config_manager.get('database.validation', {})
+            if not config.get('enabled', True):
+                self._logger.info('Validation engine disabled in configuration')
+                return
+
+            # Try to create tables with async session first
+            try:
+                await self._create_validation_tables_async()
+            except Exception as e:
+                self._logger.warning(f"Could not create tables with async session: {str(e)}")
+                try:
+                    await self._create_validation_tables_sync()
+                except Exception as e2:
+                    self._logger.warning(f"Failed to create validation tables with sync session: {str(e2)}")
+                    # We'll continue without validation
+
             self._is_initialized = True
-            self._logger.info("Validation engine initialized")
+            self._logger.info('Validation engine initialized')
 
         except Exception as e:
-            self._logger.error(f"Failed to initialize validation engine: {str(e)}")
-            raise DatabaseError(
-                message=f"Failed to initialize validation engine: {str(e)}",
-                details={"original_error": str(e)}
-            ) from e
+            self._logger.warning(f'Validation engine initialization failed but will continue: {str(e)}')
+            # Don't propagate the error to prevent blocking app startup
 
-    async def _create_validation_tables(self) -> None:
-        """Create necessary tables for validation.
-
-        Raises:
-            DatabaseError: If table creation fails
-        """
+    async def _create_validation_tables_async(self) -> None:
+        """Create validation tables using async session."""
         statements = [
-            """
+            '''
             CREATE TABLE IF NOT EXISTS db_validation_rules
             (
                 id
@@ -121,8 +128,8 @@ class ValidationEngine:
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
-            """,
-            """
+            ''',
+            '''
             CREATE TABLE IF NOT EXISTS db_validation_results
             (
                 id
@@ -155,34 +162,116 @@ class ValidationEngine:
                 id
             ) ON DELETE CASCADE
                 )
-            """
+            '''
         ]
 
         max_retries = 3
-
         for attempt in range(max_retries):
             try:
                 async with self._db_manager.async_session(self._validation_connection_id) as session:
                     for stmt in statements:
-                        self._logger.debug(f"Creating validation table: {stmt[:100]}...")
+                        self._logger.debug(f'Creating validation table (async): {stmt[:50]}...')
                         await session.execute(text(stmt))
-
-                self._logger.debug("Validation tables created or already exist")
+                self._logger.debug('Validation tables created or already exist (async)')
                 return
-
             except Exception as e:
-                self._logger.warning(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
-
+                self._logger.warning(f'Async attempt {attempt + 1}/{max_retries} failed: {str(e)}')
                 if attempt < max_retries - 1:
+                    import asyncio
                     await asyncio.sleep(1)
                 else:
-                    self._logger.error(
-                        f"Failed to create validation tables after {max_retries} attempts: {str(e)}"
-                    )
-                    raise DatabaseError(
-                        message=f"Failed to create validation tables: {str(e)}",
-                        details={"original_error": str(e)}
-                    ) from e
+                    raise
+
+    async def _create_validation_tables_sync(self) -> None:
+        """Create validation tables using synchronous execution.
+
+        This is a fallback for database systems that don't support async sessions.
+        """
+        statements = [
+            '''
+            CREATE TABLE IF NOT EXISTS db_validation_rules
+            (
+                id
+                VARCHAR
+            (
+                36
+            ) PRIMARY KEY,
+                name VARCHAR
+            (
+                255
+            ) NOT NULL,
+                description TEXT,
+                connection_id VARCHAR
+            (
+                36
+            ) NOT NULL,
+                table_name VARCHAR
+            (
+                255
+            ) NOT NULL,
+                field_name VARCHAR
+            (
+                255
+            ) NOT NULL,
+                rule_type VARCHAR
+            (
+                50
+            ) NOT NULL,
+                parameters TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            ''',
+            '''
+            CREATE TABLE IF NOT EXISTS db_validation_results
+            (
+                id
+                VARCHAR
+            (
+                36
+            ) PRIMARY KEY,
+                rule_id VARCHAR
+            (
+                36
+            ) NOT NULL,
+                table_name VARCHAR
+            (
+                255
+            ) NOT NULL,
+                field_name VARCHAR
+            (
+                255
+            ) NOT NULL,
+                validated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                success BOOLEAN NOT NULL,
+                failures TEXT,
+                total_records INTEGER NOT NULL,
+                failed_records INTEGER NOT NULL,
+                FOREIGN KEY
+            (
+                rule_id
+            ) REFERENCES db_validation_rules
+            (
+                id
+            ) ON DELETE CASCADE
+                )
+            '''
+        ]
+
+        for stmt in statements:
+            self._logger.debug(f'Creating validation table (sync): {stmt[:50]}...')
+            try:
+                await self._db_manager.execute_raw(
+                    sql=stmt,
+                    connection_name=self._validation_connection_id
+                )
+            except Exception as e:
+                self._logger.warning(f'Error creating table with execute_raw: {str(e)}')
+                raise
+
+        self._logger.debug('Validation tables created or already exist (sync)')
 
     def _create_validators(self) -> Dict[ValidationRuleType, Callable[[Any, Dict[str, Any]], bool]]:
         """Create validator functions for different rule types.

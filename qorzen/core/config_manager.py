@@ -23,17 +23,33 @@ class ConfigSchema(BaseModel):
     """
     database: Dict[str, Any] = Field(
         default_factory=lambda: {
-            'type': 'sqlite',
-            'host': 'localhost',
-            'port': 5432,
-            'name': 'qorzen',
-            'user': 'username',
-            'password': '',
-            'pool_size': 5,
-            'max_overflow': 10,
-            'echo': False,
+            "enabled": True,
+            "type": "postgresql",
+            "host": "localhost",
+            "port": 5432,
+            "name": "qorzen",
+            "user": "postgres",
+            "password": "",
+            "pool_size": 5,
+            "max_overflow": 10,
+            "pool_recycle": 3600,
+            "echo": False,
+            "field_mapping": {
+                "enabled": True,
+                "connection_id": "default",
+            },
+            "history": {
+                "enabled": True,
+                "connection_id": "default",
+                "auto_cleanup": True,
+            },
+            "validation": {
+                "enabled": True,
+                "connection_id": "default",
+            },
+            "non_blocking": True,  # Controls whether database errors block startup
         },
-        description='Database connection settings',
+        description="Database connection and utility settings",
     )
     logging: Dict[str, Any] = Field(
         default_factory=lambda: {
