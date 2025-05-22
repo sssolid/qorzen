@@ -180,6 +180,9 @@ class APIManager(QorzenManager):
                 )
 
             api_config = await self._config_manager.get('api', {})
+            if not api_config:
+                self._logger.error("API configuration not found in configuration")
+
             self._enabled = api_config.get('enabled', True)
 
             if not self._enabled:
@@ -187,16 +190,33 @@ class APIManager(QorzenManager):
                 self._initialized = True
                 return
 
+            if not hasattr(api_config, 'host'):
+                self._logger.warning('Missing "host" configuration for API')
+            if not hasattr(api_config, 'port'):
+                self._logger.warning('Missing "port" configuration for API')
+            if not hasattr(api_config, 'workers'):
+                self._logger.warning('Missing "workers" configuration for API')
+
             self._host = api_config.get('host', '0.0.0.0')
             self._port = api_config.get('port', 8000)
             self._workers = api_config.get('workers', 4)
 
             cors_config = api_config.get('cors', {})
+            if not hasattr(cors_config, 'origins'):
+                self._logger.warning('Missing "origins" configuration for API cors')
+            if not hasattr(cors_config, 'methods'):
+                self._logger.warning('Missing "methods" configuration for API cors')
+            if not hasattr(cors_config, 'headers'):
+                self._logger.warning('Missing "headers" configuration for API cors')
             self._cors_origins = cors_config.get('origins', ['*'])
             self._cors_methods = cors_config.get('methods', ['*'])
             self._cors_headers = cors_config.get('headers', ['*'])
 
             rate_limit_config = api_config.get('rate_limit', {})
+            if not hasattr(rate_limit_config, 'enabled'):
+                self._logger.warning('Missing "enabled" configuration for API rate limit')
+            if not hasattr(rate_limit_config, 'requests'):
+                self._logger.warning('Missing "requests_per_minute" configuration for API rate limit')
             self._rate_limit_enabled = rate_limit_config.get('enabled', True)
             self._rate_limit_requests = rate_limit_config.get('requests_per_minute', 100)
 

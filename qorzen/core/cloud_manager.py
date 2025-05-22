@@ -1222,6 +1222,8 @@ class CloudManager(QorzenManager):
         """Initialize the cloud manager."""
         try:
             cloud_config = await self._config_manager.get('cloud', {})
+            if not cloud_config:
+                self._logger.error("Cloud configuration not found in configuration")
 
             provider_str = cloud_config.get('provider', 'none').lower()
             try:
@@ -1230,10 +1232,17 @@ class CloudManager(QorzenManager):
                 self._logger.warning(f'Invalid cloud provider: {provider_str}, defaulting to NONE')
                 self._provider = CloudProvider.NONE
 
+            if not hasattr(cloud_config, 'storage'):
+                self._logger.warning("Cloud storage configuration not found in configuration")
+            if not hasattr(cloud_config, 'enabled'):
+                self._logger.warning("Cloud storage enabled flag not found in configuration")
+
             storage_config = cloud_config.get('storage', {})
             storage_enabled = storage_config.get('enabled', False)
 
             if storage_enabled:
+                if not hasattr(storage_config, 'type'):
+                    self._logger.warning("Cloud storage type not found in configuration")
                 storage_type = storage_config.get('type', 'local').lower()
                 try:
                     self._storage_backend = StorageBackend(storage_type)

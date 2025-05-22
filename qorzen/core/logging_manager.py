@@ -198,17 +198,20 @@ class LoggingManager(QorzenManager):
 
             log_format = logging_config.get('format', 'json').lower()
 
-            if logging_config.get('file', {}).get('enabled', True):
-                log_file_path = logging_config.get('file', {}).get('path', 'logs/qorzen.log')
-                self._log_directory = pathlib.Path(log_file_path).parent
-                os.makedirs(self._log_directory, exist_ok=True)
-
             self._root_logger = logging.getLogger()
             self._root_logger.setLevel(log_level)
 
             # Remove existing handlers
             for handler in list(self._root_logger.handlers):
                 self._root_logger.removeHandler(handler)
+
+            if not logging_config:
+                self._root_logger.error("Logging configuration not found in configuration")
+
+            if not hasattr(logging_config, 'level'):
+                self._root_logger.warning('Missing logging level in configuration. Using INFO level.')
+            if not hasattr(logging_config, 'format'):
+                self._root_logger.warning('Missing logging format in configuration. Using JSON format.')
 
             # Set up formatter
             if log_format == 'json':
@@ -242,8 +245,15 @@ class LoggingManager(QorzenManager):
                     formatter = logging.Formatter(fmt=fmt, datefmt="%Y-%m-%d %H:%M:%S")
 
             # Console handler
-            if logging_config.get('console', {}).get('enabled', True):
-                console_level_str = logging_config.get('console', {}).get('level', 'INFO').lower()
+            console_config = logging_config.get('console', {})
+
+            if not hasattr(console_config, 'enabled'):
+                self._root_logger.warning('Missing logging console enabled configuration. Using console logging disabled.')
+            if not hasattr(console_config, 'level'):
+                self._root_logger.warning('Missing logging console level configuration. Using console logging disabled.')
+
+            if console_config.get('enabled', False):
+                console_level_str = console_config.get('level', 'INFO').lower()
                 console_level = self.LOG_LEVELS.get(console_level_str, logging.INFO)
 
                 self._console_handler = logging.StreamHandler(sys.stdout)
@@ -253,20 +263,26 @@ class LoggingManager(QorzenManager):
                 self._handlers.append(self._console_handler)
 
             # File handler
-            if logging_config.get('file', {}).get('enabled', True):
-                file_path = logging_config.get('file', {}).get('path', 'logs/qorzen.log')
-                rotation = logging_config.get('file', {}).get('rotation', '10 MB')
-                retention = logging_config.get('file', {}).get('retention', '30 days')
+            file_config = logging_config.get('file', {})
 
-                if isinstance(rotation, str) and 'MB' in rotation:
-                    max_bytes = int(rotation.split()[0]) * 1024 * 1024
-                else:
-                    max_bytes = 10 * 1024 * 1024
+            if not hasattr(logging_config, 'file'):
+                self._root_logger.warning('Missing logging file configuration. Using file logging disabled.')
+            if not hasattr(file_config, 'enabled'):
+                self._root_logger.warning('Missing logging file enabled configuration. Using file logging disabled.')
+            if not hasattr(file_config, 'path'):
+                self._root_logger.warning('Missing logging file path configuration. Using file logging disabled.')
+            if not hasattr(file_config, 'rotation_size'):
+                self._root_logger.warning('Missing logging file rotation size configuration. Using file logging disabled.')
+            if not hasattr(file_config, 'retention_count'):
+                self._root_logger.warning('Missing logging file retention count configuration. Using file logging disabled.')
 
-                if isinstance(retention, str) and 'days' in retention:
-                    backup_count = int(retention.split()[0])
-                else:
-                    backup_count = 30
+            if file_config.get('enabled', False):
+                file_path = file_config.get('path', 'logs/qorzen.log')
+
+                rotation_size = file_config.get('rotation_size', 10)
+                retention_count = file_config.get('retention_count', 30)
+                max_bytes = rotation_size * 1024 * 1024
+                backup_count = retention_count
 
                 self._file_handler = logging.handlers.RotatingFileHandler(
                     file_path,
@@ -279,10 +295,14 @@ class LoggingManager(QorzenManager):
                 self._handlers.append(self._file_handler)
 
             # Database handler - placeholder for future implementation
+            # if not hasattr(logging_config, 'database'):
+            #     self._root_logger.warning('Missing logging database configuration. Using database logging disabled.')
             if logging_config.get('database', {}).get('enabled', False):
                 pass
 
             # ELK handler - placeholder for future implementation
+            # if not hasattr(logging_config, 'elk'):
+            #     self._root_logger.warning('Missing logging ELK configuration. Using ELK logging disabled.')
             if logging_config.get('elk', {}).get('enabled', False):
                 pass
 

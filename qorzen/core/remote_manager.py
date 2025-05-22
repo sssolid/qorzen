@@ -441,8 +441,19 @@ class RemoteServicesManager(QorzenManager):
         """Initialize the remote services manager."""
         try:
             remote_config = await self._config_manager.get('remote_services', {})
+            if not remote_config:
+                self._logger.error("Remote configuration not found in configuration")
+
+            if not hasattr(remote_config, 'services'):
+                self._logger.warning("Remote configuration does not contain 'services' key")
+            if not hasattr(remote_config, 'health_check_interval'):
+                self._logger.warning("Remote configuration does not contain 'health_check_interval' key")
+
             services_config = remote_config.get('services', {})
             self._health_check_interval = remote_config.get('health_check_interval', 60.0)
+
+            if not hasattr(services_config, 'enabled'):
+                self._logger.warning("Remote configuration does not contain 'enabled' key for services")
 
             for service_name, service_config in services_config.items():
                 if not service_config.get('enabled', True):

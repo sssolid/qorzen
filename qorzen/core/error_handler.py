@@ -185,6 +185,19 @@ class ErrorHandler:
         # Configure settings
         if self._config_manager:
             error_config = await self._config_manager.get('error_handling', {})
+            if not error_config:
+                self._logger.error("Error Handler configuration not found in configuration")
+
+            if not hasattr(error_config, 'max_errors'):
+                self._logger.warning('Error Handler configuration max_errors not found in configuration')
+            if not hasattr(error_config, 'handle_low'):
+                self._logger.warning('Error Handler configuration handle_low not found in configuration')
+            if not hasattr(error_config, 'handle_medium'):
+                self._logger.warning('Error Handler configuration handle_medium not found in configuration')
+            if not hasattr(error_config, 'handle_high'):
+                self._logger.warning('Error Handler configuration handle_high not found in configuration')
+            if not hasattr(error_config, 'handle_critical'):
+                self._logger.warning('Error Handler configuration handle_critical not found in configuration')
             self._max_errors = error_config.get('max_errors', 1000)
             self._default_severity_handling = {
                 ErrorSeverity.LOW: error_config.get('handle_low', True),

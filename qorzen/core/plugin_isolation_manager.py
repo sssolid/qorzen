@@ -399,9 +399,14 @@ class PluginIsolationManager(QorzenManager):
 
             # Get configuration
             plugin_config = await self._config_manager.get("plugins", {})
+
+            if not hasattr(plugin_config, "isolation"):
+                self._logger.warning("Plugin isolation configuration not found in configuration")
             isolation_config = plugin_config.get("isolation", {})
 
             # Set default isolation level
+            if not hasattr(isolation_config, "default_level"):
+                self._logger.warning("Default isolation level not found in configuration")
             default_level = isolation_config.get("default_level", "thread")
             try:
                 self._default_isolation_level = PluginIsolationLevel(default_level)

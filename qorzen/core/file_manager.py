@@ -131,6 +131,7 @@ class FileManager(QorzenManager):
 
         # Locks for concurrent file access
         self._file_locks: Dict[str, asyncio.Lock] = {}
+        self._max_concurrent_locks: int = 100
         self._locks_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
@@ -143,11 +144,25 @@ class FileManager(QorzenManager):
         """
         try:
             file_config = await self._config_manager.get('files', {})
+            if not file_config:
+                self._logger.error("File configuration not found in configuration")
+
+            if not hasattr(file_config, 'base_directory'):
+                self._logger.warning('No base directory specified in configuration. Using default.')
+            if not hasattr(file_config, 'temp_directory'):
+                self._logger.warning('No temp directory specified in configuration. Using default.')
+            if not hasattr(file_config, 'plugin_data_directory'):
+                self._logger.warning('No plugin data directory specified in configuration. Using default.')
+            if not hasattr(file_config, 'backup_directory'):
+                self._logger.warning('No backup directory specified in configuration. Using default.')
+            if not hasattr(file_config, 'max_concurrent_locks'):
+                self._logger.warning('No max concurrent locks specified in configuration. Using default.')
 
             base_dir = file_config.get('base_directory', 'data')
             temp_dir = file_config.get('temp_directory', 'data/temp')
             plugin_data_dir = file_config.get('plugin_data_directory', 'data/plugins')
             backup_dir = file_config.get('backup_directory', 'data/backups')
+            self._max_concurrent_locks = file_config.get('max_concurrent_locks', 100)
 
             self._base_directory = pathlib.Path(base_dir).absolute()
             self._temp_directory = pathlib.Path(temp_dir).absolute()
@@ -183,6 +198,13 @@ class FileManager(QorzenManager):
         """
         if not path.exists():
             await aiofiles.os.makedirs(path, exist_ok=True)
+
+    async def file_exists(self, path: str) -> bool:
+        path_obj = pathlib.Path(path)
+        if await aiofiles.os.path.exists(path_obj):
+            return True
+        else:
+            return False
 
     def get_file_path(self, path: str, directory_type: str = 'base') -> pathlib.Path:
         """Get the absolute file path based on directory type.
@@ -889,6 +911,8 @@ class FileManager(QorzenManager):
             Lock for the file
         """
         async with self._locks_lock:
+            if self._max_concurrent_locks < len(self._file_locks):
+                raise Exception('max_concurrent_locks_count', 'max_concurrent_locks_count')
             if path not in self._file_locks:
                 self._file_locks[path] = asyncio.Lock()
             return self._file_locks[path]

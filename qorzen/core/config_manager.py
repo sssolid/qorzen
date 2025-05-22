@@ -58,8 +58,8 @@ class ConfigSchema(BaseModel):
             'file': {
                 'enabled': True,
                 'path': 'logs/qorzen.log',
-                'rotation': '10 MB',
-                'retention': '30 days',
+                'rotation_size': 10,
+                'retention_count': 30
             },
             'console': {
                 'enabled': True,
@@ -96,14 +96,18 @@ class ConfigSchema(BaseModel):
         },
         description='Event bus settings',
     )
-    thread_pool: Dict[str, Any] = Field(
-        default_factory=lambda: {
-            'worker_threads': 4,
-            'max_queue_size': 100,
-            'thread_name_prefix': 'qorzen-worker',
-        },
-        description='Thread pool settings',
-    )
+    tasks: Dict[str, Any] = Field(default_factory=lambda: {
+        'max_concurrent_tasks': 20,
+        'keep_completed_tasks': 100,
+        'default_timeout': 300.0
+    })
+
+    thread_pool: Dict[str, Any] = Field(default_factory=lambda: {
+        'worker_threads': 4,
+        'io_threads': 8,
+        'process_workers': 2,
+        'enable_process_pool': True
+    })
     api: Dict[str, Any] = Field(
         default_factory=lambda: {
             'enabled': True,
@@ -130,24 +134,22 @@ class ConfigSchema(BaseModel):
             raise ValueError('API port must be an integer.')
         return self
 
-    security: Dict[str, Any] = Field(
-        default_factory=lambda: {
-            'jwt': {
-                'secret': 'default_test_secret',
-                'algorithm': 'HS256',
-                'access_token_expire_minutes': 30,
-                'refresh_token_expire_days': 7,
-            },
-            'password_policy': {
-                'min_length': 8,
-                'require_uppercase': True,
-                'require_lowercase': True,
-                'require_digit': True,
-                'require_special': True,
-            },
+    security: Dict[str, Any] = Field(default_factory=lambda: {
+        'jwt': {
+            'secret': 'default_test_secret',
+            'algorithm': 'HS256',
+            'access_token_expire_minutes': 30,
+            'refresh_token_expire_days': 7
         },
-        description='Security settings',
-    )
+        'password_policy': {
+            'min_length': 8,
+            'require_uppercase': True,
+            'require_lowercase': True,
+            'require_digit': True,
+            'require_special': True,
+            'bcrypt_rounds': 12
+        }
+    })
     plugins: Dict[str, Any] = Field(
         default_factory=lambda: {
             'directory': 'plugins',
@@ -163,6 +165,7 @@ class ConfigSchema(BaseModel):
             'temp_directory': 'data/temp',
             'plugin_data_directory': 'data/plugins',
             'backup_directory': 'data/backups',
+            'max_concurrent_locks': 100
         },
         description='File management settings',
     )

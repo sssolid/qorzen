@@ -21,12 +21,8 @@ from qorzen.plugin_system.lifecycle import get_plugin_state, set_plugin_state, P
 from qorzen.utils.exceptions import PluginError, DatabaseError
 from .models import BaseConnectionConfig, AS400ConnectionConfig, ODBCConnectionConfig, ConnectionType, PluginSettings, \
     SavedQuery, FieldMapping, ValidationRule, QueryResult
-from .connectors import BaseDatabaseConnector, get_connector_for_config
+from  qorzen.core.database.connectors import BaseDatabaseConnector
 from .ui.main_tab import DatabaseConnectorTab
-from .utils.mapping import apply_mapping_to_results
-from .utils.history import HistoryManager
-from .utils.validation import ValidationEngine
-from .utils.settings_manager import SettingsManager
 
 
 class DatabaseConnectorPlugin(BasePlugin):
@@ -47,7 +43,6 @@ class DatabaseConnectorPlugin(BasePlugin):
         self._concurrency_manager: Any = None
         self._security_manager: Any = None
         self._file_manager: Any = None
-        self._settings_manager: Optional[SettingsManager] = None
         self._initialized = False
         self._connections: Dict[str, BaseConnectionConfig] = {}
         self._active_connectors: Dict[str, BaseDatabaseConnector] = {}
@@ -57,8 +52,8 @@ class DatabaseConnectorPlugin(BasePlugin):
         self._settings: Optional[PluginSettings] = None
         self._main_widget: Optional[DatabaseConnectorTab] = None
         self._icon_path: Optional[str] = None
-        self._history_manager: Optional[HistoryManager] = None
-        self._validation_engine: Optional[ValidationEngine] = None
+        self._history_manager: Any = None
+        self._validation_engine: Any = None
 
     async def initialize(self, application_core: Any, **kwargs: Any) -> None:
         await super().initialize(application_core, **kwargs)
@@ -75,8 +70,9 @@ class DatabaseConnectorPlugin(BasePlugin):
         self._file_manager = application_core.get_manager('file_manager')
 
         # Initialize history and validation managers with database_manager
-        self._history_manager = HistoryManager(self._database_manager, self._logger)
-        self._validation_engine = ValidationEngine(self._database_manager, self._logger)
+        self._history_manager = self._database_manager.getattr('history_manager')
+        self._validation_engine = self._database_manager.getattr('validation_engine')
+
 
         # Find plugin directory and icon
         plugin_dir = await self._find_plugin_directory()

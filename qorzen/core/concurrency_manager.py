@@ -60,9 +60,9 @@ class ConcurrencyManager(QorzenManager):
         """
         try:
             thread_config = await self._config_manager.get('thread_pool', {})
-            self._max_workers = thread_config.get('worker_threads', 4)
-            self._max_io_workers = thread_config.get('io_threads', 8)
-            self._max_process_workers = thread_config.get('process_workers', max(1, (os.cpu_count() or 2) - 1))
+            self._max_workers = await self._config_manager.get('thread_pool.worker_threads', 4)
+            self._max_io_workers = await self._config_manager.get('thread_pool.io_threads', 8)
+            self._max_process_workers = await self._config_manager.get('thread_pool.process_workers', 2)
             self._thread_name_prefix = thread_config.get('thread_name_prefix', 'qorzen-worker')
 
             # Create thread pools

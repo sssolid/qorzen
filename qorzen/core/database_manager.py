@@ -288,16 +288,37 @@ class DatabaseManager(QorzenManager):
 
             # Get database configuration
             db_config = await self._config_manager.get('database', {})
+            if not db_config:
+                self._logger.error("Database configuration not found in configuration")
+
             db_enabled = db_config.get('enabled', True)
-            print(db_config.get('enabled'))
-            print(db_config)
-            print(db_enabled)
 
             if not db_enabled:
                 self._logger.info("Database connections disabled in configuration")
                 self._initialized = True
                 self._healthy = True
                 return
+
+            if not hasattr(db_config, 'type'):
+                self._logger.warning("Database type not set in configuration")
+            if not hasattr(db_config, 'host'):
+                self._logger.warning("Database host not set in configuration")
+            if not hasattr(db_config, 'port'):
+                self._logger.warning("Database port not set in configuration")
+            if not hasattr(db_config, 'database'):
+                self._logger.warning("Database name not set in configuration")
+            if not hasattr(db_config, 'user'):
+                self._logger.warning("Database user not set in configuration")
+            if not hasattr(db_config, 'password'):
+                self._logger.warning("Database password not set in configuration")
+            if not hasattr(db_config, 'pool_size'):
+                self._logger.warning("Database pool size not set in configuration")
+            if not hasattr(db_config, 'max_overflow'):
+                self._logger.warning("Database max overflow not set in configuration")
+            if not hasattr(db_config, 'pool_recycle'):
+                self._logger.warning("Database pool recycle not set in configuration")
+            if not hasattr(db_config, 'echo'):
+                self._logger.warning("Database echo not set in configuration")
 
             # Setup default database connection
             self._db_type = db_config.get('type', 'postgresql').lower()
@@ -681,70 +702,6 @@ class DatabaseManager(QorzenManager):
             raise DatabaseError(
                 f"Failed to initialize specialized connection: {str(e)}"
             ) from e
-
-    async def _init_field_mapper(self) -> None:
-        """Initialize the field mapping system if configured."""
-        try:
-            from qorzen.core.database.utils.field_mapper import FieldMapperManager
-
-            self._field_mapper = FieldMapperManager(self, self._logger)
-            await self._field_mapper.initialize()
-
-            self._logger.info("Field mapping system initialized")
-        except Exception as e:
-            self._logger.warning(f"Failed to initialize field mapping system: {str(e)}")
-
-    async def _init_history_manager(self) -> None:
-        """Initialize the history tracking system if configured."""
-        try:
-            from qorzen.core.database.utils.history_manager import HistoryManager
-
-            # Get history configuration
-            history_config = await self._config_manager.get("database.history", {})
-            history_connection_id = history_config.get("connection_id")
-
-            if history_connection_id:
-                self._history_manager = HistoryManager(
-                    self,
-                    self._logger,
-                    history_connection_id
-                )
-                await self._history_manager.initialize()
-
-                self._logger.info(
-                    "History tracking system initialized",
-                    extra={"history_connection_id": history_connection_id}
-                )
-            else:
-                self._logger.debug("History tracking system not configured")
-        except Exception as e:
-            self._logger.warning(f"Failed to initialize history tracking system: {str(e)}")
-
-    async def _init_validation_engine(self) -> None:
-        """Initialize the validation engine if configured."""
-        try:
-            from qorzen.core.database.utils.validation_engine import ValidationEngine
-
-            # Get validation configuration
-            validation_config = await self._config_manager.get("database.validation", {})
-            validation_connection_id = validation_config.get("connection_id")
-
-            if validation_connection_id:
-                self._validation_engine = ValidationEngine(
-                    self,
-                    self._logger,
-                    validation_connection_id
-                )
-                await self._validation_engine.initialize()
-
-                self._logger.info(
-                    "Validation engine initialized",
-                    extra={"validation_connection_id": validation_connection_id}
-                )
-            else:
-                self._logger.debug("Validation engine not configured")
-        except Exception as e:
-            self._logger.warning(f"Failed to initialize validation engine: {str(e)}")
 
     async def register_connection(self, config: DatabaseConnectionConfig) -> None:
         """Register a new database connection.

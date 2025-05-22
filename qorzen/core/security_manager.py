@@ -144,7 +144,7 @@ class SecurityManager(QorzenManager):
         self._db_manager = db_manager
 
         # Password hashing
-        self._pwd_context = CryptContext(schemes=['bcrypt'], deprecated='auto', bcrypt__rounds=12)
+        self._pwd_context: Optional[CryptContext] = None
 
         # User storage
         self._users: Dict[str, User] = {}
@@ -191,6 +191,8 @@ class SecurityManager(QorzenManager):
         """
         try:
             security_config = await self._config_manager.get('security', {})
+            if not security_config:
+                self._logger.error("Security configuration not found in configuration")
 
             # JWT configuration
             jwt_config = security_config.get('jwt', {})
@@ -203,12 +205,29 @@ class SecurityManager(QorzenManager):
                     'This is insecure for production use.'
                 )
 
+            if not hasattr(jwt_config, 'algorithm'):
+                self._logger.warning("Security jwt algorithm not set in configuration")
+            if not hasattr(jwt_config, 'expire_minutes'):
+                self._logger.warning('Expire minutes jwt not set in configuration')
+            if not hasattr(jwt_config, 'expire_days'):
+                self._logger.warning('Expire days jwt not set in configuration')
+
             self._jwt_algorithm = jwt_config.get('algorithm', 'HS256')
-            self._access_token_expire_minutes = jwt_config.get('access_token_expire_minutes', 30)
+            self._access_token_expire_minutes = jwt_config.get(
+                'access_token_expire_minutes', 30)
             self._refresh_token_expire_days = jwt_config.get('refresh_token_expire_days', 7)
 
             # Password policy
-            self._password_policy = security_config.get('password_policy', self._password_policy)
+            if not hasattr(security_config, 'password_policy'):
+                self._logger.warning("Security password policy not set in configuration")
+
+            if not hasattr(security_config.get('password_policy'), 'bcrypt_rounds'):
+                self._logger.warning("Security password policy bcrypt rounds not set in configuration")
+
+            password_policy_config = security_config.get('password_policy', self._password_policy)
+
+            bcrypt_rounds = password_policy_config.get('bcrypt_rounds', 12)
+            self._pwd_context = CryptContext(schemes=['bcrypt'], deprecated='auto', bcrypt__rounds=bcrypt_rounds)
 
             # Storage type
             self._use_memory_storage = self._db_manager is None

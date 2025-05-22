@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
 )
 
+from qorzen.ui.settings_manager import SettingsManager
 from qorzen.ui.ui_component import QWidget
 from qorzen.utils.exceptions import UIError
 
@@ -197,6 +198,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.panel_layout)
 
         # Create standard pages
+        self._create_settings_page()
         self._create_dashboard_page()
         self._create_plugins_page()
         self._create_logs_page()
@@ -947,6 +949,19 @@ class MainWindow(QMainWindow):
             Optional[QMenu]: The menu object or None if not found
         """
         return self._menus.get(menu_name)
+
+    def _create_settings_page(self) -> None:
+        """Create the settings page."""
+        # Import is done here to avoid circular dependencies
+        from qorzen.ui.settings_manager import SettingsManager
+
+        settings_manager = SettingsManager(self._app_core, self)
+        self.add_page(
+            "settings_manager",
+            settings_manager,
+            "Settings",
+            ":/ui_icons/dashboard.svg",
+        )
 
     def _create_dashboard_page(self) -> None:
         """Create the dashboard page."""

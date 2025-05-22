@@ -204,6 +204,18 @@ class PluginManager(QorzenManager):
                 self._error_handler.initialize()
 
             plugin_config = await self._config_manager.get('plugins', {})
+            if not plugin_config:
+                self._logger.error("Plugins configuration not found in configuration")
+
+            if not hasattr(plugin_config, 'directory'):
+                self._logger.warning("Plugin directory not found in configuration")
+            if not hasattr(plugin_config, 'auto_load'):
+                self._logger.warning("Auto load plugins not found in configuration")
+            if not hasattr(plugin_config, 'enabled'):
+                self._logger.warning("Enabled plugins not found in configuration")
+            if not hasattr(plugin_config, 'disabled'):
+                self._logger.warning("Disabled plugins not found in configuration")
+
             plugin_dir = plugin_config.get('directory', 'plugins')
             self._plugin_dir = pathlib.Path(plugin_dir)
             self._auto_load = plugin_config.get('autoload', True)

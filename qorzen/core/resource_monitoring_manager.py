@@ -130,26 +130,43 @@ class ResourceMonitoringManager(QorzenManager):
         """
         try:
             monitoring_config = await self._config_manager.get('monitoring', {})
+            if not monitoring_config:
+                self._logger.error("Monitoring configuration not found in configuration")
 
             # Check if monitoring is enabled
             enabled = monitoring_config.get('enabled', True)
             if not enabled:
-                self._logger.info('Resource Monitoring is disabled in configuration')
+                self._logger.warning('Resource Monitoring is disabled in configuration')
                 self._initialized = True
                 self._healthy = True
                 return
 
             # Configure prometheus
+            if not hasattr(monitoring_config, 'prometheus'):
+                self._logger.warning('Prometheus configuration not found in configuration')
             prometheus_config = monitoring_config.get('prometheus', {})
+            if not hasattr(prometheus_config, 'enabled'):
+                self._logger.warning('Prometheus enabled configuration not found in configuration')
+            if not hasattr(prometheus_config, 'port'):
+                self._logger.warning('Prometheus port configuration not found in configuration')
             prometheus_enabled = prometheus_config.get('enabled', True)
             prometheus_port = prometheus_config.get('port', 9090)
 
             # Set alert thresholds
-            alert_thresholds = monitoring_config.get('alert_thresholds', {})
-            self._alert_thresholds.update(alert_thresholds)
-
             # Set metrics collection interval
-            self._metrics_interval_seconds = monitoring_config.get('metrics_interval_seconds', 10)
+            if not hasattr(monitoring_config, 'alert_thresholds'):
+                self._logger.warning('Alert Thresholds configuration not found in configuration')
+            alert_config = monitoring_config.get('alert_thresholds', {})
+            self._alert_thresholds = {
+                'cpu_percent': alert_config.get('cpu_percent', 80.0),
+                'memory_percent': alert_config.get('memory_percent', 80.0),
+                'disk_percent': alert_config.get('disk_percent', 90.0)
+            }
+            if not hasattr(monitoring_config, 'metrics_interval_seconds'):
+                self._logger.warning('Metrics Interval configuration not found in configuration')
+            self._metrics_interval_seconds = await self._config_manager.get('monitoring.metrics_interval_seconds', 10)
+
+            self._alert_thresholds.update(self._alert_thresholds)
 
             # Initialize prometheus metrics
             if prometheus_enabled:

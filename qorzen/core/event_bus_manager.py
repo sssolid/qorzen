@@ -74,10 +74,19 @@ class EventBusManager(QorzenManager):
         """
         try:
             event_bus_config = await self._config_manager.get('event_bus_manager', {})
+            if not event_bus_config:
+                self._logger.error("Event Bus configuration not found in configuration")
 
-            thread_pool_size = event_bus_config.get('thread_pool_size', 4)
+            if not hasattr(event_bus_config, 'max_queue_size'):
+                self._logger.warning("Event Bus configuration max_queue_size not found in configuration")
+            if not hasattr(event_bus_config, 'publish_timeout'):
+                self._logger.warning("Event Bus configuration publish_timeout not found in configuration")
+            if not hasattr(event_bus_config, 'thread_pool_size'):
+                self._logger.warning("Event Bus configuration thread_pool_size not found in configuration")
+
             self._max_queue_size = event_bus_config.get('max_queue_size', 1000)
             self._publish_timeout = event_bus_config.get('publish_timeout', 5.0)
+            thread_pool_size = event_bus_config.get('thread_pool_size', 4)
 
             # Create the event queue
             self._event_queue = asyncio.Queue(maxsize=self._max_queue_size)

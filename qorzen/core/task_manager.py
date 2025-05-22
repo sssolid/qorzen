@@ -115,11 +115,21 @@ class TaskManager(QorzenManager):
         try:
             self._logger.info('Initializing task manager')
 
+            tasks_config = await self._config_manager.get('tasks', {})
+            if not tasks_config:
+                self._logger.error("Tasks configuration not found in configuration")
+
+            if not hasattr(tasks_config, 'max_concurrent_tasks'):
+                self._logger.warning('Missing "max_concurrent_tasks" in "tasks" configuration')
+            if not hasattr(tasks_config, 'keep_completed_tasks'):
+                self._logger.warning('Missing "keep_completed_tasks" in "tasks" configuration')
+            if not hasattr(tasks_config, 'default_timeout'):
+                self._logger.warning('Missing "default_timeout" in "tasks" configuration')
+
             # Load configuration
-            task_config = await self._config_manager.get('tasks', {})
-            self._max_concurrent_tasks = task_config.get('max_concurrent_tasks', 20)
-            self._keep_completed_tasks = task_config.get('keep_completed_tasks', 100)
-            self._task_timeout = task_config.get('default_timeout', 300.0)
+            self._max_concurrent_tasks = tasks_config.get('max_concurrent_tasks', 20)
+            self._keep_completed_tasks = tasks_config.get('keep_completed_tasks', 100)
+            self._task_timeout = tasks_config.get('default_timeout', 300.0)
 
             await self._config_manager.register_listener('tasks', self._on_config_changed)
 
