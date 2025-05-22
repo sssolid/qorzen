@@ -1,32 +1,28 @@
-# processed_project/qorzen_stripped/plugins/database_connector_plugin/code/ui/__init__.py
+"""
+Database Connector Plugin User Interface Components.
+
+This module contains all the UI components for the database connector plugin
+including main widget, tabs, dialogs, and other interface elements.
+"""
+
 from __future__ import annotations
-'''
-UI components for the Database Connector Plugin.
 
-This module provides the user interface components for the Database Connector Plugin,
-including the main tab, connection dialogs, query editor, field mapping, validation,
-and history views.
-'''
-
-from .main_tab import DatabaseConnectorTab
-from .connection_dialog import ConnectionDialog, ConnectionManagerDialog
-from .query_editor import QueryEditorWidget, SQLEditor, SQLSyntaxHighlighter
-from .results_view import ResultsView
-from .field_mapping import FieldMappingWidget
-from .mapping_dialog import FieldMappingDialog
-from .validation import ValidationWidget
-from .history import HistoryWidget
+from .main_widget import DatabasePluginWidget
+from .main_tab import MainTab
+from .results_tab import ResultsTab
+from .field_mapping_tab import FieldMappingTab
+from .validation_tab import ValidationTab
+from .history_tab import HistoryTab
+from .connection_dialog import ConnectionDialog
+from .query_dialog import QueryDialog
 
 __all__ = [
-    'DatabaseConnectorTab',
-    'ConnectionDialog',
-    'ConnectionManagerDialog',
-    'QueryEditorWidget',
-    'SQLEditor',
-    'SQLSyntaxHighlighter',
-    'ResultsView',
-    'FieldMappingWidget',
-    'FieldMappingDialog',
-    'ValidationWidget',
-    'HistoryWidget',
+    "DatabasePluginWidget",
+    "MainTab",
+    "ResultsTab",
+    "FieldMappingTab",
+    "ValidationTab",
+    "HistoryTab",
+    "ConnectionDialog",
+    "QueryDialog"
 ]

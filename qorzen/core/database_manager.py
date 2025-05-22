@@ -559,7 +559,7 @@ class DatabaseManager(QorzenManager):
         elif config.db_type == "postgresql":
             db_url = URL.create(
                 config.db_type,
-                username=config.user,
+                user=config.user,
                 password=config.password,
                 host=config.host,
                 port=config.port,
@@ -567,7 +567,7 @@ class DatabaseManager(QorzenManager):
             )
             db_async_url = URL.create(
                 "postgresql+asyncpg",
-                username=config.user,
+                user=config.user,
                 password=config.password,
                 host=config.host,
                 port=config.port,

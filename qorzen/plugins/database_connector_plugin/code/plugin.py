@@ -1,58 +1,71 @@
-from __future__ import annotations
-
-from .ui import DatabaseConnectorTab
-
 """
 Main plugin module for the Database Connector Plugin.
 
-This module provides a UI layer over the core DatabaseManager functionality,
-allowing users to manage database connections, execute queries, and view results.
+This module provides a comprehensive UI layer over the core DatabaseManager 
+functionality, allowing users to manage database connections, execute queries, 
+view results, manage field mappings, validation rules, and history schedules.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtWidgets import QWidget, QMessageBox
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QWidget
 
+from qorzen.core.database_manager import DatabaseConnectionConfig, ConnectionType
 from qorzen.plugin_system import BasePlugin
 from qorzen.plugin_system.lifecycle import (
+    PluginLifecycleState,
     get_plugin_state,
     set_plugin_state,
-    PluginLifecycleState,
     signal_ui_ready
 )
-from qorzen.utils.exceptions import PluginError, DatabaseError
-from qorzen.core.database_manager import DatabaseConnectionConfig, ConnectionType
+from qorzen.utils.exceptions import PluginError
 
-from .models import SavedQuery, PluginSettings
+from .models import (
+    DatabaseConnection,
+    SavedQuery,
+    PluginSettings,
+    QueryResult,
+    FieldMapping,
+    ValidationRule,
+    HistorySchedule,
+    ExportSettings,
+    ExportFormat
+)
+from .ui.main_widget import DatabasePluginWidget
+from .services.export_service import ExportService
+from .services.query_service import QueryService
 
 
 class DatabaseConnectorPlugin(BasePlugin):
     """
-    Database Connector Plugin for Qorzen.
+    Advanced Database Connector Plugin.
 
-    Provides a user interface layer over the core DatabaseManager functionality.
-    This plugin does NOT duplicate database functionality - it delegates all
-    database operations to the core DatabaseManager.
+    Provides comprehensive database management capabilities including:
+    - Connection management with multiple database types
+    - Advanced query editor with syntax highlighting
+    - Results visualization and export
+    - Field mapping management
+    - Data validation rules
+    - Historical data tracking
     """
 
     name = "database_connector_plugin"
-    version = "1.1.0"
-    description = "UI for database connectivity and query execution via core DatabaseManager"
+    version = "2.0.0"
+    description = "Advanced database connectivity and management plugin"
     author = "Qorzen Team"
     display_name = "Database Connector"
     dependencies: List[str] = []
 
     def __init__(self) -> None:
-        """Initialize the Database Connector Plugin."""
+        """Initialize the plugin."""
         super().__init__()
-
-        # Core managers
         self._logger: Optional[logging.Logger] = None
         self._event_bus_manager: Any = None
         self._config_manager: Any = None
@@ -62,16 +75,22 @@ class DatabaseConnectorPlugin(BasePlugin):
         self._security_manager: Any = None
         self._file_manager: Any = None
 
-        # Plugin-specific state (UI layer only)
+        # Plugin state
         self._initialized = False
-        self._saved_queries: Dict[str, SavedQuery] = {}
         self._settings: Optional[PluginSettings] = None
-        self._main_widget: Optional[QWidget] = None  # Will be DatabaseConnectorTab when UI implemented
-        self._icon_path: Optional[str] = None
+        self._main_widget: Optional[QWidget] = None
+
+        # Data storage
+        self._connections: Dict[str, DatabaseConnection] = {}
+        self._saved_queries: Dict[str, SavedQuery] = {}
+
+        # Services
+        self._export_service: Optional[ExportService] = None
+        self._query_service: Optional[QueryService] = None
 
     async def initialize(self, application_core: Any, **kwargs: Any) -> None:
         """
-        Initialize the plugin with application core managers.
+        Initialize the plugin with application core services.
 
         Args:
             application_core: The application core instance
@@ -82,7 +101,7 @@ class DatabaseConnectorPlugin(BasePlugin):
         self._logger = logging.getLogger(self.name)
         self._logger.info(f"Initializing {self.name} plugin v{self.version}")
 
-        # Get core managers
+        # Get required managers
         self._event_bus_manager = application_core.get_manager("event_bus_manager")
         self._config_manager = application_core.get_manager("config_manager")
         self._task_manager = application_core.get_manager("task_manager")
@@ -91,19 +110,13 @@ class DatabaseConnectorPlugin(BasePlugin):
         self._security_manager = application_core.get_manager("security_manager")
         self._file_manager = application_core.get_manager("file_manager")
 
-        # Validate required managers
+        # Validate required dependencies
         if not self._database_manager:
             raise PluginError("DatabaseManager is required but not available")
         if not self._file_manager:
             raise PluginError("FileManager is required but not available")
-
-        # Setup plugin icon
-        plugin_dir = await self._find_plugin_directory()
-        if plugin_dir:
-            icon_path = plugin_dir / "resources" / "icon.png"
-            if icon_path.exists():
-                self._icon_path = str(icon_path)
-                self._logger.debug(f"Found plugin icon at: {icon_path}")
+        if not self._concurrency_manager:
+            raise PluginError("ConcurrencyManager is required but not available")
 
         # Setup plugin data directory
         try:
@@ -112,14 +125,19 @@ class DatabaseConnectorPlugin(BasePlugin):
         except Exception as e:
             self._logger.warning(f"Failed to create plugin data directory: {e}")
 
-        # Load plugin-specific data (UI preferences, saved queries)
+        # Initialize services
+        self._export_service = ExportService(self._file_manager, self._logger)
+        self._query_service = QueryService(self._database_manager, self._logger)
+
+        # Load plugin data
         try:
             await self._load_settings()
+            await self._load_connections()
             await self._load_saved_queries()
         except Exception as e:
             self._logger.error(f"Error loading plugin data: {e}")
 
-        # Subscribe to events
+        # Setup event listeners
         if self._event_bus_manager:
             await self._event_bus_manager.subscribe(
                 event_type="config/changed",
@@ -129,27 +147,44 @@ class DatabaseConnectorPlugin(BasePlugin):
 
         self._initialized = True
         await set_plugin_state(self.name, PluginLifecycleState.INITIALIZED)
-        self._logger.info(f"{self.name} plugin initialized")
+        self._logger.info(f"{self.name} plugin initialized successfully")
 
-        await self._event_bus_manager.publish(
-            event_type="plugin/initialized",
-            source=self.name,
-            payload={
-                "plugin_name": self.name,
-                "version": self.version,
-                "has_ui": True
-            }
-        )
+        # Publish initialization event
+        if self._event_bus_manager:
+            await self._event_bus_manager.publish(
+                event_type="plugin/initialized",
+                source=self.name,
+                payload={
+                    "plugin_name": self.name,
+                    "version": self.version,
+                    "has_ui": True,
+                    "features": [
+                        "connection_management",
+                        "query_editor",
+                        "results_export",
+                        "field_mapping",
+                        "data_validation",
+                        "history_tracking"
+                    ]
+                }
+            )
 
     async def on_ui_ready(self, ui_integration: Any) -> None:
-        """Setup UI components when UI system is ready."""
+        """
+        Setup UI components when the UI is ready.
+
+        Args:
+            ui_integration: The UI integration interface
+        """
         self._logger.info("Setting up UI components")
 
+        # Check current state to avoid recursive calls
         current_state = await get_plugin_state(self.name)
         if current_state == PluginLifecycleState.UI_READY:
             self._logger.debug("UI setup already in progress, avoiding recursive call")
             return
 
+        # Ensure we're on the main thread
         if self._concurrency_manager and not self._concurrency_manager.is_main_thread():
             self._logger.debug("on_ui_ready called from non-main thread, delegating to main thread")
             await set_plugin_state(self.name, PluginLifecycleState.UI_READY)
@@ -161,55 +196,33 @@ class DatabaseConnectorPlugin(BasePlugin):
         try:
             await set_plugin_state(self.name, PluginLifecycleState.UI_READY)
 
-            # Add menu items
-            await ui_integration.add_menu_item(
-                plugin_id=self.plugin_id,
-                parent_menu="Database",
-                title="Manage Connections",
-                callback=lambda: asyncio.create_task(self._open_connection_manager())
-            )
-            await ui_integration.add_menu_item(
-                plugin_id=self.plugin_id,
-                parent_menu="Database",
-                title="Query Editor",
-                callback=lambda: asyncio.create_task(self._open_query_editor())
-            )
-            await ui_integration.add_menu_item(
-                plugin_id=self.plugin_id,
-                parent_menu="Database",
-                title="Field Mappings",
-                callback=lambda: asyncio.create_task(self._open_field_mappings())
-            )
-            await ui_integration.add_menu_item(
-                plugin_id=self.plugin_id,
-                parent_menu="Database",
-                title="Data Validation",
-                callback=lambda: asyncio.create_task(self._open_validation())
-            )
-            await ui_integration.add_menu_item(
-                plugin_id=self.plugin_id,
-                parent_menu="Database",
-                title="History Manager",
-                callback=lambda: asyncio.create_task(self._open_history_manager())
-            )
-
+            # Create main widget
             if not self._main_widget:
-                self._main_widget = DatabaseConnectorTab(
+                self._main_widget = DatabasePluginWidget(
                     plugin=self,
                     logger=self._logger,
                     concurrency_manager=self._concurrency_manager,
                     event_bus_manager=self._event_bus_manager
                 )
 
-            # Setup plugin icon
+            # Add menu items
+            await self._setup_menu_items(ui_integration)
+
+            # Get icon path
             icon_arg = None
             if self.plugin_info and self.plugin_info.path:
-                p = Path(self.plugin_info.path)
-                if hasattr(self.plugin_info, 'manifest') and hasattr(self.plugin_info.manifest, 'icon_path'):
-                    icon_file = p / self.plugin_info.manifest.icon_path
+                plugin_path = Path(self.plugin_info.path)
+                if hasattr(self.plugin_info, "manifest") and hasattr(self.plugin_info.manifest, "icon_path"):
+                    icon_file = plugin_path / self.plugin_info.manifest.icon_path
+                    if icon_file.exists():
+                        icon_arg = str(icon_file)
+                else:
+                    # Try default icon location
+                    icon_file = plugin_path / "resources" / "icon.png"
                     if icon_file.exists():
                         icon_arg = str(icon_file)
 
+            # Add main page
             await ui_integration.add_page(
                 plugin_id=self.plugin_id,
                 page_component=self._main_widget,
@@ -224,338 +237,260 @@ class DatabaseConnectorPlugin(BasePlugin):
         except Exception as e:
             self._logger.error(f"Error setting up UI: {e}")
             await set_plugin_state(self.name, PluginLifecycleState.FAILED)
+            raise
 
     async def setup_ui(self, ui_integration: Any) -> None:
-        """Legacy UI setup method."""
-        self._logger.info("setup_ui method called")
-        await self.on_ui_ready(ui_integration)
-
-    # ============================================================================
-    # DATABASE CONNECTION METHODS (delegate to core DatabaseManager)
-    # ============================================================================
-
-    async def get_connections(self) -> List[str]:
-        """Get list of registered database connection names."""
-        if not self._database_manager:
-            return []
-        return await self._database_manager.get_connection_names()
-
-    async def register_connection(self, config: DatabaseConnectionConfig) -> str:
         """
-        Register a new database connection with the core DatabaseManager.
+        Set up UI components (legacy method).
 
         Args:
-            config: Database connection configuration
+            ui_integration: The UI integration instance
+        """
+        if self._logger:
+            self._logger.info("setup_ui method called")
+        await self.on_ui_ready(ui_integration)
+
+    async def _setup_menu_items(self, ui_integration: Any) -> None:
+        """Setup menu items for the plugin."""
+        await ui_integration.add_menu_item(
+            plugin_id=self.plugin_id,
+            parent_menu="Database",
+            title="Connection Manager",
+            callback=lambda: asyncio.create_task(self._open_connection_manager())
+        )
+
+        await ui_integration.add_menu_item(
+            plugin_id=self.plugin_id,
+            parent_menu="Database",
+            title="Query Editor",
+            callback=lambda: asyncio.create_task(self._open_query_editor())
+        )
+
+        await ui_integration.add_menu_item(
+            plugin_id=self.plugin_id,
+            parent_menu="Database",
+            title="Field Mappings",
+            callback=lambda: asyncio.create_task(self._open_field_mappings())
+        )
+
+        await ui_integration.add_menu_item(
+            plugin_id=self.plugin_id,
+            parent_menu="Database",
+            title="Data Validation",
+            callback=lambda: asyncio.create_task(self._open_validation())
+        )
+
+        await ui_integration.add_menu_item(
+            plugin_id=self.plugin_id,
+            parent_menu="Database",
+            title="History Manager",
+            callback=lambda: asyncio.create_task(self._open_history_manager())
+        )
+
+    # Connection Management
+    async def get_connections(self) -> List[DatabaseConnection]:
+        """Get all saved database connections."""
+        return list(self._connections.values())
+
+    async def create_connection(self, connection: DatabaseConnection) -> str:
+        """
+        Create a new database connection.
+
+        Args:
+            connection: The connection configuration
 
         Returns:
-            Connection name/ID
+            The connection ID
         """
-        if not self._database_manager:
-            raise PluginError("DatabaseManager not available")
-
         try:
+            # Convert to database manager config
+            config = self._convert_to_db_config(connection)
+
+            # Test the connection first
+            is_valid, error = await self._database_manager.test_connection_config(config)
+            if not is_valid:
+                raise PluginError(f"Connection test failed: {error}")
+
+            # Register with database manager
             await self._database_manager.register_connection(config)
 
-            # Update recent connections in UI settings
+            # Save locally
+            connection.updated_at = connection.created_at
+            self._connections[connection.id] = connection
+            await self._save_connections()
+
+            # Update recent connections
             if self._settings:
-                if config.name in self._settings.recent_connections:
-                    self._settings.recent_connections.remove(config.name)
-                self._settings.recent_connections.insert(0, config.name)
+                if connection.id in self._settings.recent_connections:
+                    self._settings.recent_connections.remove(connection.id)
+                self._settings.recent_connections.insert(0, connection.id)
                 self._settings.recent_connections = self._settings.recent_connections[
                                                     :self._settings.max_recent_connections]
                 await self._save_settings()
 
-            self._logger.info(f"Registered connection: {config.name}")
+            self._logger.info(f"Created connection: {connection.name}")
 
             # Publish event
             if self._event_bus_manager:
                 await self._event_bus_manager.publish(
-                    event_type="database_connector/connection_registered",
+                    event_type="database_connector/connection_created",
                     source=self.name,
-                    payload={"connection_name": config.name}
+                    payload={"connection_id": connection.id, "connection_name": connection.name}
                 )
 
-            return config.name
+            return connection.id
 
         except Exception as e:
-            self._logger.error(f"Failed to register connection: {e}")
-            raise PluginError(f"Failed to register connection: {e}") from e
+            self._logger.error(f"Failed to create connection: {e}")
+            raise PluginError(f"Failed to create connection: {e}") from e
 
-    async def unregister_connection(self, connection_name: str) -> bool:
+    async def update_connection(self, connection: DatabaseConnection) -> None:
         """
-        Unregister a database connection from the core DatabaseManager.
+        Update an existing database connection.
 
         Args:
-            connection_name: Name of connection to unregister
+            connection: The updated connection configuration
+        """
+        try:
+            if connection.id not in self._connections:
+                raise PluginError(f"Connection {connection.id} not found")
+
+            # Test the connection first
+            config = self._convert_to_db_config(connection)
+            is_valid, error = await self._database_manager.test_connection_config(config)
+            if not is_valid:
+                raise PluginError(f"Connection test failed: {error}")
+
+            # Unregister old connection
+            await self._database_manager.unregister_connection(connection.name)
+
+            # Register updated connection
+            await self._database_manager.register_connection(config)
+
+            # Update locally
+            from datetime import datetime
+            connection.updated_at = datetime.now()
+            self._connections[connection.id] = connection
+            await self._save_connections()
+
+            self._logger.info(f"Updated connection: {connection.name}")
+
+            # Publish event
+            if self._event_bus_manager:
+                await self._event_bus_manager.publish(
+                    event_type="database_connector/connection_updated",
+                    source=self.name,
+                    payload={"connection_id": connection.id, "connection_name": connection.name}
+                )
+
+        except Exception as e:
+            self._logger.error(f"Failed to update connection: {e}")
+            raise PluginError(f"Failed to update connection: {e}") from e
+
+    async def delete_connection(self, connection_id: str) -> bool:
+        """
+        Delete a database connection.
+
+        Args:
+            connection_id: The connection ID to delete
 
         Returns:
-            True if successful
+            True if deleted successfully
         """
-        if not self._database_manager:
-            raise PluginError("DatabaseManager not available")
-
         try:
-            success = await self._database_manager.unregister_connection(connection_name)
+            if connection_id not in self._connections:
+                return False
 
-            if success:
-                # Remove from recent connections
-                if self._settings and connection_name in self._settings.recent_connections:
-                    self._settings.recent_connections.remove(connection_name)
-                    await self._save_settings()
+            connection = self._connections[connection_id]
 
-                self._logger.info(f"Unregistered connection: {connection_name}")
+            # Unregister from database manager
+            try:
+                await self._database_manager.unregister_connection(connection.name)
+            except Exception as e:
+                self._logger.warning(f"Failed to unregister connection from database manager: {e}")
 
-                # Publish event
-                if self._event_bus_manager:
-                    await self._event_bus_manager.publish(
-                        event_type="database_connector/connection_unregistered",
-                        source=self.name,
-                        payload={"connection_name": connection_name}
-                    )
+            # Remove locally
+            del self._connections[connection_id]
+            await self._save_connections()
 
-            return success
+            # Remove from recent connections
+            if self._settings and connection_id in self._settings.recent_connections:
+                self._settings.recent_connections.remove(connection_id)
+                await self._save_settings()
+
+            self._logger.info(f"Deleted connection: {connection.name}")
+
+            # Publish event
+            if self._event_bus_manager:
+                await self._event_bus_manager.publish(
+                    event_type="database_connector/connection_deleted",
+                    source=self.name,
+                    payload={"connection_id": connection_id, "connection_name": connection.name}
+                )
+
+            return True
 
         except Exception as e:
-            self._logger.error(f"Failed to unregister connection: {e}")
-            raise PluginError(f"Failed to unregister connection: {e}") from e
+            self._logger.error(f"Failed to delete connection: {e}")
+            return False
 
-    async def test_connection(self, connection_name: str) -> Tuple[bool, Optional[str]]:
+    async def test_connection(self, connection_id: str) -> Tuple[bool, Optional[str]]:
         """
-        Test a database connection using the core DatabaseManager.
+        Test a database connection.
 
         Args:
-            connection_name: Name of connection to test
+            connection_id: The connection ID to test
 
         Returns:
             Tuple of (success, error_message)
         """
-        if not self._database_manager:
-            return (False, "DatabaseManager not available")
-
         try:
-            is_connected = await self._database_manager.check_connection(connection_name)
-            return (is_connected, None if is_connected else "Connection failed")
+            if connection_id not in self._connections:
+                return (False, "Connection not found")
+
+            connection = self._connections[connection_id]
+            config = self._convert_to_db_config(connection)
+
+            is_connected, error = await self._database_manager.test_connection_config(config)
+
+            # Update last tested time
+            from datetime import datetime
+            connection.last_tested = datetime.now()
+            await self._save_connections()
+
+            return (is_connected, error)
+
         except Exception as e:
             error_msg = str(e)
             self._logger.error(f"Connection test failed: {error_msg}")
             return (False, error_msg)
 
-    async def execute_query(
-            self,
-            connection_name: str,
-            query: str,
-            params: Optional[Dict[str, Any]] = None,
-            limit: Optional[int] = None,
-            apply_mapping: bool = False
-    ) -> Dict[str, Any]:
-        """
-        Execute a query using the core DatabaseManager.
-
-        Args:
-            connection_name: Database connection to use
-            query: SQL query to execute
-            params: Query parameters
-            limit: Result limit
-            apply_mapping: Whether to apply field mappings
-
-        Returns:
-            Query result dictionary
-        """
-        if not self._database_manager:
-            raise PluginError("DatabaseManager not available")
-
-        try:
-            # Use the query limit from settings if not specified
-            if limit is None and self._settings:
-                limit = self._settings.query_limit
-
-            result = await self._database_manager.execute_query(
-                query=query,
-                params=params,
-                connection_name=connection_name,
-                limit=limit,
-                apply_mapping=apply_mapping
-            )
-
-            self._logger.info(f"Executed query on {connection_name}, returned {result.get('row_count', 0)} rows")
-
-            # Publish event
-            if self._event_bus_manager:
-                await self._event_bus_manager.publish(
-                    event_type="database_connector/query_executed",
-                    source=self.name,
-                    payload={
-                        "connection_name": connection_name,
-                        "row_count": result.get("row_count", 0),
-                        "execution_time_ms": result.get("execution_time_ms", 0)
-                    }
-                )
-
-            return result
-
-        except Exception as e:
-            self._logger.error(f"Failed to execute query: {e}")
-            raise PluginError(f"Failed to execute query: {e}") from e
-
-    async def get_tables(self, connection_name: str, schema: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get table list using core DatabaseManager."""
-        if not self._database_manager:
-            raise PluginError("DatabaseManager not available")
-
-        try:
-            return await self._database_manager.get_tables(connection_name, schema)
-        except Exception as e:
-            self._logger.error(f"Failed to get tables: {e}")
-            raise PluginError(f"Failed to get tables: {e}") from e
-
-    async def get_table_columns(self, connection_name: str, table_name: str, schema: Optional[str] = None) -> List[
-        Dict[str, Any]]:
-        """Get table columns using core DatabaseManager."""
-        if not self._database_manager:
-            raise PluginError("DatabaseManager not available")
-
-        try:
-            return await self._database_manager.get_table_columns(table_name, connection_name, schema)
-        except Exception as e:
-            self._logger.error(f"Failed to get table columns: {e}")
-            raise PluginError(f"Failed to get table columns: {e}") from e
-
-    # ============================================================================
-    # FIELD MAPPING METHODS (delegate to core DatabaseManager)
-    # ============================================================================
-
-    async def get_field_mappings(self, connection_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get field mappings using core DatabaseManager."""
-        if not self._database_manager:
-            return []
-
-        try:
-            return await self._database_manager.get_all_field_mappings(connection_id)
-        except Exception as e:
-            self._logger.error(f"Failed to get field mappings: {e}")
-            return []
-
-    async def create_field_mapping(self, connection_id: str, table_name: str, mappings: Dict[str, str],
-                                   description: Optional[str] = None) -> Dict[str, Any]:
-        """Create field mapping using core DatabaseManager."""
-        if not self._database_manager:
-            raise PluginError("DatabaseManager not available")
-
-        try:
-            return await self._database_manager.create_field_mapping(connection_id, table_name, mappings, description)
-        except Exception as e:
-            self._logger.error(f"Failed to create field mapping: {e}")
-            raise PluginError(f"Failed to create field mapping: {e}") from e
-
-    async def delete_field_mapping(self, mapping_id: str) -> bool:
-        """Delete field mapping using core DatabaseManager."""
-        if not self._database_manager:
-            return False
-
-        try:
-            return await self._database_manager.delete_field_mapping(mapping_id)
-        except Exception as e:
-            self._logger.error(f"Failed to delete field mapping: {e}")
-            return False
-
-    # ============================================================================
-    # VALIDATION METHODS (delegate to core DatabaseManager)
-    # ============================================================================
-
-    async def get_validation_rules(self, connection_id: Optional[str] = None, table_name: Optional[str] = None) -> List[
-        Dict[str, Any]]:
-        """Get validation rules using core DatabaseManager."""
-        if not self._database_manager:
-            return []
-
-        try:
-            return await self._database_manager.get_all_validation_rules(connection_id, table_name)
-        except Exception as e:
-            self._logger.error(f"Failed to get validation rules: {e}")
-            return []
-
-    async def create_validation_rule(self, rule_type: str, connection_id: str, table_name: str, field_name: str,
-                                     parameters: Dict[str, Any], error_message: str, name: Optional[str] = None,
-                                     description: Optional[str] = None) -> Dict[str, Any]:
-        """Create validation rule using core DatabaseManager."""
-        if not self._database_manager:
-            raise PluginError("DatabaseManager not available")
-
-        try:
-            return await self._database_manager.create_validation_rule(
-                rule_type, connection_id, table_name, field_name,
-                parameters, error_message, name, description
-            )
-        except Exception as e:
-            self._logger.error(f"Failed to create validation rule: {e}")
-            raise PluginError(f"Failed to create validation rule: {e}") from e
-
-    async def validate_data(self, connection_id: str, table_name: str, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Validate data using core DatabaseManager."""
-        if not self._database_manager:
-            raise PluginError("DatabaseManager not available")
-
-        try:
-            return await self._database_manager.validate_data(connection_id, table_name, data)
-        except Exception as e:
-            self._logger.error(f"Failed to validate data: {e}")
-            raise PluginError(f"Failed to validate data: {e}") from e
-
-    # ============================================================================
-    # HISTORY METHODS (delegate to core DatabaseManager)
-    # ============================================================================
-
-    async def get_history_schedules(self) -> List[Dict[str, Any]]:
-        """Get history schedules using core DatabaseManager."""
-        if not self._database_manager:
-            return []
-
-        try:
-            return await self._database_manager.get_all_history_schedules()
-        except Exception as e:
-            self._logger.error(f"Failed to get history schedules: {e}")
-            return []
-
-    async def create_history_schedule(self, connection_id: str, query_id: str, frequency: str, name: str,
-                                      description: Optional[str] = None, retention_days: int = 365) -> Dict[str, Any]:
-        """Create history schedule using core DatabaseManager."""
-        if not self._database_manager:
-            raise PluginError("DatabaseManager not available")
-
-        try:
-            return await self._database_manager.create_history_schedule(
-                connection_id, query_id, frequency, name, description, retention_days
-            )
-        except Exception as e:
-            self._logger.error(f"Failed to create history schedule: {e}")
-            raise PluginError(f"Failed to create history schedule: {e}") from e
-
-    # ============================================================================
-    # SAVED QUERIES (Plugin-specific UI functionality)
-    # ============================================================================
-
-    async def get_saved_queries(self, connection_id: Optional[str] = None) -> Dict[str, SavedQuery]:
-        """Get saved queries (plugin-specific UI feature)."""
+    # Query Management
+    async def get_saved_queries(self, connection_id: Optional[str] = None) -> List[SavedQuery]:
+        """Get saved queries, optionally filtered by connection."""
         if connection_id:
-            return {
-                qid: query for qid, query in self._saved_queries.items()
-                if query.connection_id == connection_id
-            }
-        return self._saved_queries.copy()
-
-    async def get_saved_query(self, query_id: str) -> Optional[SavedQuery]:
-        """Get a specific saved query."""
-        return self._saved_queries.get(query_id)
+            return [q for q in self._saved_queries.values() if q.connection_id == connection_id]
+        return list(self._saved_queries.values())
 
     async def save_query(self, query: SavedQuery) -> str:
-        """Save a query (plugin-specific UI feature)."""
+        """
+        Save a database query.
+
+        Args:
+            query: The query to save
+
+        Returns:
+            The query ID
+        """
         try:
-            query.updated_at = datetime.datetime.now()
+            from datetime import datetime
+            query.updated_at = datetime.now()
             self._saved_queries[query.id] = query
             await self._save_saved_queries()
 
-            self._logger.info(f"Saved query: {query.name} ({query.id})")
+            self._logger.info(f"Saved query: {query.name}")
 
+            # Publish event
             if self._event_bus_manager:
                 await self._event_bus_manager.publish(
                     event_type="database_connector/query_saved",
@@ -570,7 +505,15 @@ class DatabaseConnectorPlugin(BasePlugin):
             raise PluginError(f"Failed to save query: {e}") from e
 
     async def delete_query(self, query_id: str) -> bool:
-        """Delete a saved query."""
+        """
+        Delete a saved query.
+
+        Args:
+            query_id: The query ID to delete
+
+        Returns:
+            True if deleted successfully
+        """
         try:
             if query_id not in self._saved_queries:
                 return False
@@ -579,8 +522,9 @@ class DatabaseConnectorPlugin(BasePlugin):
             del self._saved_queries[query_id]
             await self._save_saved_queries()
 
-            self._logger.info(f"Deleted query: {query_name} ({query_id})")
+            self._logger.info(f"Deleted query: {query_name}")
 
+            # Publish event
             if self._event_bus_manager:
                 await self._event_bus_manager.publish(
                     event_type="database_connector/query_deleted",
@@ -592,90 +536,366 @@ class DatabaseConnectorPlugin(BasePlugin):
 
         except Exception as e:
             self._logger.error(f"Failed to delete query: {e}")
-            raise PluginError(f"Failed to delete query: {e}") from e
+            return False
 
-    # ============================================================================
-    # UI EVENT HANDLERS (placeholders for when UI is implemented)
-    # ============================================================================
+    # Query Execution
+    async def execute_query(
+            self,
+            connection_id: str,
+            query: str,
+            parameters: Optional[Dict[str, Any]] = None,
+            limit: Optional[int] = None,
+            apply_mapping: bool = False
+    ) -> QueryResult:
+        """
+        Execute a database query.
 
-    async def _open_connection_manager(self) -> None:
-        """Open connection manager UI."""
-        if not self._concurrency_manager.is_main_thread():
-            await self._concurrency_manager.run_on_main_thread(
-                lambda: asyncio.create_task(self._open_connection_manager())
+        Args:
+            connection_id: The connection ID to use
+            query: The SQL query to execute
+            parameters: Query parameters
+            limit: Row limit for results
+            apply_mapping: Whether to apply field mappings
+
+        Returns:
+            Query execution results
+        """
+        try:
+            if connection_id not in self._connections:
+                raise PluginError(f"Connection {connection_id} not found")
+
+            connection = self._connections[connection_id]
+
+            # Use query service to execute
+            result = await self._query_service.execute_query(
+                connection_name=connection.name,
+                query=query,
+                parameters=parameters or {},
+                limit=limit or (self._settings.query_limit if self._settings else 1000),
+                apply_mapping=apply_mapping
             )
-            return
 
-        # TODO: Implement when UI is ready
-        self._logger.info("Connection manager requested (UI not yet implemented)")
+            # Convert to QueryResult model
+            query_result = QueryResult(
+                connection_id=connection_id,
+                query=query,
+                parameters=parameters or {},
+                records=result.get("records", []),
+                columns=result.get("columns", []),
+                row_count=result.get("row_count", 0),
+                execution_time_ms=result.get("execution_time_ms", 0),
+                has_error=result.get("has_error", False),
+                error_message=result.get("error_message"),
+                truncated=result.get("truncated", False),
+                applied_mapping=apply_mapping
+            )
+
+            self._logger.info(f"Executed query on {connection.name}, returned {query_result.row_count} rows")
+
+            # Publish event
+            if self._event_bus_manager:
+                await self._event_bus_manager.publish(
+                    event_type="database_connector/query_executed",
+                    source=self.name,
+                    payload={
+                        "connection_id": connection_id,
+                        "row_count": query_result.row_count,
+                        "execution_time_ms": query_result.execution_time_ms
+                    }
+                )
+
+            return query_result
+
+        except Exception as e:
+            self._logger.error(f"Failed to execute query: {e}")
+            raise PluginError(f"Failed to execute query: {e}") from e
+
+    # Export functionality
+    async def export_results(
+            self,
+            results: QueryResult,
+            format: ExportFormat,
+            file_path: str,
+            settings: Optional[ExportSettings] = None
+    ) -> str:
+        """
+        Export query results to a file.
+
+        Args:
+            results: The query results to export
+            format: The export format
+            file_path: The output file path
+            settings: Export settings
+
+        Returns:
+            The exported file path
+        """
+        try:
+            export_settings = settings or (self._settings.export_settings if self._settings else ExportSettings())
+
+            return await self._export_service.export_results(
+                results=results,
+                format=format,
+                file_path=file_path,
+                settings=export_settings
+            )
+
+        except Exception as e:
+            self._logger.error(f"Failed to export results: {e}")
+            raise PluginError(f"Failed to export results: {e}") from e
+
+    # Database introspection
+    async def get_tables(self, connection_id: str, schema: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get tables from a database connection."""
+        try:
+            if connection_id not in self._connections:
+                raise PluginError(f"Connection {connection_id} not found")
+
+            connection = self._connections[connection_id]
+            return await self._database_manager.get_tables(connection.name, schema)
+
+        except Exception as e:
+            self._logger.error(f"Failed to get tables: {e}")
+            raise PluginError(f"Failed to get tables: {e}") from e
+
+    async def get_table_columns(
+            self,
+            connection_id: str,
+            table_name: str,
+            schema: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get columns from a database table."""
+        try:
+            if connection_id not in self._connections:
+                raise PluginError(f"Connection {connection_id} not found")
+
+            connection = self._connections[connection_id]
+            return await self._database_manager.get_table_columns(table_name, connection.name, schema)
+
+        except Exception as e:
+            self._logger.error(f"Failed to get table columns: {e}")
+            raise PluginError(f"Failed to get table columns: {e}") from e
+
+    # Field Mapping Management
+    async def get_field_mappings(self, connection_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get field mappings."""
+        try:
+            return await self._database_manager.get_all_field_mappings(connection_id)
+        except Exception as e:
+            self._logger.error(f"Failed to get field mappings: {e}")
+            return []
+
+    async def create_field_mapping(
+            self,
+            connection_id: str,
+            table_name: str,
+            mappings: Dict[str, str],
+            description: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Create a field mapping."""
+        try:
+            if connection_id not in self._connections:
+                raise PluginError(f"Connection {connection_id} not found")
+
+            connection = self._connections[connection_id]
+            return await self._database_manager.create_field_mapping(
+                connection.name, table_name, mappings, description
+            )
+
+        except Exception as e:
+            self._logger.error(f"Failed to create field mapping: {e}")
+            raise PluginError(f"Failed to create field mapping: {e}") from e
+
+    async def delete_field_mapping(self, mapping_id: str) -> bool:
+        """Delete a field mapping."""
+        try:
+            return await self._database_manager.delete_field_mapping(mapping_id)
+        except Exception as e:
+            self._logger.error(f"Failed to delete field mapping: {e}")
+            return False
+
+    # Validation Management
+    async def get_validation_rules(
+            self,
+            connection_id: Optional[str] = None,
+            table_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get validation rules."""
+        try:
+            connection_name = None
+            if connection_id and connection_id in self._connections:
+                connection_name = self._connections[connection_id].name
+
+            return await self._database_manager.get_all_validation_rules(connection_name, table_name)
+        except Exception as e:
+            self._logger.error(f"Failed to get validation rules: {e}")
+            return []
+
+    async def create_validation_rule(
+            self,
+            rule_type: str,
+            connection_id: str,
+            table_name: str,
+            field_name: str,
+            parameters: Dict[str, Any],
+            error_message: str,
+            name: Optional[str] = None,
+            description: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Create a validation rule."""
+        try:
+            if connection_id not in self._connections:
+                raise PluginError(f"Connection {connection_id} not found")
+
+            connection = self._connections[connection_id]
+            return await self._database_manager.create_validation_rule(
+                rule_type, connection.name, table_name, field_name,
+                parameters, error_message, name, description
+            )
+
+        except Exception as e:
+            self._logger.error(f"Failed to create validation rule: {e}")
+            raise PluginError(f"Failed to create validation rule: {e}") from e
+
+    async def validate_data(
+            self,
+            connection_id: str,
+            table_name: str,
+            data: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Validate data against rules."""
+        try:
+            if connection_id not in self._connections:
+                raise PluginError(f"Connection {connection_id} not found")
+
+            connection = self._connections[connection_id]
+            return await self._database_manager.validate_data(connection.name, table_name, data)
+
+        except Exception as e:
+            self._logger.error(f"Failed to validate data: {e}")
+            raise PluginError(f"Failed to validate data: {e}") from e
+
+    # History Management
+    async def get_history_schedules(self) -> List[Dict[str, Any]]:
+        """Get history schedules."""
+        try:
+            return await self._database_manager.get_all_history_schedules()
+        except Exception as e:
+            self._logger.error(f"Failed to get history schedules: {e}")
+            return []
+
+    async def create_history_schedule(
+            self,
+            connection_id: str,
+            query_id: str,
+            frequency: str,
+            name: str,
+            description: Optional[str] = None,
+            retention_days: int = 365
+    ) -> Dict[str, Any]:
+        """Create a history schedule."""
+        try:
+            if connection_id not in self._connections:
+                raise PluginError(f"Connection {connection_id} not found")
+
+            connection = self._connections[connection_id]
+            return await self._database_manager.create_history_schedule(
+                connection.name, query_id, frequency, name, description, retention_days
+            )
+
+        except Exception as e:
+            self._logger.error(f"Failed to create history schedule: {e}")
+            raise PluginError(f"Failed to create history schedule: {e}") from e
+
+    # Settings and Configuration
+    async def get_settings(self) -> PluginSettings:
+        """Get plugin settings."""
+        return self._settings or PluginSettings()
+
+    async def update_settings(self, settings: PluginSettings) -> None:
+        """Update plugin settings."""
+        try:
+            self._settings = settings
+            await self._save_settings()
+
+            self._logger.info("Plugin settings updated")
+
+            # Publish event
+            if self._event_bus_manager:
+                await self._event_bus_manager.publish(
+                    event_type="database_connector/settings_updated",
+                    source=self.name,
+                    payload={"settings": settings.model_dump()}
+                )
+
+        except Exception as e:
+            self._logger.error(f"Failed to update settings: {e}")
+            raise PluginError(f"Failed to update settings: {e}") from e
+
+    # Helper Methods
+    def _convert_to_db_config(self, connection: DatabaseConnection) -> DatabaseConnectionConfig:
+        """Convert plugin connection to database manager config."""
+        return DatabaseConnectionConfig(
+            name=connection.name,
+            db_type=connection.connection_type.value,
+            host=connection.host,
+            port=connection.port,
+            database=connection.database,
+            user=connection.user,
+            password=connection.password,
+            connection_string=connection.connection_string,
+            ssl=connection.ssl,
+            read_only=connection.read_only,
+            pool_size=connection.pool_size,
+            max_overflow=connection.max_overflow,
+            pool_recycle=connection.pool_recycle,
+            connection_timeout=connection.connection_timeout,
+            properties=connection.properties,
+            allowed_tables=connection.allowed_tables,
+            dsn=connection.dsn,
+            jt400_jar_path=connection.jt400_jar_path
+        )
+
+    # Menu handlers
+    async def _open_connection_manager(self) -> None:
+        """Open connection manager."""
+        if self._main_widget:
+            # Switch to connections tab
+            self._main_widget.switch_to_tab(0)
 
     async def _open_query_editor(self) -> None:
-        """Open query editor UI."""
-        if not self._concurrency_manager.is_main_thread():
-            await self._concurrency_manager.run_on_main_thread(
-                lambda: asyncio.create_task(self._open_query_editor())
-            )
-            return
-
-        # TODO: Implement when UI is ready
-        self._logger.info("Query editor requested (UI not yet implemented)")
+        """Open query editor."""
+        if self._main_widget:
+            # Switch to main tab
+            self._main_widget.switch_to_tab(0)
 
     async def _open_field_mappings(self) -> None:
-        """Open field mappings UI."""
-        if not self._concurrency_manager.is_main_thread():
-            await self._concurrency_manager.run_on_main_thread(
-                lambda: asyncio.create_task(self._open_field_mappings())
-            )
-            return
-
-        # TODO: Implement when UI is ready
-        self._logger.info("Field mappings requested (UI not yet implemented)")
+        """Open field mappings."""
+        if self._main_widget:
+            # Switch to field mapping tab
+            self._main_widget.switch_to_tab(2)
 
     async def _open_validation(self) -> None:
-        """Open validation UI."""
-        if not self._concurrency_manager.is_main_thread():
-            await self._concurrency_manager.run_on_main_thread(
-                lambda: asyncio.create_task(self._open_validation())
-            )
-            return
-
-        # TODO: Implement when UI is ready
-        self._logger.info("Validation UI requested (UI not yet implemented)")
+        """Open validation."""
+        if self._main_widget:
+            # Switch to validation tab
+            self._main_widget.switch_to_tab(3)
 
     async def _open_history_manager(self) -> None:
-        """Open history manager UI."""
-        if not self._concurrency_manager.is_main_thread():
-            await self._concurrency_manager.run_on_main_thread(
-                lambda: asyncio.create_task(self._open_history_manager())
-            )
-            return
+        """Open history manager."""
+        if self._main_widget:
+            # Switch to history tab
+            self._main_widget.switch_to_tab(4)
 
-        # TODO: Implement when UI is ready
-        self._logger.info("History manager requested (UI not yet implemented)")
-
-    # ============================================================================
-    # PLUGIN DATA MANAGEMENT (settings and saved queries in plugin_data)
-    # ============================================================================
-
-    async def _find_plugin_directory(self) -> Optional[Path]:
-        """Find the plugin directory."""
-        import inspect
-        try:
-            module_path = inspect.getmodule(self).__file__
-            if module_path:
-                return Path(module_path).parent.parent
-        except (AttributeError, TypeError):
-            pass
-        return None
-
+    # Data persistence
     async def _load_settings(self) -> None:
-        """Load plugin settings from plugin_data directory."""
+        """Load plugin settings from file."""
         try:
             file_path = f"{self.name}/settings.json"
+
             try:
                 file_info = await self._file_manager.get_file_info(file_path, "plugin_data")
                 if not file_info:
-                    # Create default settings
                     self._settings = PluginSettings()
                     await self._save_settings()
                     return
@@ -694,7 +914,7 @@ class DatabaseConnectorPlugin(BasePlugin):
             self._settings = PluginSettings()
 
     async def _save_settings(self) -> None:
-        """Save plugin settings to plugin_data directory."""
+        """Save plugin settings to file."""
         try:
             if not self._settings:
                 return
@@ -712,10 +932,83 @@ class DatabaseConnectorPlugin(BasePlugin):
             self._logger.error(f"Failed to save settings: {e}")
             raise PluginError(f"Failed to save settings: {e}") from e
 
+    async def _load_connections(self) -> None:
+        """Load database connections from file."""
+        try:
+            file_path = f"{self.name}/connections.json"
+
+            try:
+                file_info = await self._file_manager.get_file_info(file_path, "plugin_data")
+                if not file_info:
+                    return
+            except Exception:
+                return
+
+            json_data = await self._file_manager.read_text(file_path, "plugin_data")
+            data = json.loads(json_data)
+
+            connections = {}
+            for conn_data in data:
+                try:
+                    # Handle datetime fields
+                    if "created_at" in conn_data and isinstance(conn_data["created_at"], str):
+                        from datetime import datetime
+                        conn_data["created_at"] = datetime.fromisoformat(conn_data["created_at"])
+                    if "updated_at" in conn_data and isinstance(conn_data["updated_at"], str):
+                        from datetime import datetime
+                        conn_data["updated_at"] = datetime.fromisoformat(conn_data["updated_at"])
+                    if "last_tested" in conn_data and isinstance(conn_data["last_tested"], str):
+                        from datetime import datetime
+                        conn_data["last_tested"] = datetime.fromisoformat(conn_data["last_tested"])
+
+                    connection = DatabaseConnection(**conn_data)
+                    connections[connection.id] = connection
+
+                except Exception as e:
+                    self._logger.warning(f"Failed to load connection: {e}")
+                    continue
+
+            self._connections = connections
+            self._logger.info(f"Loaded {len(connections)} database connections")
+
+        except Exception as e:
+            self._logger.error(f"Failed to load connections: {e}")
+
+    async def _save_connections(self) -> None:
+        """Save database connections to file."""
+        try:
+            file_path = f"{self.name}/connections.json"
+            await self._file_manager.ensure_directory(self.name, "plugin_data")
+
+            connection_list = []
+            for connection in self._connections.values():
+                conn_dict = connection.model_dump()
+
+                # Handle datetime fields
+                if "created_at" in conn_dict and hasattr(conn_dict["created_at"], "isoformat"):
+                    conn_dict["created_at"] = conn_dict["created_at"].isoformat()
+                if "updated_at" in conn_dict and hasattr(conn_dict["updated_at"], "isoformat"):
+                    conn_dict["updated_at"] = conn_dict["updated_at"].isoformat()
+                if "last_tested" in conn_dict and conn_dict["last_tested"] and hasattr(conn_dict["last_tested"],
+                                                                                       "isoformat"):
+                    conn_dict["last_tested"] = conn_dict["last_tested"].isoformat()
+
+                connection_list.append(conn_dict)
+
+            json_data = json.dumps(connection_list, indent=2)
+            await self._file_manager.write_text(file_path, json_data, "plugin_data")
+
+            self._logger.debug(f"Saved {len(connection_list)} connections")
+
+        except Exception as e:
+            self._logger.error(f"Failed to save connections: {e}")
+            raise PluginError(f"Failed to save connections: {e}") from e
+
     async def _load_saved_queries(self) -> None:
-        """Load saved queries from plugin_data directory."""
+        """Load saved queries from file."""
         try:
             file_path = f"{self.name}/saved_queries.json"
+
             try:
                 file_info = await self._file_manager.get_file_info(file_path, "plugin_data")
                 if not file_info:
@@ -731,12 +1024,18 @@ class DatabaseConnectorPlugin(BasePlugin):
                 try:
                     # Handle datetime fields
                     if "created_at" in query_data and isinstance(query_data["created_at"], str):
-                        query_data["created_at"] = datetime.datetime.fromisoformat(query_data["created_at"])
+                        from datetime import datetime
+                        query_data["created_at"] = datetime.fromisoformat(query_data["created_at"])
                     if "updated_at" in query_data and isinstance(query_data["updated_at"], str):
-                        query_data["updated_at"] = datetime.datetime.fromisoformat(query_data["updated_at"])
+                        from datetime import datetime
+                        query_data["updated_at"] = datetime.fromisoformat(query_data["updated_at"])
+                    if "last_executed" in query_data and isinstance(query_data["last_executed"], str):
+                        from datetime import datetime
+                        query_data["last_executed"] = datetime.fromisoformat(query_data["last_executed"])
 
                     query = SavedQuery(**query_data)
                     queries[query.id] = query
+
                 except Exception as e:
                     self._logger.warning(f"Failed to load query: {e}")
                     continue
@@ -746,10 +1045,9 @@ class DatabaseConnectorPlugin(BasePlugin):
 
         except Exception as e:
             self._logger.error(f"Failed to load saved queries: {e}")
-            raise PluginError(f"Failed to load saved queries: {e}") from e
 
     async def _save_saved_queries(self) -> None:
-        """Save queries to plugin_data directory."""
+        """Save queries to file."""
         try:
             file_path = f"{self.name}/saved_queries.json"
             await self._file_manager.ensure_directory(self.name, "plugin_data")
@@ -757,11 +1055,16 @@ class DatabaseConnectorPlugin(BasePlugin):
             query_list = []
             for query in self._saved_queries.values():
                 query_dict = query.model_dump()
-                # Convert datetime to ISO string
-                if "created_at" in query_dict and isinstance(query_dict["created_at"], datetime.datetime):
+
+                # Handle datetime fields
+                if "created_at" in query_dict and hasattr(query_dict["created_at"], "isoformat"):
                     query_dict["created_at"] = query_dict["created_at"].isoformat()
-                if "updated_at" in query_dict and isinstance(query_dict["updated_at"], datetime.datetime):
+                if "updated_at" in query_dict and hasattr(query_dict["updated_at"], "isoformat"):
                     query_dict["updated_at"] = query_dict["updated_at"].isoformat()
+                if "last_executed" in query_dict and query_dict["last_executed"] and hasattr(
+                        query_dict["last_executed"], "isoformat"):
+                    query_dict["last_executed"] = query_dict["last_executed"].isoformat()
+
                 query_list.append(query_dict)
 
             json_data = json.dumps(query_list, indent=2)
@@ -791,14 +1094,15 @@ class DatabaseConnectorPlugin(BasePlugin):
         try:
             await set_plugin_state(self.name, PluginLifecycleState.DISABLING)
 
-            # Save plugin data
+            # Save all data
             try:
                 await self._save_settings()
+                await self._save_connections()
                 await self._save_saved_queries()
             except Exception as e:
                 self._logger.warning(f"Error saving plugin data during shutdown: {e}")
 
-            # Clean up UI
+            # Cleanup UI
             self._main_widget = None
 
             # Unsubscribe from events
@@ -807,11 +1111,13 @@ class DatabaseConnectorPlugin(BasePlugin):
                     subscriber_id=f"{self.name}_config_subscriber"
                 )
 
-            # Clear state
+            # Clear data
+            self._connections = {}
             self._saved_queries = {}
 
             await super().shutdown()
             self._initialized = False
+
             await set_plugin_state(self.name, PluginLifecycleState.INACTIVE)
             self._logger.info(f"{self.name} plugin shutdown complete")
 
@@ -821,29 +1127,31 @@ class DatabaseConnectorPlugin(BasePlugin):
 
     def status(self) -> Dict[str, Any]:
         """Get plugin status."""
-        connection_count = 0
-        if self._database_manager:
-            try:
-                connection_names = asyncio.create_task(self._database_manager.get_connection_names())
-                connection_count = len(connection_names.result()) if connection_names.done() else 0
-            except Exception:
-                pass
-
         status = {
             "name": self.name,
             "version": self.version,
             "initialized": self._initialized,
             "database_manager_available": self._database_manager is not None,
-            "connections": {"available": connection_count},
-            "queries": {"saved": len(self._saved_queries)},
+            "connections": {
+                "total": len(self._connections),
+                "active": len([c for c in self._connections.values() if c.is_active])
+            },
+            "queries": {
+                "saved": len(self._saved_queries)
+            },
             "ui_active": self._main_widget is not None,
+            "services": {
+                "export_service": self._export_service is not None,
+                "query_service": self._query_service is not None
+            }
         }
 
         if self._settings:
             status["settings"] = {
+                "default_connection": self._settings.default_connection_id,
                 "recent_connections": len(self._settings.recent_connections),
-                "has_default_connection": self._settings.default_connection_id is not None,
                 "query_limit": self._settings.query_limit,
+                "auto_limit_queries": self._settings.auto_limit_queries
             }
 
         return status

@@ -1,80 +1,132 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+"""
+Main tab for the Database Connector Plugin.
+
+This module provides the main tab UI containing connection management
+and query editor functionality.
+"""
 
 from __future__ import annotations
 
-from .settings_dialog import SettingsDialog
-
-"""
-Main UI tab for the Database Connector Plugin.
-
-This module provides the main UI tab that users interact with, containing
-all the functionality for connecting to databases, executing queries,
-managing field mappings, and validating data.
-"""
-
 import asyncio
-import datetime
-import json
-import os
-import uuid
-from typing import Any, Dict, List, Optional, Set, Tuple, Union, cast
+import logging
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import Qt, Signal, Slot, QSize
-from PySide6.QtGui import QIcon, QAction, QKeySequence
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QFont, QSyntaxHighlighter, QTextCharFormat, QTextDocument
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QTabWidget, QSplitter, QToolBar, QStatusBar,
-    QMessageBox, QProgressBar, QMenu, QToolButton, QInputDialog,
-    QFileDialog
+    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QGroupBox,
+    QPushButton, QComboBox, QLabel, QTextEdit, QPlainTextEdit,
+    QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
+    QMessageBox, QDialog, QFormLayout, QLineEdit, QSpinBox,
+    QCheckBox, QTabWidget, QTableWidget, QTableWidgetItem,
+    QHeaderView, QMenu, QFrame, QScrollArea, QGridLayout
 )
 
-from qorzen.utils.exceptions import DatabaseError, PluginError
-
-from ..models import (
-    BaseConnectionConfig,
-    AS400ConnectionConfig,
-    ODBCConnectionConfig,
-    ConnectionType,
-    SavedQuery,
-    FieldMapping,
-    ValidationRule,
-    QueryResult, SQLiteConnectionConfig, PluginSettings
-)
-
-from .connection_dialog import ConnectionDialog, ConnectionManagerDialog
-from .query_editor import QueryEditorWidget
-from .field_mapping import FieldMappingWidget
-from .validation import ValidationWidget
-from .history import HistoryWidget
-from .results_view import ResultsView
+from ..models import DatabaseConnection, SavedQuery, ConnectionType, QueryResult
+from .connection_dialog import ConnectionDialog
+from .query_dialog import QueryDialog
 
 
-class DatabaseConnectorTab(QWidget):
-    """Main tab widget for the Database Connector Plugin."""
+class SQLHighlighter(QSyntaxHighlighter):
+    """SQL syntax highlighter for the query editor."""
+
+    def __init__(self, document: QTextDocument) -> None:
+        """Initialize the highlighter."""
+        super().__init__(document)
+
+        # Define highlighting rules
+        self._highlighting_rules = []
+
+        # Keywords
+        keyword_format = QTextCharFormat()
+        keyword_format.setForeground(Qt.GlobalColor.blue)
+        keyword_format.setFontWeight(QFont.Weight.Bold)
+
+        keywords = [
+            "SELECT", "FROM", "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL",
+            "ON", "GROUP", "BY", "HAVING", "ORDER", "LIMIT", "OFFSET", "UNION",
+            "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TABLE",
+            "INDEX", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "DATABASE",
+            "SCHEMA", "AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN", "LIKE",
+            "IS", "NULL", "AS", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX",
+            "CASE", "WHEN", "THEN", "ELSE", "END", "IF", "WHILE", "FOR"
+        ]
+
+        for keyword in keywords:
+            pattern = f"\\b{keyword}\\b"
+            self._highlighting_rules.append((pattern, keyword_format))
+
+        # Functions
+        function_format = QTextCharFormat()
+        function_format.setForeground(Qt.GlobalColor.darkMagenta)
+        function_pattern = r"\b[A-Za-z_][A-Za-z0-9_]*(?=\s*\()"
+        self._highlighting_rules.append((function_pattern, function_format))
+
+        # Strings
+        string_format = QTextCharFormat()
+        string_format.setForeground(Qt.GlobalColor.darkGreen)
+        string_pattern = r"'[^']*'"
+        self._highlighting_rules.append((string_pattern, string_format))
+
+        # Numbers
+        number_format = QTextCharFormat()
+        number_format.setForeground(Qt.GlobalColor.darkCyan)
+        number_pattern = r"\b\d+\.?\d*\b"
+        self._highlighting_rules.append((number_pattern, number_format))
+
+        # Comments
+        comment_format = QTextCharFormat()
+        comment_format.setForeground(Qt.GlobalColor.gray)
+        comment_format.setFontItalic(True)
+        comment_pattern = r"--[^\n]*"
+        self._highlighting_rules.append((comment_pattern, comment_format))
+
+    def highlightBlock(self, text: str) -> None:
+        """Highlight a block of text."""
+        import re
+
+        for pattern, format in self._highlighting_rules:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                start = match.start()
+                length = match.end() - start
+                self.setFormat(start, length, format)
+
+
+class MainTab(QWidget):
+    """
+    Main tab containing connection management and query editor.
+
+    Provides functionality for:
+    - Managing database connections
+    - Query editor with syntax highlighting
+    - Query execution and management
+    - Database schema browsing
+    """
 
     # Signals
-    connectionChanged = Signal(str, bool)  # connection_id, connected
-    queryStarted = Signal(str)  # connection_id
-    queryFinished = Signal(str, bool)  # connection_id, success
+    query_executed = Signal(object)  # QueryResult
+    operation_started = Signal(str)  # message
+    operation_finished = Signal()
+    status_changed = Signal(str)  # message
 
     def __init__(
             self,
             plugin: Any,
-            logger: Any,
+            logger: logging.Logger,
             concurrency_manager: Any,
             event_bus_manager: Any,
             parent: Optional[QWidget] = None
     ) -> None:
         """
-        Initialize the Database Connector Tab.
+        Initialize the main tab.
 
         Args:
-            plugin: Plugin instance
+            plugin: The plugin instance
             logger: Logger instance
-            concurrency_manager: Concurrency manager for thread safety
-            event_bus_manager: Event bus manager for event handling
-            parent: Optional parent widget
+            concurrency_manager: Concurrency manager
+            event_bus_manager: Event bus manager
+            parent: Parent widget
         """
         super().__init__(parent)
 
@@ -83,1429 +135,739 @@ class DatabaseConnectorTab(QWidget):
         self._concurrency_manager = concurrency_manager
         self._event_bus_manager = event_bus_manager
 
+        # UI components
+        self._connection_combo: Optional[QComboBox] = None
+        self._query_editor: Optional[QPlainTextEdit] = None
+        self._schema_tree: Optional[QTreeWidget] = None
+        self._saved_queries_list: Optional[QListWidget] = None
+        self._execute_button: Optional[QPushButton] = None
+        self._format_button: Optional[QPushButton] = None
+        self._save_query_button: Optional[QPushButton] = None
+
+        # State
         self._current_connection_id: Optional[str] = None
-        self._query_running = False
         self._current_query_result: Optional[QueryResult] = None
 
-        self._init_ui()
-        self._connect_signals()
-        self._load_recent_connections()
+        self._setup_ui()
+        self._setup_connections()
 
-    def _init_ui(self) -> None:
-        """Initialize the UI components."""
-        # Main layout
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        # Auto-refresh timer
+        self._refresh_timer = QTimer()
+        self._refresh_timer.timeout.connect(lambda: asyncio.create_task(self._refresh_schema()))
+        self._refresh_timer.start(30000)  # Refresh every 30 seconds
 
-        # Toolbar
-        toolbar = QToolBar("Database Tools")
-        toolbar.setIconSize(QSize(16, 16))
+    def _setup_ui(self) -> None:
+        """Setup the user interface."""
+        layout = QVBoxLayout(self)
 
-        # Connection controls
-        connection_label = QLabel("Connection:")
-        toolbar.addWidget(connection_label)
+        # Connection toolbar
+        self._create_connection_toolbar()
+        layout.addWidget(self._connection_toolbar)
+
+        # Main splitter
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left panel (schema and saved queries)
+        left_panel = self._create_left_panel()
+        main_splitter.addWidget(left_panel)
+
+        # Right panel (query editor)
+        right_panel = self._create_right_panel()
+        main_splitter.addWidget(right_panel)
+
+        # Set splitter proportions (30% left, 70% right)
+        main_splitter.setSizes([300, 700])
+
+        layout.addWidget(main_splitter)
+
+    def _create_connection_toolbar(self) -> None:
+        """Create the connection toolbar."""
+        self._connection_toolbar = QFrame()
+        self._connection_toolbar.setFrameStyle(QFrame.Shape.StyledPanel)
+
+        toolbar_layout = QHBoxLayout(self._connection_toolbar)
+
+        # Connection selection
+        toolbar_layout.addWidget(QLabel("Connection:"))
 
         self._connection_combo = QComboBox()
         self._connection_combo.setMinimumWidth(200)
-        self._connection_combo.currentIndexChanged.connect(self._on_connection_selected)
-        toolbar.addWidget(self._connection_combo)
+        self._connection_combo.currentTextChanged.connect(self._on_connection_changed)
+        toolbar_layout.addWidget(self._connection_combo)
 
-        self._connect_button = QPushButton("Connect")
-        self._connect_button.clicked.connect(self._on_connect_button_clicked)
-        toolbar.addWidget(self._connect_button)
+        # Connection buttons
+        new_conn_button = QPushButton("New")
+        new_conn_button.clicked.connect(self._create_connection)
+        toolbar_layout.addWidget(new_conn_button)
 
-        self._manage_connections_button = QToolButton()
-        self._manage_connections_button.setText("...")
-        self._manage_connections_button.setPopupMode(QToolButton.InstantPopup)
+        edit_conn_button = QPushButton("Edit")
+        edit_conn_button.clicked.connect(self._edit_connection)
+        toolbar_layout.addWidget(edit_conn_button)
 
-        connections_menu = QMenu(self)
-        new_conn_action = connections_menu.addAction("New Connection...")
-        new_conn_action.triggered.connect(self._on_new_connection)
+        test_conn_button = QPushButton("Test")
+        test_conn_button.clicked.connect(self._test_connection)
+        toolbar_layout.addWidget(test_conn_button)
 
-        edit_conn_action = connections_menu.addAction("Edit Current Connection...")
-        edit_conn_action.triggered.connect(self._on_edit_connection)
+        delete_conn_button = QPushButton("Delete")
+        delete_conn_button.clicked.connect(self._delete_connection)
+        toolbar_layout.addWidget(delete_conn_button)
 
-        delete_conn_action = connections_menu.addAction("Delete Current Connection")
-        delete_conn_action.triggered.connect(self._on_delete_connection)
+        toolbar_layout.addStretch()
 
-        connections_menu.addSeparator()
+        # Refresh button
+        refresh_button = QPushButton("Refresh")
+        refresh_button.clicked.connect(lambda: asyncio.create_task(self.refresh()))
+        toolbar_layout.addWidget(refresh_button)
 
-        manage_all_action = connections_menu.addAction("Manage All Connections...")
-        manage_all_action.triggered.connect(self.open_connection_manager)
+    def _create_left_panel(self) -> QWidget:
+        """Create the left panel with schema and saved queries."""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
 
-        self._manage_connections_button.setMenu(connections_menu)
-        toolbar.addWidget(self._manage_connections_button)
+        # Tab widget for schema and queries
+        tab_widget = QTabWidget()
 
-        toolbar.addSeparator()
+        # Schema tab
+        schema_tab = QWidget()
+        schema_layout = QVBoxLayout(schema_tab)
 
-        # Common actions
-        self._execute_action = QAction("Execute Query", self)
-        self._execute_action.setShortcut(QKeySequence("F5"))
-        self._execute_action.triggered.connect(self._execute_current_query)
-        toolbar.addAction(self._execute_action)
+        schema_layout.addWidget(QLabel("Database Schema:"))
 
-        self._cancel_action = QAction("Cancel Query", self)
-        self._cancel_action.setShortcut(QKeySequence("Esc"))
-        self._cancel_action.triggered.connect(self._cancel_current_query)
-        self._cancel_action.setEnabled(False)
-        toolbar.addAction(self._cancel_action)
+        self._schema_tree = QTreeWidget()
+        self._schema_tree.setHeaderLabel("Tables and Columns")
+        self._schema_tree.itemDoubleClicked.connect(self._on_schema_item_double_clicked)
+        schema_layout.addWidget(self._schema_tree)
 
-        toolbar.addSeparator()
+        tab_widget.addTab(schema_tab, "Schema")
 
-        # Export action
-        self._export_action = QAction("Export Results", self)
-        self._export_action.triggered.connect(self._export_results)
-        self._export_action.setEnabled(False)
-        toolbar.addAction(self._export_action)
+        # Saved queries tab
+        queries_tab = QWidget()
+        queries_layout = QVBoxLayout(queries_tab)
 
-        toolbar.addSeparator()
-        self._settings_action = QAction("Settings", toolbar)
-        self._settings_action.triggered.connect(self.open_settings_dialog)
-        self._settings_action.setEnabled(True)
-        toolbar.addAction(self._settings_action)
+        queries_layout.addWidget(QLabel("Saved Queries:"))
 
-        # Add the toolbar
-        main_layout.addWidget(toolbar)
+        self._saved_queries_list = QListWidget()
+        self._saved_queries_list.itemDoubleClicked.connect(self._on_saved_query_double_clicked)
+        self._saved_queries_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._saved_queries_list.customContextMenuRequested.connect(self._show_query_context_menu)
+        queries_layout.addWidget(self._saved_queries_list)
 
-        # Main content
-        self._tab_widget = QTabWidget()
+        # Query management buttons
+        query_buttons_layout = QHBoxLayout()
 
-        # Query Editor Tab
-        self._query_editor = QueryEditorWidget(self._plugin, self._logger)
-        self._tab_widget.addTab(self._query_editor, "Query Editor")
+        new_query_button = QPushButton("New")
+        new_query_button.clicked.connect(self._create_query)
+        query_buttons_layout.addWidget(new_query_button)
 
-        # Results Tab
-        self._results_view = ResultsView(self._plugin, self._logger)
-        self._tab_widget.addTab(self._results_view, "Results")
+        edit_query_button = QPushButton("Edit")
+        edit_query_button.clicked.connect(self._edit_query)
+        query_buttons_layout.addWidget(edit_query_button)
 
-        # Field Mapping Tab
-        self._field_mapping = FieldMappingWidget(self._plugin, self._logger)
-        self._tab_widget.addTab(self._field_mapping, "Field Mappings")
+        delete_query_button = QPushButton("Delete")
+        delete_query_button.clicked.connect(self._delete_query)
+        query_buttons_layout.addWidget(delete_query_button)
 
-        # Validation Tab
-        self._validation = ValidationWidget(self._plugin, self._logger)
-        self._tab_widget.addTab(self._validation, "Data Validation")
+        queries_layout.addLayout(query_buttons_layout)
 
-        # History Tab
-        self._history = HistoryWidget(self._plugin, self._logger)
-        self._tab_widget.addTab(self._history, "History")
+        tab_widget.addTab(queries_tab, "Queries")
 
-        # Add the tab widget to the layout
-        main_layout.addWidget(self._tab_widget)
+        layout.addWidget(tab_widget)
 
-        # Status bar
-        self._status_bar = QStatusBar()
-        self._progress_bar = QProgressBar()
-        self._progress_bar.setRange(0, 0)  # Indeterminate progress
-        self._progress_bar.setFixedWidth(100)
-        self._progress_bar.setVisible(False)
+        return panel
 
-        self._status_label = QLabel("Ready")
-        self._status_bar.addWidget(self._status_label, 1)
-        self._status_bar.addPermanentWidget(self._progress_bar)
+    def _create_right_panel(self) -> QWidget:
+        """Create the right panel with query editor."""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
 
-        main_layout.addWidget(self._status_bar)
+        # Query editor group
+        editor_group = QGroupBox("Query Editor")
+        editor_layout = QVBoxLayout(editor_group)
 
-    def _connect_signals(self) -> None:
-        """Connect signal handlers."""
-        # Connect our signals
-        self.connectionChanged.connect(self._on_connection_status_changed)
-        self.queryStarted.connect(self._on_query_started)
-        self.queryFinished.connect(self._on_query_finished)
+        # Query editor toolbar
+        editor_toolbar = QHBoxLayout()
 
-        # Connect tab signals
-        self._query_editor.executeQueryRequested.connect(self._execute_current_query)
-        self._query_editor.saveQueryRequested.connect(self._on_save_query)
+        self._execute_button = QPushButton("Execute")
+        self._execute_button.clicked.connect(self._execute_query)
+        self._execute_button.setEnabled(False)
+        editor_toolbar.addWidget(self._execute_button)
 
-        # Connect to tab change signal
-        self._tab_widget.currentChanged.connect(self._on_tab_changed)
+        self._format_button = QPushButton("Format")
+        self._format_button.clicked.connect(self._format_query)
+        editor_toolbar.addWidget(self._format_button)
 
-    def _load_recent_connections(self) -> None:
-        """Load recent connections into the combo box."""
-        # Clear the combo and add placeholder
-        self._connection_combo.clear()
-        self._connection_combo.addItem("Select a connection...", None)
+        self._save_query_button = QPushButton("Save Query")
+        self._save_query_button.clicked.connect(self._save_current_query)
+        editor_toolbar.addWidget(self._save_query_button)
 
-        # Run async function to get connections
-        asyncio.create_task(self._async_load_connections())
+        clear_button = QPushButton("Clear")
+        clear_button.clicked.connect(self._clear_query)
+        editor_toolbar.addWidget(clear_button)
 
-    async def _async_load_connections(self) -> None:
-        """Asynchronously load connections."""
+        editor_toolbar.addStretch()
+
+        editor_layout.addLayout(editor_toolbar)
+
+        # Query editor text area
+        self._query_editor = QPlainTextEdit()
+        self._query_editor.setFont(QFont("Consolas", 11))
+        self._query_editor.setPlaceholderText("Enter your SQL query here...")
+        self._query_editor.textChanged.connect(self._on_query_text_changed)
+
+        # Apply syntax highlighting
+        self._highlighter = SQLHighlighter(self._query_editor.document())
+
+        editor_layout.addWidget(self._query_editor)
+
+        layout.addWidget(editor_group)
+
+        return panel
+
+    def _setup_connections(self) -> None:
+        """Setup signal connections."""
+        # Load initial data
+        asyncio.create_task(self.refresh())
+
+    async def refresh(self) -> None:
+        """Refresh all data in the tab."""
         try:
-            # Get connections from the plugin
+            self.operation_started.emit("Refreshing connections and queries...")
+
+            # Refresh connections
+            await self._refresh_connections()
+
+            # Refresh saved queries
+            await self._refresh_saved_queries()
+
+            # Refresh schema if connection is selected
+            if self._current_connection_id:
+                await self._refresh_schema()
+
+            self.operation_finished.emit()
+            self.status_changed.emit("Refreshed successfully")
+
+        except Exception as e:
+            self.operation_finished.emit()
+            self._logger.error(f"Failed to refresh main tab: {e}")
+            self._show_error("Refresh Error", f"Failed to refresh data: {e}")
+
+    async def _refresh_connections(self) -> None:
+        """Refresh the connections list."""
+        try:
             connections = await self._plugin.get_connections()
 
-            # Get settings to find default and recent connections
-            # The settings should already be loaded in the plugin
-            settings = self._plugin._settings
+            current_text = self._connection_combo.currentText()
+            self._connection_combo.clear()
+            self._connection_combo.addItem("-- Select Connection --", None)
 
-            # Build the list of connections to show, prioritizing recent ones
-            connection_ids = []
+            for connection in connections:
+                self._connection_combo.addItem(connection.name, connection.id)
 
-            # Start with recent connections if available
-            if settings and settings.recent_connections:
-                for conn_id in settings.recent_connections:
-                    if conn_id in connections:
-                        connection_ids.append(conn_id)
-
-            # Add any remaining connections
-            for conn_id in connections:
-                if conn_id not in connection_ids:
-                    connection_ids.append(conn_id)
-
-            # Add to the combo box in the main thread
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._populate_connection_combo(connection_ids, connections)
-                )
-            else:
-                self._populate_connection_combo(connection_ids, connections)
-
-            # Set default connection if available
-            if settings and settings.default_connection_id:
-                default_id = settings.default_connection_id
-                if default_id in connections:
-                    # Set default in the main thread
-                    if not self._concurrency_manager.is_main_thread():
-                        await self._concurrency_manager.run_on_main_thread(
-                            lambda: self._set_default_connection(default_id)
-                        )
-                    else:
-                        self._set_default_connection(default_id)
+            # Restore selection if possible
+            if current_text:
+                index = self._connection_combo.findText(current_text)
+                if index >= 0:
+                    self._connection_combo.setCurrentIndex(index)
 
         except Exception as e:
-            self._logger.error(f"Error loading connections: {str(e)}")
-            # Show error on the main thread
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._show_connection_error(str(e))
-                )
-            else:
-                self._show_connection_error(str(e))
+            self._logger.error(f"Failed to refresh connections: {e}")
 
-    def _populate_connection_combo(
-            self,
-            connection_ids: List[str],
-            connections: Dict[str, BaseConnectionConfig]
-    ) -> None:
-        """
-        Populate the connection combo box.
-
-        Args:
-            connection_ids: List of connection IDs in desired order
-            connections: Dictionary of connection configs
-        """
-        # Keep current selection if possible
-        current_id = self._connection_combo.currentData()
-
-        # Clear and repopulate
-        self._connection_combo.clear()
-        self._connection_combo.addItem("Select a connection...", None)
-
-        for conn_id in connection_ids:
-            conn = connections[conn_id]
-            self._connection_combo.addItem(conn.name, conn_id)
-
-        # Restore selection if it still exists
-        if current_id:
-            for i in range(self._connection_combo.count()):
-                if self._connection_combo.itemData(i) == current_id:
-                    self._connection_combo.setCurrentIndex(i)
-                    break
-
-    def _set_default_connection(self, connection_id: str) -> None:
-        """
-        Set the default connection in the combo box.
-
-        Args:
-            connection_id: Connection ID to set as default
-        """
-        for i in range(self._connection_combo.count()):
-            if self._connection_combo.itemData(i) == connection_id:
-                self._connection_combo.setCurrentIndex(i)
-                break
-
-    def _show_connection_error(self, error_message: str) -> None:
-        """
-        Show a connection error message.
-
-        Args:
-            error_message: Error message to display
-        """
-        self._status_label.setText(f"Error: {error_message}")
-        QMessageBox.critical(
-            self,
-            "Connection Error",
-            f"Failed to load connections: {error_message}"
-        )
-
-    def _on_connection_selected(self, index: int) -> None:
-        """
-        Handle connection selection change.
-
-        Args:
-            index: Selected index in the combo box
-        """
-        conn_id = self._connection_combo.itemData(index)
-
-        if conn_id is None:
-            self._current_connection_id = None
-            self._connect_button.setText("Connect")
-            self._connect_button.setEnabled(False)
-            return
-
-        self._current_connection_id = conn_id
-        self._connect_button.setEnabled(True)
-
-        # Check if this connection is already connected
-        asyncio.create_task(self._check_connection_status(conn_id))
-
-    async def _check_connection_status(self, connection_id: str) -> None:
-        """
-        Check if a connection is already connected.
-
-        Args:
-            connection_id: Connection ID to check
-        """
+    async def _refresh_saved_queries(self) -> None:
+        """Refresh the saved queries list."""
         try:
-            # Get the connector (this won't connect if not already connected)
-            connector = None
-            if connection_id in self._plugin._active_connectors:
-                connector = self._plugin._active_connectors[connection_id]
+            queries = await self._plugin.get_saved_queries(self._current_connection_id)
 
-            # Update UI based on connection status
-            if connector and connector.is_connected:
-                # Already connected
-                if not self._concurrency_manager.is_main_thread():
-                    await self._concurrency_manager.run_on_main_thread(
-                        lambda: self._update_ui_connected(connection_id, True)
-                    )
-                else:
-                    self._update_ui_connected(connection_id, True)
-            else:
-                # Not connected
-                if not self._concurrency_manager.is_main_thread():
-                    await self._concurrency_manager.run_on_main_thread(
-                        lambda: self._update_ui_connected(connection_id, False)
-                    )
-                else:
-                    self._update_ui_connected(connection_id, False)
+            self._saved_queries_list.clear()
+
+            for query in queries:
+                item = QListWidgetItem(query.name)
+                item.setData(Qt.ItemDataRole.UserRole, query.id)
+                item.setToolTip(f"Description: {query.description or 'No description'}\n"
+                                f"Created: {query.created_at.strftime('%Y-%m-%d %H:%M')}")
+                self._saved_queries_list.addItem(item)
 
         except Exception as e:
-            self._logger.error(f"Error checking connection status: {str(e)}")
-            # Not connected or error
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._update_ui_connected(connection_id, False)
-                )
-            else:
-                self._update_ui_connected(connection_id, False)
+            self._logger.error(f"Failed to refresh saved queries: {e}")
 
-    def _update_ui_connected(self, connection_id: str, connected: bool) -> None:
-        """
-        Update UI to reflect connection status.
-
-        Args:
-            connection_id: Connection ID
-            connected: Whether the connection is active
-        """
-        if connected:
-            self._connect_button.setText("Disconnect")
-            self.connectionChanged.emit(connection_id, True)
-        else:
-            self._connect_button.setText("Connect")
-            self.connectionChanged.emit(connection_id, False)
-
-    def _on_connect_button_clicked(self) -> None:
-        """Handle connect/disconnect button click."""
-        if not self._current_connection_id:
-            return
-
-        # Check if we're already connected
-        if self._connect_button.text() == "Disconnect":
-            # Disconnect
-            self._disconnect_from_database()
-        else:
-            # Connect
-            self._connect_to_database()
-
-
-    def _connect_to_database(self) -> None:
-        """Connect to the selected database."""
-        if not self._current_connection_id:
-            self._status_label.setText("No connection selected")
-            return
-
-        # Update UI to show connecting state
-        self._status_label.setText("Connecting...")
-        self._progress_bar.setVisible(True)
-        self._connect_button.setEnabled(False)
-
-        # Start async connection task
-        asyncio.create_task(self._async_connect())
-
-    async def _async_connect(self) -> None:
-        """Asynchronously connect to the database."""
-        if not self._current_connection_id:
-            return
-
+    async def _refresh_schema(self) -> None:
+        """Refresh the database schema tree."""
         try:
-            # Get the connector (this will connect if not already connected)
-            await self._plugin.get_connector(self._current_connection_id)
+            if not self._current_connection_id:
+                self._schema_tree.clear()
+                return
 
-            # Update UI on success
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self.connectionChanged.emit(self._current_connection_id, True)
-                )
-            else:
-                self.connectionChanged.emit(self._current_connection_id, True)
+            tables = await self._plugin.get_tables(self._current_connection_id)
 
-            # Refresh the current view if needed
-            await self._refresh_current_view()
+            self._schema_tree.clear()
+
+            for table in tables:
+                table_item = QTreeWidgetItem([table["name"]])
+                table_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "table", "name": table["name"]})
+
+                # Add columns as children
+                for column in table.get("columns", []):
+                    column_text = f"{column['name']} ({column.get('type_name', 'UNKNOWN')})"
+                    if not column.get('nullable', True):
+                        column_text += " NOT NULL"
+
+                    column_item = QTreeWidgetItem([column_text])
+                    column_item.setData(0, Qt.ItemDataRole.UserRole, {
+                        "type": "column",
+                        "name": column['name'],
+                        "table": table["name"]
+                    })
+                    table_item.addChild(column_item)
+
+                self._schema_tree.addTopLevelItem(table_item)
+
+            self._schema_tree.expandAll()
 
         except Exception as e:
-            self._logger.error(f"Connection error: {str(e)}")
+            self._logger.error(f"Failed to refresh schema: {e}")
 
-            # Update UI on the main thread
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._handle_connection_error(str(e))
-                )
-            else:
-                self._handle_connection_error(str(e))
-
-    def _handle_connection_error(self, error_message: str) -> None:
-        """
-        Handle connection error.
-
-        Args:
-            error_message: Error message
-        """
-        self.connectionChanged.emit(self._current_connection_id, False)
-        QMessageBox.critical(
-            self,
-            "Connection Error",
-            f"Failed to connect to database: {error_message}"
-        )
-
-    def _disconnect_from_database(self) -> None:
-        """Disconnect from the database."""
-        if not self._current_connection_id:
-            return
-
-        # Update UI to show disconnecting state
-        self._status_label.setText("Disconnecting...")
-        self._progress_bar.setVisible(True)
-        self._connect_button.setEnabled(False)
-
-        # Start async disconnection task
-        asyncio.create_task(self._async_disconnect())
-
-    async def _async_disconnect(self) -> None:
-        """Asynchronously disconnect from the database."""
-        if not self._current_connection_id:
-            return
-
+    def _on_connection_changed(self, connection_name: str) -> None:
+        """Handle connection selection change."""
         try:
-            # Disconnect
-            await self._plugin.disconnect(self._current_connection_id)
+            connection_id = self._connection_combo.currentData()
+            self._current_connection_id = connection_id
 
-            # Update UI on success
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self.connectionChanged.emit(self._current_connection_id, False)
-                )
-            else:
-                self.connectionChanged.emit(self._current_connection_id, False)
+            # Enable/disable execute button
+            self._execute_button.setEnabled(connection_id is not None)
+
+            # Refresh dependent data
+            asyncio.create_task(self._refresh_saved_queries())
+            asyncio.create_task(self._refresh_schema())
+
+            self.status_changed.emit(f"Connected to: {connection_name}" if connection_id else "No connection selected")
 
         except Exception as e:
-            self._logger.error(f"Disconnection error: {str(e)}")
+            self._logger.error(f"Error changing connection: {e}")
 
-            # Update UI on the main thread
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._handle_disconnection_error(str(e))
-                )
+    def _on_schema_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+        """Handle double-click on schema item."""
+        try:
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if not data:
+                return
+
+            if data["type"] == "table":
+                # Insert table name
+                table_name = data["name"]
+                self._query_editor.insertPlainText(table_name)
+            elif data["type"] == "column":
+                # Insert column name
+                column_name = data["name"]
+                self._query_editor.insertPlainText(column_name)
+
+        except Exception as e:
+            self._logger.error(f"Error handling schema item click: {e}")
+
+    def _on_saved_query_double_clicked(self, item: QListWidgetItem) -> None:
+        """Handle double-click on saved query."""
+        try:
+            query_id = item.data(Qt.ItemDataRole.UserRole)
+            if not query_id:
+                return
+
+            # Load query into editor
+            asyncio.create_task(self._load_query(query_id))
+
+        except Exception as e:
+            self._logger.error(f"Error loading saved query: {e}")
+
+    async def _load_query(self, query_id: str) -> None:
+        """Load a saved query into the editor."""
+        try:
+            queries = await self._plugin.get_saved_queries()
+            query = next((q for q in queries if q.id == query_id), None)
+
+            if query:
+                self._query_editor.setPlainText(query.query_text)
+                self.status_changed.emit(f"Loaded query: {query.name}")
             else:
-                self._handle_disconnection_error(str(e))
+                self._show_error("Query Not Found", f"Query with ID {query_id} not found")
 
-    def _handle_disconnection_error(self, error_message: str) -> None:
-        """
-        Handle disconnection error.
+        except Exception as e:
+            self._logger.error(f"Failed to load query: {e}")
+            self._show_error("Load Error", f"Failed to load query: {e}")
 
-        Args:
-            error_message: Error message
-        """
-        # Even if there was an error, we should update the UI to disconnected state
-        self.connectionChanged.emit(self._current_connection_id, False)
+    def _on_query_text_changed(self) -> None:
+        """Handle query text changes."""
+        # Enable/disable buttons based on text content
+        has_text = bool(self._query_editor.toPlainText().strip())
+        has_connection = self._current_connection_id is not None
 
-        QMessageBox.warning(
-            self,
-            "Disconnection Warning",
-            f"Warning during disconnection: {error_message}"
-        )
+        self._execute_button.setEnabled(has_text and has_connection)
+        self._format_button.setEnabled(has_text)
+        self._save_query_button.setEnabled(has_text)
 
-    def _on_connection_status_changed(
-            self,
-            connection_id: str,
-            connected: bool
-    ) -> None:
-        """
-        Handle connection status change.
+    def _execute_query(self) -> None:
+        """Execute the current query."""
+        if not self._current_connection_id:
+            self._show_error("No Connection", "Please select a database connection first")
+            return
 
-        Args:
-            connection_id: Connection ID
-            connected: Whether the connection is active
-        """
-        if connected:
-            self._status_label.setText(f"Connected")
-            self._connect_button.setText("Disconnect")
+        query_text = self._query_editor.toPlainText().strip()
+        if not query_text:
+            self._show_error("No Query", "Please enter a query to execute")
+            return
 
-            # Update connection name in combo to show connected state
-            conn_name = "Unknown"
-            conn = self._plugin._connections.get(connection_id)
-            if conn:
-                conn_name = conn.name
+        asyncio.create_task(self._execute_query_async(query_text))
 
-            for i in range(self._connection_combo.count()):
-                if self._connection_combo.itemData(i) == connection_id:
-                    self._connection_combo.setItemText(i, f"{conn_name} (Connected)")
-                    break
-        else:
-            self._status_label.setText("Disconnected")
-            self._connect_button.setText("Connect")
+    async def _execute_query_async(self, query_text: str) -> None:
+        """Execute query asynchronously."""
+        try:
+            self.operation_started.emit("Executing query...")
 
-            # Reset connection name in combo
-            conn_name = "Unknown"
-            conn = self._plugin._connections.get(connection_id)
-            if conn:
-                conn_name = conn.name
+            # Get settings for query execution
+            settings = await self._plugin.get_settings()
+            limit = settings.query_limit if settings.auto_limit_queries else None
 
-            for i in range(self._connection_combo.count()):
-                if self._connection_combo.itemData(i) == connection_id:
-                    self._connection_combo.setItemText(i, conn_name)
-                    break
+            # Execute query
+            result = await self._plugin.execute_query(
+                connection_id=self._current_connection_id,
+                query=query_text,
+                limit=limit
+            )
 
-        self._progress_bar.setVisible(False)
-        self._connect_button.setEnabled(True)
+            self._current_query_result = result
 
-        # Update execute action based on connection status
-        self._execute_action.setEnabled(connected)
+            self.operation_finished.emit()
 
-        # Update other components
-        self._query_editor.set_connection_status(connection_id, connected)
-        self._field_mapping.set_connection_status(connection_id, connected)
-        self._validation.set_connection_status(connection_id, connected)
-        self._history.set_connection_status(connection_id, connected)
+            # Emit signal to show results in results tab
+            self.query_executed.emit(result)
 
-    def _on_new_connection(self) -> None:
+            self.status_changed.emit(
+                f"Query executed: {result.row_count} rows in {result.execution_time_ms}ms"
+            )
+
+        except Exception as e:
+            self.operation_finished.emit()
+            self._logger.error(f"Query execution failed: {e}")
+            self._show_error("Query Error", f"Failed to execute query: {e}")
+
+    def _format_query(self) -> None:
+        """Format the current query."""
+        try:
+            query_text = self._query_editor.toPlainText()
+            if not query_text.strip():
+                return
+
+            # Use query service to format SQL
+            if hasattr(self._plugin, '_query_service') and self._plugin._query_service:
+                formatted_query = self._plugin._query_service.format_sql(query_text)
+                self._query_editor.setPlainText(formatted_query)
+                self.status_changed.emit("Query formatted")
+            else:
+                self._show_warning("Format Unavailable", "SQL formatting service not available")
+
+        except Exception as e:
+            self._logger.error(f"Failed to format query: {e}")
+            self._show_error("Format Error", f"Failed to format query: {e}")
+
+    def _save_current_query(self) -> None:
+        """Save the current query."""
+        query_text = self._query_editor.toPlainText().strip()
+        if not query_text:
+            self._show_error("No Query", "Please enter a query to save")
+            return
+
+        if not self._current_connection_id:
+            self._show_error("No Connection", "Please select a connection first")
+            return
+
+        # Show query dialog for saving
+        dialog = QueryDialog(self)
+        dialog.set_query_text(query_text)
+        dialog.set_connection_id(self._current_connection_id)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            query = dialog.get_query()
+            asyncio.create_task(self._save_query_async(query))
+
+    async def _save_query_async(self, query: SavedQuery) -> None:
+        """Save query asynchronously."""
+        try:
+            await self._plugin.save_query(query)
+            await self._refresh_saved_queries()
+            self.status_changed.emit(f"Query saved: {query.name}")
+
+        except Exception as e:
+            self._logger.error(f"Failed to save query: {e}")
+            self._show_error("Save Error", f"Failed to save query: {e}")
+
+    def _clear_query(self) -> None:
+        """Clear the query editor."""
+        self._query_editor.clear()
+        self.status_changed.emit("Query cleared")
+
+    def _create_connection(self) -> None:
         """Create a new database connection."""
-        dialog = ConnectionDialog(parent=self)
-        if dialog.exec() == ConnectionDialog.Accepted:
-            new_connection = dialog.get_connection_config()
+        dialog = ConnectionDialog(self)
 
-            # Save the connection asynchronously
-            asyncio.create_task(self._async_save_connection(new_connection))
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            connection = dialog.get_connection()
+            asyncio.create_task(self._create_connection_async(connection))
 
-    async def _async_save_connection(
-            self,
-            connection: BaseConnectionConfig
-    ) -> None:
-        """
-        Asynchronously save a connection.
-
-        Args:
-            connection: Connection configuration to save
-        """
+    async def _create_connection_async(self, connection: DatabaseConnection) -> None:
+        """Create connection asynchronously."""
         try:
-            # Save the connection
-            await self._plugin.save_connection(connection)
+            self.operation_started.emit("Creating connection...")
 
-            # Reload the connection list
-            await self._async_load_connections()
+            await self._plugin.create_connection(connection)
+            await self._refresh_connections()
 
-            # Switch to the new connection
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._select_connection(connection.id)
-                )
-            else:
-                self._select_connection(connection.id)
+            # Select the new connection
+            index = self._connection_combo.findText(connection.name)
+            if index >= 0:
+                self._connection_combo.setCurrentIndex(index)
 
-            # Update status
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._status_label.setText(f"Created new connection: {connection.name}")
-                )
-            else:
-                self._status_label.setText(f"Created new connection: {connection.name}")
+            self.operation_finished.emit()
+            self.status_changed.emit(f"Connection created: {connection.name}")
 
         except Exception as e:
-            self._logger.error(f"Failed to save connection: {str(e)}")
+            self.operation_finished.emit()
+            self._logger.error(f"Failed to create connection: {e}")
+            self._show_error("Connection Error", f"Failed to create connection: {e}")
 
-            # Show error on the main thread
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: QMessageBox.critical(
-                        self,
-                        "Connection Error",
-                        f"Failed to save connection: {str(e)}"
-                    )
-                )
-            else:
-                QMessageBox.critical(
-                    self,
-                    "Connection Error",
-                    f"Failed to save connection: {str(e)}"
-                )
-
-    def _select_connection(self, connection_id: str) -> None:
-        """
-        Select a connection in the combo box.
-
-        Args:
-            connection_id: Connection ID to select
-        """
-        for i in range(self._connection_combo.count()):
-            if self._connection_combo.itemData(i) == connection_id:
-                self._connection_combo.setCurrentIndex(i)
-                break
-
-    def _on_edit_connection(self) -> None:
+    def _edit_connection(self) -> None:
         """Edit the current connection."""
         if not self._current_connection_id:
-            QMessageBox.warning(
-                self,
-                "No Connection Selected",
-                "Please select a connection to edit."
-            )
+            self._show_error("No Connection", "Please select a connection to edit")
             return
 
-        # Check if the connection is active
-        is_connected = False
-        if self._current_connection_id in self._plugin._active_connectors:
-            connector = self._plugin._active_connectors[self._current_connection_id]
-            is_connected = connector.is_connected
+        asyncio.create_task(self._edit_connection_async())
 
-        if is_connected:
-            QMessageBox.warning(
-                self,
-                "Connection Active",
-                "Please disconnect before editing the connection."
-            )
+    async def _edit_connection_async(self) -> None:
+        """Edit connection asynchronously."""
+        try:
+            # Get current connection
+            connections = await self._plugin.get_connections()
+            connection = next((c for c in connections if c.id == self._current_connection_id), None)
+
+            if not connection:
+                self._show_error("Connection Not Found", "Selected connection not found")
+                return
+
+            dialog = ConnectionDialog(self)
+            dialog.set_connection(connection)
+
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                updated_connection = dialog.get_connection()
+
+                self.operation_started.emit("Updating connection...")
+
+                await self._plugin.update_connection(updated_connection)
+                await self._refresh_connections()
+
+                self.operation_finished.emit()
+                self.status_changed.emit(f"Connection updated: {updated_connection.name}")
+
+        except Exception as e:
+            self.operation_finished.emit()
+            self._logger.error(f"Failed to edit connection: {e}")
+            self._show_error("Edit Error", f"Failed to edit connection: {e}")
+
+    def _test_connection(self) -> None:
+        """Test the current connection."""
+        if not self._current_connection_id:
+            self._show_error("No Connection", "Please select a connection to test")
             return
 
-        # Get the connection config
-        conn_config = self._plugin._connections.get(self._current_connection_id)
-        if not conn_config:
-            QMessageBox.warning(
-                self,
-                "Connection Not Found",
-                "The selected connection could not be found."
-            )
-            return
+        asyncio.create_task(self._test_connection_async())
 
-        # Create and show the edit dialog
-        dialog = ConnectionDialog(parent=self, connection=conn_config)
-        if dialog.exec() == ConnectionDialog.Accepted:
-            updated_connection = dialog.get_connection_config()
+    async def _test_connection_async(self) -> None:
+        """Test connection asynchronously."""
+        try:
+            self.operation_started.emit("Testing connection...")
 
-            # Save the updated connection asynchronously
-            asyncio.create_task(self._async_save_connection(updated_connection))
+            success, error = await self._plugin.test_connection(self._current_connection_id)
 
-    def _on_delete_connection(self) -> None:
+            self.operation_finished.emit()
+
+            if success:
+                self._show_info("Connection Test", "Connection test successful!")
+                self.status_changed.emit("Connection test successful")
+            else:
+                self._show_error("Connection Test Failed", f"Connection test failed: {error}")
+
+        except Exception as e:
+            self.operation_finished.emit()
+            self._logger.error(f"Connection test failed: {e}")
+            self._show_error("Test Error", f"Connection test failed: {e}")
+
+    def _delete_connection(self) -> None:
         """Delete the current connection."""
         if not self._current_connection_id:
-            QMessageBox.warning(
-                self,
-                "No Connection Selected",
-                "Please select a connection to delete."
-            )
+            self._show_error("No Connection", "Please select a connection to delete")
             return
-
-        # Check if the connection is active
-        is_connected = False
-        if self._current_connection_id in self._plugin._active_connectors:
-            connector = self._plugin._active_connectors[self._current_connection_id]
-            is_connected = connector.is_connected
-
-        if is_connected:
-            QMessageBox.warning(
-                self,
-                "Connection Active",
-                "Please disconnect before deleting the connection."
-            )
-            return
-
-        # Get the connection name for confirmation
-        conn_name = "the selected connection"
-        conn_config = self._plugin._connections.get(self._current_connection_id)
-        if conn_config:
-            conn_name = conn_config.name
 
         # Confirm deletion
         reply = QMessageBox.question(
             self,
             "Confirm Deletion",
-            f"Are you sure you want to delete the connection '{conn_name}'?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            "Are you sure you want to delete this connection?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
         )
 
-        if reply != QMessageBox.Yes:
-            return
+        if reply == QMessageBox.StandardButton.Yes:
+            asyncio.create_task(self._delete_connection_async())
 
-        # Delete the connection asynchronously
-        asyncio.create_task(self._async_delete_connection(self._current_connection_id))
-
-    async def _async_delete_connection(self, connection_id: str) -> None:
-        """
-        Asynchronously delete a connection.
-
-        Args:
-            connection_id: Connection ID to delete
-        """
+    async def _delete_connection_async(self) -> None:
+        """Delete connection asynchronously."""
         try:
-            # Get the connection name for status message
-            conn_name = "Connection"
-            conn_config = self._plugin._connections.get(connection_id)
-            if conn_config:
-                conn_name = conn_config.name
+            self.operation_started.emit("Deleting connection...")
 
-            # Delete the connection
-            await self._plugin.delete_connection(connection_id)
+            success = await self._plugin.delete_connection(self._current_connection_id)
 
-            # Reload the connection list
-            await self._async_load_connections()
-
-            # Update status
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._status_label.setText(f"Deleted connection: {conn_name}")
-                )
+            if success:
+                await self._refresh_connections()
+                self._current_connection_id = None
+                self.status_changed.emit("Connection deleted")
             else:
-                self._status_label.setText(f"Deleted connection: {conn_name}")
+                self._show_error("Delete Error", "Failed to delete connection")
+
+            self.operation_finished.emit()
 
         except Exception as e:
-            self._logger.error(f"Failed to delete connection: {str(e)}")
+            self.operation_finished.emit()
+            self._logger.error(f"Failed to delete connection: {e}")
+            self._show_error("Delete Error", f"Failed to delete connection: {e}")
 
-            # Show error on the main thread
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: QMessageBox.critical(
-                        self,
-                        "Connection Error",
-                        f"Failed to delete connection: {str(e)}"
-                    )
-                )
-            else:
-                QMessageBox.critical(
-                    self,
-                    "Connection Error",
-                    f"Failed to delete connection: {str(e)}"
-                )
-
-    def open_connection_manager(self) -> None:
-        """Open the connection manager dialog."""
-        dialog = ConnectionManagerDialog(self._plugin._connections, parent=self)
-        if dialog.exec() == ConnectionManagerDialog.Accepted:
-            # Get the updated connections
-            updated_connections = dialog.get_connections()
-
-            # Save all connections asynchronously
-            asyncio.create_task(self._async_save_all_connections(updated_connections))
-
-    def open_settings_dialog(self) -> None:
-        """Open the settings dialog."""
-        dialog = SettingsDialog(self._plugin, logger=self._logger, parent=self)
-        if dialog.exec() == SettingsDialog.Accepted:
-            # Save settings and update UI as needed
-            asyncio.create_task(self.refresh_after_settings_update())
-
-    async def refresh_after_settings_update(self) -> None:
-        history_manager = self._plugin._history_manager
-        validation_engine = self._plugin._validation_engine
-        settings = self._plugin._settings
-
-        if settings and settings.history_database_connection_id:
-            # Set the database connection ID
-            history_manager._history_connection_id = settings.history_database_connection_id
-            validation_engine._validation_connection_id = settings.history_database_connection_id
-
-            try:
-                # Initialize services
-                await history_manager.initialize()
-                await validation_engine.initialize()
-
-                # Also update the tabs to reflect these changes
-                self._logger.info("History and validation services initialized successfully")
-            except Exception as e:
-                self._logger.error(f'Error initializing history/validation: {str(e)}')
-                QMessageBox.warning(
-                    self,
-                    'Initialization Error',
-                    f'Error initializing history/validation services: {str(e)}\n\n'
-                    f'Please check your database configuration.'
-                )
-
-        # Refresh all tabs
-        await self._query_editor.refresh()
-        await self._field_mapping.refresh()
-        await self._validation.refresh()
-        await self._history.refresh()
-
-    def prompt_for_history_db_setup(self) -> None:
-        """Prompt the user to set up a history/validation database if none is configured.
-
-        Args:
-            main_tab_instance: The DatabaseConnectorTab instance
-        """
-        settings = self._plugin._settings
-
-        # Check if history database is already configured
-        if settings and settings.history_database_connection_id:
+    def _create_query(self) -> None:
+        """Create a new saved query."""
+        if not self._current_connection_id:
+            self._show_error("No Connection", "Please select a connection first")
             return
 
-        # Ask the user if they want to configure it
+        dialog = QueryDialog(self)
+        dialog.set_connection_id(self._current_connection_id)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            query = dialog.get_query()
+            asyncio.create_task(self._save_query_async(query))
+
+    def _edit_query(self) -> None:
+        """Edit the selected saved query."""
+        current_item = self._saved_queries_list.currentItem()
+        if not current_item:
+            self._show_error("No Query Selected", "Please select a query to edit")
+            return
+
+        query_id = current_item.data(Qt.ItemDataRole.UserRole)
+        asyncio.create_task(self._edit_query_async(query_id))
+
+    async def _edit_query_async(self, query_id: str) -> None:
+        """Edit query asynchronously."""
+        try:
+            # Get current query
+            queries = await self._plugin.get_saved_queries()
+            query = next((q for q in queries if q.id == query_id), None)
+
+            if not query:
+                self._show_error("Query Not Found", "Selected query not found")
+                return
+
+            dialog = QueryDialog(self)
+            dialog.set_query(query)
+
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                updated_query = dialog.get_query()
+
+                await self._plugin.save_query(updated_query)
+                await self._refresh_saved_queries()
+
+                self.status_changed.emit(f"Query updated: {updated_query.name}")
+
+        except Exception as e:
+            self._logger.error(f"Failed to edit query: {e}")
+            self._show_error("Edit Error", f"Failed to edit query: {e}")
+
+    def _delete_query(self) -> None:
+        """Delete the selected saved query."""
+        current_item = self._saved_queries_list.currentItem()
+        if not current_item:
+            self._show_error("No Query Selected", "Please select a query to delete")
+            return
+
+        # Confirm deletion
         reply = QMessageBox.question(
             self,
-            'Configure History and Validation',
-            'Would you like to set up a database for storing history and validation data?\n\n'
-            'This enables features like query history, data validation, and field mappings.',
-            QMessageBox.Yes | QMessageBox.No
+            "Confirm Deletion",
+            f"Are you sure you want to delete the query '{current_item.text()}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
         )
 
-        if reply == QMessageBox.Yes:
-            # Show file dialog to create SQLite database
-            file_path, _ = QFileDialog.getSaveFileName(
-                self,
-                'Create SQLite Database for History/Validation',
-                '',
-                'SQLite Databases (*.db *.sqlite *.sqlite3);;All Files (*.*)'
-            )
+        if reply == QMessageBox.StandardButton.Yes:
+            query_id = current_item.data(Qt.ItemDataRole.UserRole)
+            asyncio.create_task(self._delete_query_async(query_id))
 
-            if file_path:
-                # Add .db extension if none specified
-                if not any(file_path.lower().endswith(ext) for ext in ['.db', '.sqlite', '.sqlite3']):
-                    file_path += '.db'
-
-                # Create and save SQLite connection
-                connection_name = "History and Validation Database"
-
-                config = SQLiteConnectionConfig(
-                    name=connection_name,
-                    database=file_path,
-                    username="sqlite",
-                    password="",
-                    read_only=False  # Need write access
-                )
-
-                # Save the connection and update settings
-                asyncio.create_task(self.setup_history_db(config))
-
-    async def setup_history_db(self, config: SQLiteConnectionConfig) -> None:
-        """Set up the history database.
-
-        Args:
-            main_tab_instance: The DatabaseConnectorTab instance
-            config: SQLite connection configuration
-        """
+    async def _delete_query_async(self, query_id: str) -> None:
+        """Delete query asynchronously."""
         try:
-            # Save the connection
-            conn_id = await self._plugin.save_connection(config)
+            success = await self._plugin.delete_query(query_id)
 
-            # Update settings to use this connection for history/validation
-            settings = self._plugin._settings
-
-            settings.history_database_connection_id = conn_id
-            await self._plugin._save_settings()
-
-            # Initialize history and validation with new connection
-            history_manager = self._plugin._history_manager
-            validation_engine = self._plugin._validation_engine
-
-            history_manager._history_connection_id = conn_id
-            validation_engine._validation_connection_id = conn_id
-
-            await history_manager.initialize()
-            await validation_engine.initialize()
-
-            # Refresh UI
-            await self.refresh_after_settings_update()
-
-            QMessageBox.information(
-                self,
-                'Setup Complete',
-                f'History and validation database has been configured.\n\n'
-                f'Database: {config.database}\n'
-                f'History and validation features are now available.'
-            )
+            if success:
+                await self._refresh_saved_queries()
+                self.status_changed.emit("Query deleted")
+            else:
+                self._show_error("Delete Error", "Failed to delete query")
 
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                'Setup Error',
-                f'Failed to set up history database: {str(e)}'
-            )
+            self._logger.error(f"Failed to delete query: {e}")
+            self._show_error("Delete Error", f"Failed to delete query: {e}")
 
-    async def _async_save_all_connections(
-            self,
-            connections: Dict[str, BaseConnectionConfig]
-    ) -> None:
-        """
-        Asynchronously save multiple connections.
+    def _show_query_context_menu(self, position) -> None:
+        """Show context menu for saved queries."""
+        item = self._saved_queries_list.itemAt(position)
+        if not item:
+            return
 
-        Args:
-            connections: Dictionary of connection configurations
-        """
+        menu = QMenu(self)
+
+        load_action = menu.addAction("Load Query")
+        load_action.triggered.connect(lambda: self._on_saved_query_double_clicked(item))
+
+        edit_action = menu.addAction("Edit Query")
+        edit_action.triggered.connect(self._edit_query)
+
+        delete_action = menu.addAction("Delete Query")
+        delete_action.triggered.connect(self._delete_query)
+
+        menu.exec(self._saved_queries_list.mapToGlobal(position))
+
+    def _show_error(self, title: str, message: str) -> None:
+        """Show error message dialog."""
+        QMessageBox.critical(self, title, message)
+
+    def _show_info(self, title: str, message: str) -> None:
+        """Show information message dialog."""
+        QMessageBox.information(self, title, message)
+
+    def _show_warning(self, title: str, message: str) -> None:
+        """Show warning message dialog."""
+        QMessageBox.warning(self, title, message)
+
+    def cleanup(self) -> None:
+        """Cleanup resources."""
         try:
-            # Save each connection
-            for connection in connections.values():
-                await self._plugin.save_connection(connection)
-
-            # Reload the connection list
-            await self._async_load_connections()
-
-            # Update status
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._status_label.setText("Connections updated")
-                )
-            else:
-                self._status_label.setText("Connections updated")
-
+            if self._refresh_timer:
+                self._refresh_timer.stop()
         except Exception as e:
-            self._logger.error(f"Failed to save connections: {str(e)}")
-
-            # Show error on the main thread
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: QMessageBox.critical(
-                        self,
-                        "Connection Error",
-                        f"Failed to save connections: {str(e)}"
-                    )
-                )
-            else:
-                QMessageBox.critical(
-                    self,
-                    "Connection Error",
-                    f"Failed to save connections: {str(e)}"
-                )
-
-    def _execute_current_query(self) -> None:
-        """Execute the current query from the query editor."""
-        if self._query_running:
-            self._logger.warning("Query already running, ignoring request")
-            return
-
-        # Make sure we have an active connection
-        if not self._current_connection_id:
-            QMessageBox.warning(
-                self,
-                "No Active Connection",
-                "Please connect to a database before executing a query."
-            )
-            return
-
-        # Make sure the connection is active
-        is_connected = False
-        if self._current_connection_id in self._plugin._active_connectors:
-            connector = self._plugin._active_connectors[self._current_connection_id]
-            is_connected = connector.is_connected
-
-        if not is_connected:
-            QMessageBox.warning(
-                self,
-                "Not Connected",
-                "Please connect to the database before executing a query."
-            )
-            return
-
-        # Get the query and parameters from the editor
-        query_text = self._query_editor.get_query_text()
-        if not query_text.strip():
-            QMessageBox.warning(
-                self,
-                "Empty Query",
-                "Please enter a SQL query to execute."
-            )
-            return
-
-        params = self._query_editor.get_parameters()
-        limit = self._query_editor.get_limit()
-        mapping_id = self._query_editor.get_mapping_id()
-
-        # Execute the query asynchronously
-        self.queryStarted.emit(self._current_connection_id)
-        asyncio.create_task(
-            self._async_execute_query(
-                self._current_connection_id,
-                query_text,
-                params,
-                limit,
-                mapping_id
-            )
-        )
-
-    async def _async_execute_query(
-            self,
-            connection_id: str,
-            query: str,
-            params: Optional[Dict[str, Any]] = None,
-            limit: Optional[int] = None,
-            mapping_id: Optional[str] = None
-    ) -> None:
-        """
-        Asynchronously execute a query.
-
-        Args:
-            connection_id: Connection ID
-            query: SQL query
-            params: Optional parameters
-            limit: Optional result limit
-            mapping_id: Optional field mapping ID
-        """
-        try:
-            # Execute the query
-            result = await self._plugin.execute_query(
-                connection_id=connection_id,
-                query=query,
-                params=params,
-                limit=limit,
-                mapping_id=mapping_id
-            )
-
-            # Store the result
-            self._current_query_result = result
-
-            # Update the results view on the main thread
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._update_results(result)
-                )
-            else:
-                self._update_results(result)
-
-            # Signal success
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self.queryFinished.emit(connection_id, True)
-                )
-            else:
-                self.queryFinished.emit(connection_id, True)
-
-        except Exception as e:
-            self._logger.error(f"Query execution error: {str(e)}")
-
-            # Signal failure
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._handle_query_error(connection_id, str(e))
-                )
-            else:
-                self._handle_query_error(connection_id, str(e))
-
-    def _update_results(self, result: QueryResult) -> None:
-        """
-        Update the results view with query results.
-
-        Args:
-            result: Query result
-        """
-        # Update the results view
-        self._results_view.set_query_result(result)
-
-        # Switch to the results tab
-        self._tab_widget.setCurrentWidget(self._results_view)
-
-        # Enable export action
-        self._export_action.setEnabled(True)
-
-    def _handle_query_error(self, connection_id: str, error_message: str) -> None:
-        """
-        Handle query execution error.
-
-        Args:
-            connection_id: Connection ID
-            error_message: Error message
-        """
-        self.queryFinished.emit(connection_id, False)
-
-        QMessageBox.critical(
-            self,
-            "Query Error",
-            f"Failed to execute query: {error_message}"
-        )
-
-    def _cancel_current_query(self) -> None:
-        """Cancel the current running query."""
-        if not self._query_running:
-            return
-
-        if not self._current_connection_id:
-            return
-
-        self._logger.debug("Cancelling query")
-
-        # Get the connector and cancel the query
-        connector = None
-        if self._current_connection_id in self._plugin._active_connectors:
-            connector = self._plugin._active_connectors[self._current_connection_id]
-
-        if connector:
-            asyncio.create_task(connector.cancel_query())
-
-    def _on_query_started(self, connection_id: str) -> None:
-        """
-        Handle query started event.
-
-        Args:
-            connection_id: Connection ID
-        """
-        self._query_running = True
-        self._status_label.setText("Executing query...")
-        self._progress_bar.setVisible(True)
-
-        # Update button states
-        self._execute_action.setEnabled(False)
-        self._cancel_action.setEnabled(True)
-
-    def _on_query_finished(self, connection_id: str, success: bool) -> None:
-        """
-        Handle query finished event.
-
-        Args:
-            connection_id: Connection ID
-            success: Whether the query succeeded
-        """
-        self._query_running = False
-        self._progress_bar.setVisible(False)
-
-        # Update button states
-        self._execute_action.setEnabled(True)
-        self._cancel_action.setEnabled(False)
-
-        # Update status
-        if success and self._current_query_result:
-            execution_time = self._current_query_result.execution_time_ms
-            row_count = self._current_query_result.row_count
-            self._status_label.setText(
-                f"Query executed successfully in {execution_time} ms, {row_count} rows returned"
-            )
-        else:
-            self._status_label.setText("Query execution failed")
-
-    def _on_save_query(self) -> None:
-        """Save the current query."""
-        if not self._current_connection_id:
-            QMessageBox.warning(
-                self,
-                "No Connection Selected",
-                "Please select a connection before saving a query."
-            )
-            return
-
-        query_text = self._query_editor.get_query_text()
-        if not query_text.strip():
-            QMessageBox.warning(
-                self,
-                "Empty Query",
-                "Cannot save an empty query."
-            )
-            return
-
-        # Get a name for the query
-        name, ok = QInputDialog.getText(
-            self,
-            "Save Query",
-            "Enter a name for the query:",
-            text=self._query_editor.get_current_query_name()
-        )
-
-        if not ok or not name:
-            return
-
-        # Create or update the saved query
-        params = self._query_editor.get_parameters()
-        query_id = self._query_editor.get_current_query_id()
-        mapping_id = self._query_editor.get_mapping_id()
-
-        if query_id and query_id in self._plugin._saved_queries:
-            # Update existing query
-            query = self._plugin._saved_queries[query_id]
-            query.name = name
-            query.query_text = query_text
-            query.parameters = params
-            query.connection_id = self._current_connection_id
-            query.updated_at = datetime.datetime.now()
-            query.field_mapping_id = mapping_id
-        else:
-            # Create new query
-            query = SavedQuery(
-                name=name,
-                query_text=query_text,
-                parameters=params,
-                connection_id=self._current_connection_id,
-                field_mapping_id=mapping_id
-            )
-
-        # Save the query asynchronously
-        asyncio.create_task(self._async_save_query(query))
-
-    async def _async_save_query(self, query: SavedQuery) -> None:
-        """
-        Asynchronously save a query.
-
-        Args:
-            query: Query to save
-        """
-        try:
-            # Save the query
-            await self._plugin.save_query(query)
-
-            # Reload queries in the query editor
-            await self._query_editor.reload_queries()
-
-            # Update status
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: self._status_label.setText(f"Saved query: {query.name}")
-                )
-            else:
-                self._status_label.setText(f"Saved query: {query.name}")
-
-        except Exception as e:
-            self._logger.error(f"Failed to save query: {str(e)}")
-
-            # Show error on the main thread
-            if not self._concurrency_manager.is_main_thread():
-                await self._concurrency_manager.run_on_main_thread(
-                    lambda: QMessageBox.critical(
-                        self,
-                        "Query Error",
-                        f"Failed to save query: {str(e)}"
-                    )
-                )
-            else:
-                QMessageBox.critical(
-                    self,
-                    "Query Error",
-                    f"Failed to save query: {str(e)}"
-                )
-
-    def _export_results(self) -> None:
-        """Export the current query results."""
-        if not self._current_query_result or not self._current_query_result.records:
-            QMessageBox.warning(
-                self,
-                "No Results",
-                "There are no results to export."
-            )
-            return
-
-        # Get the export file path
-        file_path, selected_filter = QFileDialog.getSaveFileName(
-            self,
-            "Export Results",
-            "",
-            "CSV Files (*.csv);;JSON Files (*.json);;Excel Files (*.xlsx)"
-        )
-
-        if not file_path:
-            return
-
-        # Export based on file extension
-        try:
-            if file_path.endswith(".csv"):
-                self._export_as_csv(file_path)
-            elif file_path.endswith(".json"):
-                self._export_as_json(file_path)
-            elif file_path.endswith(".xlsx"):
-                self._export_as_excel(file_path)
-            else:
-                # Default to CSV if no extension
-                if not file_path.endswith(".csv"):
-                    file_path += ".csv"
-                self._export_as_csv(file_path)
-
-            self._status_label.setText(f"Results exported to {file_path}")
-
-        except Exception as e:
-            self._logger.error(f"Export error: {str(e)}")
-            QMessageBox.critical(
-                self,
-                "Export Error",
-                f"Failed to export results: {str(e)}"
-            )
-
-    def _export_as_csv(self, file_path: str) -> None:
-        """
-        Export results as CSV.
-
-        Args:
-            file_path: Export file path
-        """
-        import csv
-
-        with open(file_path, "w", newline="") as f:
-            headers = [col.name for col in self._current_query_result.columns]
-            writer = csv.DictWriter(f, fieldnames=headers)
-            writer.writeheader()
-
-            # Use mapped records if available, otherwise use regular records
-            records = (
-                self._current_query_result.mapped_records
-                if self._current_query_result.mapped_records
-                else self._current_query_result.records
-            )
-
-            for record in records:
-                # Replace None with empty string for CSV
-                row = {k: "" if v is None else v for k, v in record.items()}
-                writer.writerow(row)
-
-    def _export_as_json(self, file_path: str) -> None:
-        """
-        Export results as JSON.
-
-        Args:
-            file_path: Export file path
-        """
-        # Use mapped records if available, otherwise use regular records
-        records = (
-            self._current_query_result.mapped_records
-            if self._current_query_result.mapped_records
-            else self._current_query_result.records
-        )
-
-        export_data = {
-            "query": self._current_query_result.query,
-            "executed_at": self._current_query_result.executed_at.isoformat(),
-            "execution_time_ms": self._current_query_result.execution_time_ms,
-            "row_count": self._current_query_result.row_count,
-            "records": records
-        }
-
-        with open(file_path, "w") as f:
-            json.dump(export_data, f, indent=2, default=str)
-
-    def _export_as_excel(self, file_path: str) -> None:
-        """
-        Export results as Excel.
-
-        Args:
-            file_path: Export file path
-        """
-        try:
-            import openpyxl
-            from openpyxl import Workbook
-        except ImportError:
-            QMessageBox.critical(
-                self,
-                "Missing Dependency",
-                "Excel export requires the openpyxl package. "
-                "Please install it with 'pip install openpyxl'."
-            )
-            return
-
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Query Results"
-
-        # Get headers
-        headers = [col.name for col in self._current_query_result.columns]
-        ws.append(headers)
-
-        # Use mapped records if available, otherwise use regular records
-        records = (
-            self._current_query_result.mapped_records
-            if self._current_query_result.mapped_records
-            else self._current_query_result.records
-        )
-
-        # Add data
-        for record in records:
-            ws.append([record.get(col) for col in headers])
-
-        wb.save(file_path)
-
-    def _on_tab_changed(self, index: int) -> None:
-        """
-        Handle tab change.
-
-        Args:
-            index: New tab index
-        """
-        # Update the current tab
-        current_widget = self._tab_widget.widget(index)
-
-        # Execute action is only available for query editor
-        try:
-            self._execute_action.setEnabled(
-                current_widget == self._query_editor and
-                self._current_connection_id and
-                self._current_connection_id in self._plugin._active_connectors and
-                self._plugin._active_connectors[self._current_connection_id].is_connected
-            )
-        except TypeError as e:
-            self._logger.warning(f"Failed to enable execute action, defaulting to False: {str(e)}")
-
-        # Export action is only available for results with data
-        try:
-            self._export_action.setEnabled(
-                current_widget == self._results_view and
-                self._current_query_result is not None and
-                self._current_query_result.records
-            )
-        except TypeError as e:
-            self._logger.warning(f"Error checking export action, defaulting to False: {str(e)}")
-            self._export_action.setEnabled(False)
-
-    async def _refresh_current_view(self) -> None:
-        """Refresh the current view based on the selected tab."""
-        current_widget = self._tab_widget.currentWidget()
-
-        if current_widget == self._query_editor:
-            await self._query_editor.refresh()
-        elif current_widget == self._field_mapping:
-            await self._field_mapping.refresh()
-        elif current_widget == self._validation:
-            await self._validation.refresh()
-        elif current_widget == self._history:
-            await self._history.refresh()
-
-    # Public methods for switching tabs
-
-    def switch_to_query_editor(self) -> None:
-        """Switch to the query editor tab."""
-        self._tab_widget.setCurrentWidget(self._query_editor)
-
-    def switch_to_results(self) -> None:
-        """Switch to the results tab."""
-        self._tab_widget.setCurrentWidget(self._results_view)
-
-    def switch_to_mapping_editor(self) -> None:
-        """Switch to the field mapping tab."""
-        self._tab_widget.setCurrentWidget(self._field_mapping)
-
-    def switch_to_validation(self) -> None:
-        """Switch to the validation tab."""
-        self._tab_widget.setCurrentWidget(self._validation)
-
-    def switch_to_history(self) -> None:
-        """Switch to the history tab."""
-        self._tab_widget.setCurrentWidget(self._history)
-
-    def handle_config_change(self, key: str, value: Any) -> None:
-        """
-        Handle configuration changes.
-
-        Args:
-            key: Config key
-            value: New value
-        """
-        # Reload recent connections if settings changed
-        if key == f"plugins.{self._plugin.name}.settings":
-            self._load_recent_connections()
+            self._logger.error(f"Error during cleanup: {e}")
+
+    # Public API
+    def get_current_connection_id(self) -> Optional[str]:
+        """Get the current connection ID."""
+        return self._current_connection_id
+
+    def set_query_text(self, text: str) -> None:
+        """Set the query editor text."""
+        if self._query_editor:
+            self._query_editor.setPlainText(text)
+
+    def get_query_text(self) -> str:
+        """Get the query editor text."""
+        return self._query_editor.toPlainText() if self._query_editor else ""

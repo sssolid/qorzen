@@ -40,7 +40,7 @@ class User:
 
     Attributes:
         id: Unique user ID
-        username: Username
+        user: Username
         email: Email address
         hashed_password: Hashed password
         roles: List of user roles

@@ -92,8 +92,8 @@ class AS400Connector(BaseDatabaseConnector):
         jdbc_url = self._build_jdbc_url()
 
         properties = {
-            "user": self._config.username,
-            "password": self._config.password.get_secret_value(),
+            "user": self._config.user,
+            "password": self._config.password,
             "secure": "true" if self._config.ssl else "false",
             "prompt": "false",
             "libraries": self._config.database,
@@ -110,11 +110,11 @@ class AS400Connector(BaseDatabaseConnector):
         return DatabaseConnectionConfig(
             name=self._registered_connection_id or f"as400_{self._config.name}",
             db_type="jdbc",
-            host=self._config.server,
+            host=self._config.host,
             port=self._config.port or 446,
             database=self._config.database,
-            user=self._config.username,
-            password=self._config.password.get_secret_value(),
+            user=self._config.user,
+            password=self._config.password,
             pool_size=1,
             max_overflow=0,
             url=jdbc_url,
@@ -187,7 +187,7 @@ class AS400Connector(BaseDatabaseConnector):
 
             jdbc_url = self._build_jdbc_url()
             self._connection_properties = {
-                "user": self._config.username,
+                "user": self._config.user,
                 "secure": "true" if self._config.ssl else "false",
                 "prompt": "false",
                 "libraries": self._config.database,
@@ -245,8 +245,8 @@ class AS400Connector(BaseDatabaseConnector):
             jdbc_url = self._build_jdbc_url()
             properties = java_util_Properties()
 
-            properties.setProperty("user", self._config.username)
-            properties.setProperty("password", self._config.password.get_secret_value())
+            properties.setProperty("user", self._config.user)
+            properties.setProperty("password", self._config.password)
             properties.setProperty("secure", "true" if self._config.ssl else "false")
             properties.setProperty("prompt", "false")
             properties.setProperty("libraries", self._config.database)
@@ -881,7 +881,7 @@ class AS400Connector(BaseDatabaseConnector):
             "name": self._config.name,
             "server": self._config.server,
             "database": self._config.database,
-            "username": self._config.username,
+            "user": self._config.user,
             "ssl": self._config.ssl,
             "type": "AS400",
             "read_only": self._config.read_only,

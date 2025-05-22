@@ -65,8 +65,8 @@ class ODBCConnector(BaseDatabaseConnector):
         else:
             conn_str = f"DSN={self._config.dsn}"
 
-            if "UID=" not in conn_str and "PWD=" not in conn_str and self._config.username:
-                conn_str += f";UID={self._config.username};PWD={self._config.password.get_secret_value()}"
+            if "UID=" not in conn_str and "PWD=" not in conn_str and self._config.user:
+                conn_str += f";UID={self._config.user};PWD={self._config.password}"
 
             if self._config.server:
                 conn_str += f";SERVER={self._config.server}"
@@ -80,11 +80,11 @@ class ODBCConnector(BaseDatabaseConnector):
         return DatabaseConnectionConfig(
             name=self._registered_connection_id or f"odbc_{self._config.name}",
             db_type="odbc",
-            host=self._config.server or "",
+            host=self._config.host or "",
             port=self._config.port or 0,
             database=self._config.database,
-            user=self._config.username,
-            password=self._config.password.get_secret_value(),
+            user=self._config.user,
+            password=self._config.password,
             connection_string=conn_str,
             pool_size=1,
             max_overflow=0,
@@ -112,8 +112,8 @@ class ODBCConnector(BaseDatabaseConnector):
                 else:
                     conn_str = f"DSN={self._config.dsn}"
 
-                    if "UID=" not in conn_str and "PWD=" not in conn_str and self._config.username:
-                        conn_str += f";UID={self._config.username};PWD={self._config.password.get_secret_value()}"
+                    if "UID=" not in conn_str and "PWD=" not in conn_str and self._config.user:
+                        conn_str += f";UID={self._config.user};PWD={self._config.password}"
 
                     if self._config.server:
                         conn_str += f";SERVER={self._config.server}"
@@ -991,7 +991,7 @@ class ODBCConnector(BaseDatabaseConnector):
             "dsn": self._config.dsn,
             "server": self._config.server,
             "database": self._config.database,
-            "username": self._config.username,
+            "user": self._config.user,
             "type": "ODBC",
             "is_filemaker": self._is_filemaker,
             "read_only": self._config.read_only,

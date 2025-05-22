@@ -207,13 +207,13 @@ class BaseDatabaseConnector(abc.ABC):
         """
         if hasattr(self._config, 'password') and self._config.password:
             try:
-                password = self._config.password.get_secret_value()
+                password = self._config.password
                 error_message = error_message.replace(password, '[REDACTED]')
             except Exception:
                 pass
 
-        if hasattr(self._config, 'username'):
-            error_message = error_message.replace(self._config.username, '[USERNAME]')
+        if hasattr(self._config, 'user'):
+            error_message = error_message.replace(self._config.user, '[USER]')
 
         return error_message
 

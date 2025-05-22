@@ -197,7 +197,7 @@ class HTTPService(RemoteService):
         if self.auth:
             auth_type = self.auth.get('type', '').lower()
             if auth_type == 'basic':
-                self._client.auth = (self.auth.get('username', ''), self.auth.get('password', ''))
+                self._client.auth = (self.auth.get('user', ''), self.auth.get('password', ''))
             elif auth_type == 'bearer':
                 token = self.auth.get('token', '')
                 self._client.headers['Authorization'] = f'Bearer {token}'
