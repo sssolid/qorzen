@@ -1,0 +1,12 @@
+# Module: plugins.media_processor_plugin.code.utils
+
+**Path:** `plugins/media_processor_plugin/code/utils/__init__.py`
+
+[Back to Project Index](../../../../../index.md)
+
+## Imports
+```python
+from exceptions import MediaProcessingError, ImageProcessingError, BatchProcessingError, ConfigurationError, BackgroundRemovalError, OutputFormatError, FileIOError
+from path_resolver import resolve_output_path, generate_filename, generate_batch_folder_name, get_unique_output_path
+from image_utils import get_image_info, is_transparent, convert_to_format, fit_image_to_size, create_gradient_mask, apply_threshold_mask, auto_contrast_mask, generate_thumbnail
+```

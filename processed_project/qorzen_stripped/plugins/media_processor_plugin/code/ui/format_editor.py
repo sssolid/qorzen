@@ -1,0 +1,657 @@
+from __future__ import annotations
+from .format_preview_widget import FormatPreviewWidget
+'\nFormat editor dialog for the Media Processor Plugin.\n\nThis module provides a dialog for editing output format configurations,\nincluding size, background, watermarks, and other settings.\n'
+import os
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from PySide6.QtCore import Qt, Signal, Slot, QSize
+from PySide6.QtGui import QColor, QIcon, QDoubleValidator, QIntValidator
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox, QPushButton, QTabWidget, QWidget, QColorDialog, QFileDialog, QDialogButtonBox, QGroupBox, QRadioButton, QButtonGroup, QScrollArea, QSizePolicy, QSlider, QToolButton, QFrame, QSplitter
+from ..models.processing_config import OutputFormat, ImageFormat, ResizeMode, WatermarkType, WatermarkPosition
+class ColorButton(QPushButton):
+    colorChanged = Signal(QColor)
+    def __init__(self, color: Optional[str]=None, parent: Optional[QWidget]=None) -> None:
+        super().__init__(parent)
+        self._color = QColor('#FFFFFF')
+        if color:
+            self._color = QColor(color)
+        self.setFixedSize(32, 32)
+        self.clicked.connect(self._on_clicked)
+        self._update_style()
+    def _update_style(self) -> None:
+        r, g, b, a = self._color.getRgb()
+        brightness = (r * 299 + g * 587 + b * 114) / 1000
+        text_color = '#000000' if brightness > 128 else '#FFFFFF'
+        self.setStyleSheet(f'\n            QPushButton {background - color: rgba({r}, {g}, {b}, {a});\n                border: 1px solid #888888;\n                border-radius: 4px;\n                color: {text_color};\n            } \n            QPushButton:hover {border: 2px solid #0078D7;\n            } \n        ')
+    def _on_clicked(self) -> None:
+        color = QColorDialog.getColor(self._color, self, 'Select Color', QColorDialog.ShowAlphaChannel)
+        if color.isValid():
+            self._color = color
+            self._update_style()
+            self.colorChanged.emit(self._color)
+    def get_color(self) -> QColor:
+        return self._color
+    def set_color(self, color: Union[str, QColor]) -> None:
+        if isinstance(color, str):
+            self._color = QColor(color)
+        else:
+            self._color = color
+        self._update_style()
+        self.colorChanged.emit(self._color)
+    def get_hex_color(self) -> str:
+        return self._color.name()
+class FormatEditorDialog(QDialog):
+    def __init__(self, format_config: OutputFormat, logger: Any, parent: Optional[QWidget]=None) -> None:
+        super().__init__(parent)
+        self._format_config = format_config
+        self._logger = logger
+        import copy
+        self._edited_format = copy.deepcopy(format_config)
+        self._init_ui()
+        self._load_values()
+        self.setWindowTitle(f'Edit Format: {format_config.name}')
+    def _init_ui(self) -> None:
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        tab_widget = QTabWidget()
+        left_layout.addWidget(tab_widget)
+        basic_tab = self._create_basic_tab()
+        tab_widget.addTab(basic_tab, 'Basic Settings')
+        size_tab = self._create_size_tab()
+        tab_widget.addTab(size_tab, 'Size & Cropping')
+        background_tab = self._create_background_tab()
+        tab_widget.addTab(background_tab, 'Background')
+        watermark_tab = self._create_watermark_tab()
+        tab_widget.addTab(watermark_tab, 'Watermark')
+        file_tab = self._create_file_tab()
+        tab_widget.addTab(file_tab, 'File Settings')
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        left_layout.addWidget(button_box)
+        right_panel = QWidget(self)
+        right_layout = QVBoxLayout(right_panel)
+        self._preview_widget = FormatPreviewWidget(self, self._logger)
+        right_layout.addWidget(self._preview_widget, 1)
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        splitter.setSizes([600, 400])
+        main_layout.addWidget(splitter)
+        self.setLayout(main_layout)
+        self.resize(1000, 600)
+        self._connect_preview_signals()
+    def _connect_preview_signals(self) -> None:
+        if hasattr(self, '_name_edit'):
+            self._name_edit.textChanged.connect(self._on_format_changed)
+        if hasattr(self, '_format_combo'):
+            self._format_combo.currentIndexChanged.connect(self._on_format_changed)
+        if hasattr(self, '_quality_slider'):
+            self._quality_slider.valueChanged.connect(self._on_format_changed)
+        if hasattr(self, '_resize_mode_combo'):
+            self._resize_mode_combo.currentIndexChanged.connect(self._on_format_changed)
+        if hasattr(self, '_width_spin'):
+            self._width_spin.valueChanged.connect(self._on_format_changed)
+        if hasattr(self, '_height_spin'):
+            self._height_spin.valueChanged.connect(self._on_format_changed)
+        if hasattr(self, '_percentage_spin'):
+            self._percentage_spin.valueChanged.connect(self._on_format_changed)
+        if hasattr(self, '_maintain_aspect_check'):
+            self._maintain_aspect_check.toggled.connect(self._on_format_changed)
+        if hasattr(self, '_crop_check'):
+            self._crop_check.toggled.connect(self._on_format_changed)
+        if hasattr(self, '_transparent_check'):
+            self._transparent_check.toggled.connect(self._on_format_changed)
+        if hasattr(self, '_bg_color_btn'):
+            self._bg_color_btn.colorChanged.connect(self._on_format_changed)
+        if hasattr(self, '_wm_type_combo'):
+            self._wm_type_combo.currentIndexChanged.connect(self._on_format_changed)
+    @Slot()
+    def _on_format_changed(self) -> None:
+        if hasattr(self, '_save_values') and hasattr(self, '_edited_format'):
+            self._save_values()
+            if hasattr(self, '_preview_widget'):
+                self._preview_widget.set_format(self._edited_format)
+    def _set_preview_image(self, image_path: str) -> None:
+        if hasattr(self, '_preview_widget') and os.path.exists(image_path):
+            self._preview_widget.set_preview_image(image_path)
+    def showEvent(self, event: Any) -> None:
+        if hasattr(super(), 'showEvent'):
+            super().showEvent(event)
+        if hasattr(self, '_edited_format') and hasattr(self, '_preview_widget'):
+            self._preview_widget.set_format(self._edited_format)
+            self._setup_preview_image()
+    def _setup_preview_image(self) -> None:
+        current_file = None
+        if hasattr(self, 'parent') and self.parent():
+            parent = self.parent()
+            if hasattr(parent, '_current_file'):
+                current_file = parent._current_file
+            elif hasattr(parent, '_selected_files') and hasattr(parent, '_current_file_index'):
+                if parent._current_file_index >= 0 and parent._current_file_index < len(parent._selected_files):
+                    current_file = parent._selected_files[parent._current_file_index]
+            if current_file and os.path.exists(current_file):
+                self._set_preview_image(current_file)
+                return
+        sample_paths = [os.path.join('resources', 'sample.jpg'), os.path.join('resources', 'sample.png'), os.path.join('sample.jpg'), os.path.join('sample.png')]
+        for path in sample_paths:
+            if os.path.exists(path):
+                self._set_preview_image(path)
+                return
+    def _create_basic_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        name_layout = QHBoxLayout()
+        name_label = QLabel('Format Name:')
+        self._name_edit = QLineEdit()
+        name_layout.addWidget(name_label)
+        name_layout.addWidget(self._name_edit, 1)
+        layout.addLayout(name_layout)
+        settings_group = QGroupBox('Format Settings')
+        settings_layout = QFormLayout(settings_group)
+        self._format_combo = QComboBox()
+        for format_type in ImageFormat:
+            self._format_combo.addItem(format_type.value.upper(), format_type.value)
+        settings_layout.addRow('File Format:', self._format_combo)
+        self._quality_slider = QSlider(Qt.Horizontal)
+        self._quality_slider.setMinimum(1)
+        self._quality_slider.setMaximum(100)
+        self._quality_slider.setTickPosition(QSlider.TicksBelow)
+        self._quality_slider.setTickInterval(10)
+        self._quality_label = QLabel('90')
+        self._quality_slider.valueChanged.connect(lambda v: self._quality_label.setText(str(v)))
+        quality_layout = QHBoxLayout()
+        quality_layout.addWidget(self._quality_slider)
+        quality_layout.addWidget(self._quality_label)
+        settings_layout.addRow('Quality:', quality_layout)
+        adj_group = QGroupBox('Image Adjustments')
+        adj_layout = QFormLayout(adj_group)
+        self._brightness_spin = QDoubleSpinBox()
+        self._brightness_spin.setRange(0.0, 2.0)
+        self._brightness_spin.setSingleStep(0.1)
+        self._brightness_spin.setDecimals(1)
+        adj_layout.addRow('Brightness:', self._brightness_spin)
+        self._contrast_spin = QDoubleSpinBox()
+        self._contrast_spin.setRange(0.0, 2.0)
+        self._contrast_spin.setSingleStep(0.1)
+        self._contrast_spin.setDecimals(1)
+        adj_layout.addRow('Contrast:', self._contrast_spin)
+        self._saturation_spin = QDoubleSpinBox()
+        self._saturation_spin.setRange(0.0, 2.0)
+        self._saturation_spin.setSingleStep(0.1)
+        self._saturation_spin.setDecimals(1)
+        adj_layout.addRow('Saturation:', self._saturation_spin)
+        self._sharpness_spin = QDoubleSpinBox()
+        self._sharpness_spin.setRange(0.0, 2.0)
+        self._sharpness_spin.setSingleStep(0.1)
+        self._sharpness_spin.setDecimals(1)
+        adj_layout.addRow('Sharpness:', self._sharpness_spin)
+        layout.addWidget(settings_group)
+        layout.addWidget(adj_group)
+        layout.addStretch()
+        return tab
+    def _create_size_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        resize_group = QGroupBox('Resize')
+        resize_layout = QVBoxLayout(resize_group)
+        mode_form = QFormLayout()
+        self._resize_mode_combo = QComboBox()
+        for resize_mode in ResizeMode:
+            self._resize_mode_combo.addItem(resize_mode.value.replace('_', ' ').title(), resize_mode.value)
+        mode_form.addRow('Resize Mode:', self._resize_mode_combo)
+        self._resize_mode_combo.currentIndexChanged.connect(self._on_resize_mode_changed)
+        resize_layout.addLayout(mode_form)
+        size_layout = QHBoxLayout()
+        width_layout = QVBoxLayout()
+        width_layout.addWidget(QLabel('Width:'))
+        self._width_spin = QSpinBox()
+        self._width_spin.setRange(1, 10000)
+        self._width_spin.setSuffix(' px')
+        width_layout.addWidget(self._width_spin)
+        size_layout.addLayout(width_layout)
+        height_layout = QVBoxLayout()
+        height_layout.addWidget(QLabel('Height:'))
+        self._height_spin = QSpinBox()
+        self._height_spin.setRange(1, 10000)
+        self._height_spin.setSuffix(' px')
+        height_layout.addWidget(self._height_spin)
+        size_layout.addLayout(height_layout)
+        percentage_layout = QVBoxLayout()
+        percentage_layout.addWidget(QLabel('Percentage:'))
+        self._percentage_spin = QSpinBox()
+        self._percentage_spin.setRange(1, 1000)
+        self._percentage_spin.setSuffix(' %')
+        percentage_layout.addWidget(self._percentage_spin)
+        size_layout.addLayout(percentage_layout)
+        resize_layout.addLayout(size_layout)
+        self._maintain_aspect_check = QCheckBox('Maintain aspect ratio')
+        resize_layout.addWidget(self._maintain_aspect_check)
+        crop_group = QGroupBox('Cropping')
+        crop_layout = QVBoxLayout(crop_group)
+        self._crop_check = QCheckBox('Enable cropping')
+        self._crop_check.toggled.connect(self._on_crop_toggle)
+        crop_layout.addWidget(self._crop_check)
+        crop_settings = QWidget()
+        crop_form = QFormLayout(crop_settings)
+        self._crop_left_spin = QSpinBox()
+        self._crop_left_spin.setRange(0, 10000)
+        self._crop_left_spin.setSuffix(' px')
+        crop_form.addRow('Left:', self._crop_left_spin)
+        self._crop_top_spin = QSpinBox()
+        self._crop_top_spin.setRange(0, 10000)
+        self._crop_top_spin.setSuffix(' px')
+        crop_form.addRow('Top:', self._crop_top_spin)
+        self._crop_right_spin = QSpinBox()
+        self._crop_right_spin.setRange(0, 10000)
+        self._crop_right_spin.setSuffix(' px')
+        crop_form.addRow('Right:', self._crop_right_spin)
+        self._crop_bottom_spin = QSpinBox()
+        self._crop_bottom_spin.setRange(0, 10000)
+        self._crop_bottom_spin.setSuffix(' px')
+        crop_form.addRow('Bottom:', self._crop_bottom_spin)
+        crop_layout.addWidget(crop_settings)
+        padding_group = QGroupBox('Padding')
+        padding_layout = QVBoxLayout(padding_group)
+        self._padding_check = QCheckBox('Enable padding')
+        self._padding_check.toggled.connect(self._on_padding_toggle)
+        padding_layout.addWidget(self._padding_check)
+        padding_settings = QWidget()
+        padding_form = QFormLayout(padding_settings)
+        self._padding_left_spin = QSpinBox()
+        self._padding_left_spin.setRange(0, 1000)
+        self._padding_left_spin.setSuffix(' px')
+        padding_form.addRow('Left:', self._padding_left_spin)
+        self._padding_top_spin = QSpinBox()
+        self._padding_top_spin.setRange(0, 1000)
+        self._padding_top_spin.setSuffix(' px')
+        padding_form.addRow('Top:', self._padding_top_spin)
+        self._padding_right_spin = QSpinBox()
+        self._padding_right_spin.setRange(0, 1000)
+        self._padding_right_spin.setSuffix(' px')
+        padding_form.addRow('Right:', self._padding_right_spin)
+        self._padding_bottom_spin = QSpinBox()
+        self._padding_bottom_spin.setRange(0, 1000)
+        self._padding_bottom_spin.setSuffix(' px')
+        padding_form.addRow('Bottom:', self._padding_bottom_spin)
+        padding_color_layout = QHBoxLayout()
+        padding_color_layout.addWidget(QLabel('Color:'))
+        self._padding_color_btn = ColorButton()
+        padding_color_layout.addWidget(self._padding_color_btn)
+        padding_color_layout.addStretch()
+        padding_form.addRow('', padding_color_layout)
+        padding_layout.addWidget(padding_settings)
+        rotation_group = QGroupBox('Rotation')
+        rotation_layout = QFormLayout(rotation_group)
+        self._rotation_spin = QDoubleSpinBox()
+        self._rotation_spin.setRange(-360, 360)
+        self._rotation_spin.setSingleStep(1)
+        self._rotation_spin.setDecimals(1)
+        self._rotation_spin.setSuffix('°')
+        rotation_layout.addRow('Angle:', self._rotation_spin)
+        layout.addWidget(resize_group)
+        layout.addWidget(crop_group)
+        layout.addWidget(padding_group)
+        layout.addWidget(rotation_group)
+        return tab
+    def _create_background_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        bg_group = QGroupBox('Background Settings')
+        bg_layout = QVBoxLayout(bg_group)
+        self._transparent_check = QCheckBox('Transparent Background')
+        self._transparent_check.toggled.connect(self._on_transparent_toggle)
+        bg_layout.addWidget(self._transparent_check)
+        bg_color_layout = QHBoxLayout()
+        bg_color_layout.addWidget(QLabel('Background Color:'))
+        self._bg_color_btn = ColorButton()
+        bg_color_layout.addWidget(self._bg_color_btn)
+        bg_color_layout.addStretch()
+        bg_layout.addLayout(bg_color_layout)
+        compat_label = QLabel('Note: Transparency is only supported in PNG, WEBP, and TIFF formats.')
+        compat_label.setWordWrap(True)
+        compat_label.setStyleSheet('color: #666;')
+        bg_layout.addWidget(compat_label)
+        layout.addWidget(bg_group)
+        layout.addStretch()
+        return tab
+    def _create_watermark_tab(self) -> QWidget:
+        tab = QWidget()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        wm_group = QGroupBox('Watermark Settings')
+        wm_layout = QVBoxLayout(wm_group)
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel('Watermark Type:'))
+        self._wm_type_combo = QComboBox()
+        self._wm_type_combo.addItem('None', WatermarkType.NONE.value)
+        self._wm_type_combo.addItem('Text', WatermarkType.TEXT.value)
+        self._wm_type_combo.addItem('Image', WatermarkType.IMAGE.value)
+        self._wm_type_combo.currentIndexChanged.connect(self._on_watermark_type_changed)
+        type_layout.addWidget(self._wm_type_combo)
+        wm_layout.addLayout(type_layout)
+        self._text_wm_widget = QWidget()
+        text_wm_layout = QFormLayout(self._text_wm_widget)
+        self._wm_text_edit = QLineEdit()
+        text_wm_layout.addRow('Text:', self._wm_text_edit)
+        self._wm_font_combo = QComboBox()
+        from PySide6.QtGui import QFontDatabase
+        for family in QFontDatabase().families():
+            self._wm_font_combo.addItem(family)
+        text_wm_layout.addRow('Font:', self._wm_font_combo)
+        self._wm_font_size_spin = QSpinBox()
+        self._wm_font_size_spin.setRange(1, 500)
+        self._wm_font_size_spin.setSuffix(' pt')
+        text_wm_layout.addRow('Font Size:', self._wm_font_size_spin)
+        text_font_color_layout = QHBoxLayout()
+        self._wm_font_color_btn = ColorButton()
+        text_font_color_layout.addWidget(self._wm_font_color_btn)
+        text_font_color_layout.addStretch()
+        text_wm_layout.addRow('Font Color:', text_font_color_layout)
+        text_outline_layout = QHBoxLayout()
+        self._wm_outline_check = QCheckBox('Enable Outline')
+        self._wm_outline_check.toggled.connect(self._on_outline_toggle)
+        text_outline_layout.addWidget(self._wm_outline_check)
+        text_wm_layout.addRow('', text_outline_layout)
+        self._outline_settings = QWidget()
+        outline_layout = QFormLayout(self._outline_settings)
+        self._wm_outline_width_spin = QSpinBox()
+        self._wm_outline_width_spin.setRange(1, 20)
+        self._wm_outline_width_spin.setSuffix(' px')
+        outline_layout.addRow('Outline Width:', self._wm_outline_width_spin)
+        outline_color_layout = QHBoxLayout()
+        self._wm_outline_color_btn = ColorButton()
+        outline_color_layout.addWidget(self._wm_outline_color_btn)
+        outline_color_layout.addStretch()
+        outline_layout.addRow('Outline Color:', outline_color_layout)
+        text_wm_layout.addRow('', self._outline_settings)
+        wm_layout.addWidget(self._text_wm_widget)
+        self._image_wm_widget = QWidget()
+        image_wm_layout = QFormLayout(self._image_wm_widget)
+        image_path_layout = QHBoxLayout()
+        self._wm_image_edit = QLineEdit()
+        self._wm_image_edit.setReadOnly(True)
+        image_path_layout.addWidget(self._wm_image_edit, 1)
+        self._wm_image_btn = QToolButton()
+        self._wm_image_btn.setText('...')
+        self._wm_image_btn.clicked.connect(self._on_browse_watermark)
+        image_path_layout.addWidget(self._wm_image_btn)
+        image_wm_layout.addRow('Image:', image_path_layout)
+        wm_layout.addWidget(self._image_wm_widget)
+        self._common_wm_widget = QWidget()
+        common_wm_layout = QFormLayout(self._common_wm_widget)
+        self._wm_position_combo = QComboBox()
+        for pos in WatermarkPosition:
+            pos_name = pos.value.replace('_', ' ').title()
+            self._wm_position_combo.addItem(pos_name, pos.value)
+        self._wm_position_combo.currentIndexChanged.connect(self._on_wm_position_changed)
+        common_wm_layout.addRow('Position:', self._wm_position_combo)
+        self._custom_pos_widget = QWidget()
+        custom_pos_layout = QFormLayout(self._custom_pos_widget)
+        self._wm_pos_x_spin = QDoubleSpinBox()
+        self._wm_pos_x_spin.setRange(0, 1)
+        self._wm_pos_x_spin.setSingleStep(0.05)
+        self._wm_pos_x_spin.setDecimals(2)
+        custom_pos_layout.addRow('X Position (0-1):', self._wm_pos_x_spin)
+        self._wm_pos_y_spin = QDoubleSpinBox()
+        self._wm_pos_y_spin.setRange(0, 1)
+        self._wm_pos_y_spin.setSingleStep(0.05)
+        self._wm_pos_y_spin.setDecimals(2)
+        custom_pos_layout.addRow('Y Position (0-1):', self._wm_pos_y_spin)
+        common_wm_layout.addRow('', self._custom_pos_widget)
+        self._wm_opacity_spin = QDoubleSpinBox()
+        self._wm_opacity_spin.setRange(0, 1)
+        self._wm_opacity_spin.setSingleStep(0.1)
+        self._wm_opacity_spin.setDecimals(1)
+        common_wm_layout.addRow('Opacity:', self._wm_opacity_spin)
+        self._wm_scale_spin = QDoubleSpinBox()
+        self._wm_scale_spin.setRange(0.01, 1)
+        self._wm_scale_spin.setSingleStep(0.05)
+        self._wm_scale_spin.setDecimals(2)
+        common_wm_layout.addRow('Scale:', self._wm_scale_spin)
+        self._wm_margin_spin = QSpinBox()
+        self._wm_margin_spin.setRange(0, 200)
+        self._wm_margin_spin.setSuffix(' px')
+        common_wm_layout.addRow('Margin:', self._wm_margin_spin)
+        self._wm_rotation_spin = QDoubleSpinBox()
+        self._wm_rotation_spin.setRange(-360, 360)
+        self._wm_rotation_spin.setSingleStep(1)
+        self._wm_rotation_spin.setDecimals(1)
+        self._wm_rotation_spin.setSuffix('°')
+        common_wm_layout.addRow('Rotation:', self._wm_rotation_spin)
+        wm_layout.addWidget(self._common_wm_widget)
+        layout.addWidget(wm_group)
+        layout.addStretch()
+        scroll.setWidget(content)
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.addWidget(scroll)
+        return tab
+    def _create_file_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        naming_group = QGroupBox('File Naming')
+        naming_layout = QFormLayout(naming_group)
+        self._prefix_edit = QLineEdit()
+        naming_layout.addRow('Prefix:', self._prefix_edit)
+        self._suffix_edit = QLineEdit()
+        naming_layout.addRow('Suffix:', self._suffix_edit)
+        self._template_edit = QLineEdit()
+        naming_layout.addRow('Template:', self._template_edit)
+        template_help = QLabel('Available placeholders: {name}, {ext}, {date}, {time}, {timestamp}, {random}, {counter}')
+        template_help.setWordWrap(True)
+        template_help.setStyleSheet('color: #666;')
+        naming_layout.addRow('', template_help)
+        dir_group = QGroupBox('Output Directory')
+        dir_layout = QFormLayout(dir_group)
+        self._subdir_edit = QLineEdit()
+        dir_layout.addRow('Subdirectory:', self._subdir_edit)
+        subdir_help = QLabel('Files will be saved to this subdirectory within the main output directory.')
+        subdir_help.setWordWrap(True)
+        subdir_help.setStyleSheet('color: #666;')
+        dir_layout.addRow('', subdir_help)
+        layout.addWidget(naming_group)
+        layout.addWidget(dir_group)
+        layout.addStretch()
+        return tab
+    def _load_values(self) -> None:
+        self._name_edit.setText(self._edited_format.name)
+        format_index = self._format_combo.findData(self._edited_format.format.value)
+        if format_index >= 0:
+            self._format_combo.setCurrentIndex(format_index)
+        self._quality_slider.setValue(self._edited_format.quality)
+        self._brightness_spin.setValue(self._edited_format.brightness)
+        self._contrast_spin.setValue(self._edited_format.contrast)
+        self._saturation_spin.setValue(self._edited_format.saturation)
+        self._sharpness_spin.setValue(self._edited_format.sharpness)
+        resize_index = self._resize_mode_combo.findData(self._edited_format.resize_mode.value)
+        if resize_index >= 0:
+            self._resize_mode_combo.setCurrentIndex(resize_index)
+        if self._edited_format.width is not None:
+            self._width_spin.setValue(self._edited_format.width)
+        if self._edited_format.height is not None:
+            self._height_spin.setValue(self._edited_format.height)
+        if self._edited_format.percentage is not None:
+            self._percentage_spin.setValue(self._edited_format.percentage)
+        self._maintain_aspect_check.setChecked(self._edited_format.maintain_aspect_ratio)
+        self._crop_check.setChecked(self._edited_format.crop_enabled)
+        if self._edited_format.crop_left is not None:
+            self._crop_left_spin.setValue(self._edited_format.crop_left)
+        if self._edited_format.crop_top is not None:
+            self._crop_top_spin.setValue(self._edited_format.crop_top)
+        if self._edited_format.crop_right is not None:
+            self._crop_right_spin.setValue(self._edited_format.crop_right)
+        if self._edited_format.crop_bottom is not None:
+            self._crop_bottom_spin.setValue(self._edited_format.crop_bottom)
+        self._padding_check.setChecked(self._edited_format.padding_enabled)
+        self._padding_left_spin.setValue(self._edited_format.padding_left)
+        self._padding_top_spin.setValue(self._edited_format.padding_top)
+        self._padding_right_spin.setValue(self._edited_format.padding_right)
+        self._padding_bottom_spin.setValue(self._edited_format.padding_bottom)
+        if self._edited_format.padding_color:
+            self._padding_color_btn.set_color(self._edited_format.padding_color)
+        else:
+            self._padding_color_btn.set_color(self._edited_format.background_color or '#FFFFFF')
+        self._rotation_spin.setValue(self._edited_format.rotation_angle)
+        self._transparent_check.setChecked(self._edited_format.transparent_background)
+        if self._edited_format.background_color:
+            self._bg_color_btn.set_color(self._edited_format.background_color)
+        watermark_type = self._edited_format.watermark.type
+        type_index = self._wm_type_combo.findData(watermark_type.value)
+        if type_index >= 0:
+            self._wm_type_combo.setCurrentIndex(type_index)
+        if self._edited_format.watermark.text:
+            self._wm_text_edit.setText(self._edited_format.watermark.text)
+        font_index = self._wm_font_combo.findText(self._edited_format.watermark.font_name)
+        if font_index >= 0:
+            self._wm_font_combo.setCurrentIndex(font_index)
+        self._wm_font_size_spin.setValue(self._edited_format.watermark.font_size)
+        if self._edited_format.watermark.font_color:
+            self._wm_font_color_btn.set_color(self._edited_format.watermark.font_color)
+        has_outline = self._edited_format.watermark.outline_width > 0 and self._edited_format.watermark.outline_color is not None
+        self._wm_outline_check.setChecked(has_outline)
+        if self._edited_format.watermark.outline_color:
+            self._wm_outline_color_btn.set_color(self._edited_format.watermark.outline_color)
+        self._wm_outline_width_spin.setValue(max(1, self._edited_format.watermark.outline_width))
+        if self._edited_format.watermark.image_path:
+            self._wm_image_edit.setText(self._edited_format.watermark.image_path)
+        position_index = self._wm_position_combo.findData(self._edited_format.watermark.position.value)
+        if position_index >= 0:
+            self._wm_position_combo.setCurrentIndex(position_index)
+        if self._edited_format.watermark.custom_position_x is not None:
+            self._wm_pos_x_spin.setValue(self._edited_format.watermark.custom_position_x)
+        if self._edited_format.watermark.custom_position_y is not None:
+            self._wm_pos_y_spin.setValue(self._edited_format.watermark.custom_position_y)
+        self._wm_opacity_spin.setValue(self._edited_format.watermark.opacity)
+        self._wm_scale_spin.setValue(self._edited_format.watermark.scale)
+        self._wm_margin_spin.setValue(self._edited_format.watermark.margin)
+        self._wm_rotation_spin.setValue(self._edited_format.watermark.rotation)
+        if self._edited_format.prefix:
+            self._prefix_edit.setText(self._edited_format.prefix)
+        if self._edited_format.suffix:
+            self._suffix_edit.setText(self._edited_format.suffix)
+        if self._edited_format.naming_template:
+            self._template_edit.setText(self._edited_format.naming_template)
+        if self._edited_format.subdir:
+            self._subdir_edit.setText(self._edited_format.subdir)
+        self._on_resize_mode_changed()
+        self._on_crop_toggle(self._edited_format.crop_enabled)
+        self._on_padding_toggle(self._edited_format.padding_enabled)
+        self._on_transparent_toggle(self._edited_format.transparent_background)
+        self._on_watermark_type_changed()
+        self._on_outline_toggle(has_outline)
+        self._on_wm_position_changed()
+    def _save_values(self) -> None:
+        self._edited_format.name = self._name_edit.text()
+        format_data = self._format_combo.currentData()
+        if format_data:
+            self._edited_format.format = ImageFormat(format_data)
+        self._edited_format.quality = self._quality_slider.value()
+        self._edited_format.brightness = self._brightness_spin.value()
+        self._edited_format.contrast = self._contrast_spin.value()
+        self._edited_format.saturation = self._saturation_spin.value()
+        self._edited_format.sharpness = self._sharpness_spin.value()
+        resize_data = self._resize_mode_combo.currentData()
+        if resize_data:
+            self._edited_format.resize_mode = ResizeMode(resize_data)
+        self._edited_format.width = self._width_spin.value() if self._width_spin.isEnabled() else None
+        self._edited_format.height = self._height_spin.value() if self._height_spin.isEnabled() else None
+        self._edited_format.percentage = self._percentage_spin.value() if self._percentage_spin.isEnabled() else None
+        self._edited_format.maintain_aspect_ratio = self._maintain_aspect_check.isChecked()
+        self._edited_format.crop_enabled = self._crop_check.isChecked()
+        if self._edited_format.crop_enabled:
+            self._edited_format.crop_left = self._crop_left_spin.value()
+            self._edited_format.crop_top = self._crop_top_spin.value()
+            self._edited_format.crop_right = self._crop_right_spin.value()
+            self._edited_format.crop_bottom = self._crop_bottom_spin.value()
+        self._edited_format.padding_enabled = self._padding_check.isChecked()
+        if self._edited_format.padding_enabled:
+            self._edited_format.padding_left = self._padding_left_spin.value()
+            self._edited_format.padding_top = self._padding_top_spin.value()
+            self._edited_format.padding_right = self._padding_right_spin.value()
+            self._edited_format.padding_bottom = self._padding_bottom_spin.value()
+            self._edited_format.padding_color = self._padding_color_btn.get_hex_color()
+        self._edited_format.rotation_angle = self._rotation_spin.value()
+        self._edited_format.transparent_background = self._transparent_check.isChecked()
+        if not self._edited_format.transparent_background:
+            self._edited_format.background_color = self._bg_color_btn.get_hex_color()
+        watermark_type_data = self._wm_type_combo.currentData()
+        if watermark_type_data:
+            self._edited_format.watermark.type = WatermarkType(watermark_type_data)
+        if self._edited_format.watermark.type == WatermarkType.TEXT:
+            self._edited_format.watermark.text = self._wm_text_edit.text()
+            self._edited_format.watermark.font_name = self._wm_font_combo.currentText()
+            self._edited_format.watermark.font_size = self._wm_font_size_spin.value()
+            self._edited_format.watermark.font_color = self._wm_font_color_btn.get_hex_color()
+            if self._wm_outline_check.isChecked():
+                self._edited_format.watermark.outline_width = self._wm_outline_width_spin.value()
+                self._edited_format.watermark.outline_color = self._wm_outline_color_btn.get_hex_color()
+            else:
+                self._edited_format.watermark.outline_width = 0
+                self._edited_format.watermark.outline_color = None
+        if self._edited_format.watermark.type == WatermarkType.IMAGE:
+            self._edited_format.watermark.image_path = self._wm_image_edit.text()
+        position_data = self._wm_position_combo.currentData()
+        if position_data:
+            self._edited_format.watermark.position = WatermarkPosition(position_data)
+        if self._edited_format.watermark.position == WatermarkPosition.CUSTOM:
+            self._edited_format.watermark.custom_position_x = self._wm_pos_x_spin.value()
+            self._edited_format.watermark.custom_position_y = self._wm_pos_y_spin.value()
+        else:
+            self._edited_format.watermark.custom_position_x = None
+            self._edited_format.watermark.custom_position_y = None
+        self._edited_format.watermark.opacity = self._wm_opacity_spin.value()
+        self._edited_format.watermark.scale = self._wm_scale_spin.value()
+        self._edited_format.watermark.margin = self._wm_margin_spin.value()
+        self._edited_format.watermark.rotation = self._wm_rotation_spin.value()
+        self._edited_format.prefix = self._prefix_edit.text() or None
+        self._edited_format.suffix = self._suffix_edit.text() or None
+        self._edited_format.naming_template = self._template_edit.text() or None
+        self._edited_format.subdir = self._subdir_edit.text() or None
+    def accept(self) -> None:
+        self._save_values()
+        super().accept()
+    def get_format(self) -> OutputFormat:
+        return self._edited_format
+    @Slot(int)
+    def _on_resize_mode_changed(self, index: int=-1) -> None:
+        resize_mode = self._resize_mode_combo.currentData()
+        self._width_spin.setEnabled(resize_mode in (ResizeMode.WIDTH.value, ResizeMode.EXACT.value, ResizeMode.MAX_DIMENSION.value, ResizeMode.MIN_DIMENSION.value))
+        self._height_spin.setEnabled(resize_mode in (ResizeMode.HEIGHT.value, ResizeMode.EXACT.value, ResizeMode.MAX_DIMENSION.value, ResizeMode.MIN_DIMENSION.value))
+        self._percentage_spin.setEnabled(resize_mode == ResizeMode.PERCENTAGE.value)
+        self._maintain_aspect_check.setEnabled(resize_mode in (ResizeMode.WIDTH.value, ResizeMode.HEIGHT.value, ResizeMode.EXACT.value))
+    @Slot(bool)
+    def _on_crop_toggle(self, enabled: bool) -> None:
+        for widget in self._crop_left_spin.parent().findChildren(QWidget):
+            if widget != self._crop_check:
+                widget.setEnabled(enabled)
+    @Slot(bool)
+    def _on_padding_toggle(self, enabled: bool) -> None:
+        for widget in self._padding_left_spin.parent().findChildren(QWidget):
+            if widget != self._padding_check:
+                widget.setEnabled(enabled)
+    @Slot(bool)
+    def _on_transparent_toggle(self, transparent: bool) -> None:
+        self._bg_color_btn.setEnabled(not transparent)
+    @Slot(int)
+    def _on_watermark_type_changed(self, index: int=-1) -> None:
+        wm_type = self._wm_type_combo.currentData()
+        self._text_wm_widget.setVisible(wm_type == WatermarkType.TEXT.value)
+        self._image_wm_widget.setVisible(wm_type == WatermarkType.IMAGE.value)
+        self._common_wm_widget.setVisible(wm_type != WatermarkType.NONE.value)
+    @Slot(bool)
+    def _on_outline_toggle(self, enabled: bool) -> None:
+        self._outline_settings.setVisible(enabled)
+    @Slot()
+    def _on_browse_watermark(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Select Watermark Image', '', 'Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)')
+        if file_path:
+            self._wm_image_edit.setText(file_path)
+    @Slot(int)
+    def _on_wm_position_changed(self, index: int=-1) -> None:
+        position = self._wm_position_combo.currentData()
+        self._custom_pos_widget.setVisible(position == WatermarkPosition.CUSTOM.value)

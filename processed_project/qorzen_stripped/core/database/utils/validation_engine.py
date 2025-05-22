@@ -1,0 +1,463 @@
+from __future__ import annotations
+'\nValidation utilities for the Database Manager.\n\nThis module provides functionality for validating database data according to\nuser-defined rules, enabling data quality checks and verification.\n'
+import asyncio
+import datetime
+import json
+import re
+import uuid
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set, Tuple, Union, cast, Callable
+from sqlalchemy import text
+from qorzen.utils.exceptions import DatabaseError, ValidationError
+class ValidationRuleType(str, Enum):
+    RANGE = 'range'
+    PATTERN = 'pattern'
+    NOT_NULL = 'not_null'
+    UNIQUE = 'unique'
+    LENGTH = 'length'
+    REFERENCE = 'reference'
+    ENUMERATION = 'enumeration'
+    CUSTOM = 'custom'
+class ValidationEngine:
+    def __init__(self, database_manager: Any, logger: Any, validation_connection_id: Optional[str]=None) -> None:
+        self._db_manager = database_manager
+        self._logger = logger
+        self._validation_connection_id = validation_connection_id
+        self._validators = self._create_validators()
+        self._is_initialized = False
+    async def initialize(self) -> None:
+        if not self._validation_connection_id:
+            self._logger.warning('No validation database connection configured')
+            return
+        try:
+            config = await self._db_manager._config_manager.get('database.validation', {})
+            if not config.get('enabled', True):
+                self._logger.info('Validation engine disabled in configuration')
+                return
+            try:
+                await self._create_validation_tables_async()
+            except Exception as e:
+                self._logger.warning(f'Could not create tables with async session: {str(e)}')
+                try:
+                    await self._create_validation_tables_sync()
+                except Exception as e2:
+                    self._logger.warning(f'Failed to create validation tables with sync session: {str(e2)}')
+            self._is_initialized = True
+            self._logger.info('Validation engine initialized')
+        except Exception as e:
+            self._logger.warning(f'Validation engine initialization failed but will continue: {str(e)}')
+    async def _create_validation_tables_async(self) -> None:
+        statements = ['\n            CREATE TABLE IF NOT EXISTS db_validation_rules\n            (\n                id\n                VARCHAR\n            (\n                36\n            ) PRIMARY KEY,\n                name VARCHAR\n            (\n                255\n            ) NOT NULL,\n                description TEXT,\n                connection_id VARCHAR\n            (\n                36\n            ) NOT NULL,\n                table_name VARCHAR\n            (\n                255\n            ) NOT NULL,\n                field_name VARCHAR\n            (\n                255\n            ) NOT NULL,\n                rule_type VARCHAR\n            (\n                50\n            ) NOT NULL,\n                parameters TEXT NOT NULL,\n                error_message TEXT NOT NULL,\n                active BOOLEAN NOT NULL DEFAULT TRUE,\n                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP\n                )\n            ', '\n            CREATE TABLE IF NOT EXISTS db_validation_results\n            (\n                id\n                VARCHAR\n            (\n                36\n            ) PRIMARY KEY,\n                rule_id VARCHAR\n            (\n                36\n            ) NOT NULL,\n                table_name VARCHAR\n            (\n                255\n            ) NOT NULL,\n                field_name VARCHAR\n            (\n                255\n            ) NOT NULL,\n                validated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n                success BOOLEAN NOT NULL,\n                failures TEXT,\n                total_records INTEGER NOT NULL,\n                failed_records INTEGER NOT NULL,\n                FOREIGN KEY\n            (\n                rule_id\n            ) REFERENCES db_validation_rules\n            (\n                id\n            ) ON DELETE CASCADE\n                )\n            ']
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                async with self._db_manager.async_session(self._validation_connection_id) as session:
+                    for stmt in statements:
+                        self._logger.debug(f'Creating validation table (async): {stmt[:50]}...')
+                        await session.execute(text(stmt))
+                self._logger.debug('Validation tables created or already exist (async)')
+                return
+            except Exception as e:
+                self._logger.warning(f'Async attempt {attempt + 1}/{max_retries} failed: {str(e)}')
+                if attempt < max_retries - 1:
+                    import asyncio
+                    await asyncio.sleep(1)
+                else:
+                    raise
+    async def _create_validation_tables_sync(self) -> None:
+        statements = ['\n            CREATE TABLE IF NOT EXISTS db_validation_rules\n            (\n                id\n                VARCHAR\n            (\n                36\n            ) PRIMARY KEY,\n                name VARCHAR\n            (\n                255\n            ) NOT NULL,\n                description TEXT,\n                connection_id VARCHAR\n            (\n                36\n            ) NOT NULL,\n                table_name VARCHAR\n            (\n                255\n            ) NOT NULL,\n                field_name VARCHAR\n            (\n                255\n            ) NOT NULL,\n                rule_type VARCHAR\n            (\n                50\n            ) NOT NULL,\n                parameters TEXT NOT NULL,\n                error_message TEXT NOT NULL,\n                active BOOLEAN NOT NULL DEFAULT TRUE,\n                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP\n                )\n            ', '\n            CREATE TABLE IF NOT EXISTS db_validation_results\n            (\n                id\n                VARCHAR\n            (\n                36\n            ) PRIMARY KEY,\n                rule_id VARCHAR\n            (\n                36\n            ) NOT NULL,\n                table_name VARCHAR\n            (\n                255\n            ) NOT NULL,\n                field_name VARCHAR\n            (\n                255\n            ) NOT NULL,\n                validated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n                success BOOLEAN NOT NULL,\n                failures TEXT,\n                total_records INTEGER NOT NULL,\n                failed_records INTEGER NOT NULL,\n                FOREIGN KEY\n            (\n                rule_id\n            ) REFERENCES db_validation_rules\n            (\n                id\n            ) ON DELETE CASCADE\n                )\n            ']
+        for stmt in statements:
+            self._logger.debug(f'Creating validation table (sync): {stmt[:50]}...')
+            try:
+                await self._db_manager.execute_raw(sql=stmt, connection_name=self._validation_connection_id)
+            except Exception as e:
+                self._logger.warning(f'Error creating table with execute_raw: {str(e)}')
+                raise
+        self._logger.debug('Validation tables created or already exist (sync)')
+    def _create_validators(self) -> Dict[ValidationRuleType, Callable[[Any, Dict[str, Any]], bool]]:
+        return {ValidationRuleType.RANGE: self._validate_range, ValidationRuleType.PATTERN: self._validate_pattern, ValidationRuleType.NOT_NULL: self._validate_not_null, ValidationRuleType.UNIQUE: self._validate_unique, ValidationRuleType.LENGTH: self._validate_length, ValidationRuleType.REFERENCE: self._validate_reference, ValidationRuleType.ENUMERATION: self._validate_enumeration, ValidationRuleType.CUSTOM: self._validate_custom}
+    async def create_rule(self, rule_type: str, connection_id: str, table_name: str, field_name: str, parameters: Dict[str, Any], error_message: str, name: Optional[str]=None, description: Optional[str]=None) -> Dict[str, Any]:
+        if not self._validation_connection_id:
+            raise DatabaseError(message='No validation database connection configured', details={})
+        try:
+            try:
+                rule_type_enum = ValidationRuleType(rule_type)
+            except ValueError:
+                raise ValueError(f'Invalid rule type: {rule_type}')
+            if name is None:
+                name = f'{rule_type.capitalize()} check for {field_name}'
+            rule_id = str(uuid.uuid4())
+            now = datetime.datetime.now()
+            self._validate_rule_parameters(rule_type_enum, parameters)
+            rule = {'id': rule_id, 'name': name, 'description': description, 'connection_id': connection_id, 'table_name': table_name, 'field_name': field_name, 'rule_type': rule_type, 'parameters': json.dumps(parameters), 'error_message': error_message, 'active': True, 'created_at': now, 'updated_at': now}
+            insert_sql = '\n                         INSERT INTO db_validation_rules\n                         (id, name, description, connection_id, table_name, field_name,\n                          rule_type, parameters, error_message, active, created_at, updated_at)\n                         VALUES (:id, :name, :description, :connection_id, :table_name, :field_name,                                  :rule_type, :parameters, :error_message, :active, :created_at, :updated_at)                          '
+            async with self._db_manager.async_session(self._validation_connection_id) as session:
+                await session.execute(text(insert_sql), rule)
+            self._logger.info(f'Created validation rule: {name}')
+            rule['parameters'] = parameters
+            return rule
+        except Exception as e:
+            self._logger.error(f'Failed to create validation rule: {str(e)}')
+            if isinstance(e, ValueError):
+                raise
+            raise DatabaseError(message=f'Failed to create validation rule: {str(e)}', details={'original_error': str(e)}) from e
+    async def update_rule(self, rule_id: str, **updates: Any) -> Dict[str, Any]:
+        if not self._validation_connection_id:
+            raise DatabaseError(message='No validation database connection configured', details={})
+        try:
+            existing_rule = await self.get_rule(rule_id)
+            if not existing_rule:
+                raise DatabaseError(message=f'Validation rule not found: {rule_id}', details={})
+            rule = dict(existing_rule)
+            parameters_updated = False
+            for key, value in updates.items():
+                if key in rule:
+                    if key == 'parameters':
+                        parameters_updated = True
+                        rule[key] = value
+                    else:
+                        rule[key] = value
+            rule['updated_at'] = datetime.datetime.now()
+            if parameters_updated:
+                self._validate_rule_parameters(ValidationRuleType(rule['rule_type']), rule['parameters'])
+                rule['parameters'] = json.dumps(rule['parameters'])
+            update_sql = '\n                         UPDATE db_validation_rules\n                         SET name          = :name,\n                             description   = :description,\n                             connection_id = :connection_id,\n                             table_name    = :table_name,\n                             field_name    = :field_name,\n                             rule_type     = :rule_type,\n                             parameters    = :parameters,\n                             error_message = :error_message,\n                             active        = :active,\n                             updated_at    = :updated_at\n                         WHERE id = :id                          '
+            async with self._db_manager.async_session(self._validation_connection_id) as session:
+                await session.execute(text(update_sql), rule)
+            self._logger.info(f"Updated validation rule: {rule['name']}")
+            if isinstance(rule['parameters'], str):
+                rule['parameters'] = json.loads(rule['parameters'])
+            return rule
+        except Exception as e:
+            self._logger.error(f'Failed to update validation rule: {str(e)}')
+            if isinstance(e, ValueError):
+                raise
+            raise DatabaseError(message=f'Failed to update validation rule: {str(e)}', details={'original_error': str(e)}) from e
+    async def delete_rule(self, rule_id: str) -> bool:
+        if not self._validation_connection_id:
+            raise DatabaseError(message='No validation database connection configured', details={})
+        try:
+            delete_sql = 'DELETE FROM db_validation_rules WHERE id = :id'
+            async with self._db_manager.async_session(self._validation_connection_id) as session:
+                await session.execute(text(delete_sql), {'id': rule_id})
+            self._logger.info(f'Deleted validation rule: {rule_id}')
+            return True
+        except Exception as e:
+            self._logger.error(f'Failed to delete validation rule: {str(e)}')
+            raise DatabaseError(message=f'Failed to delete validation rule: {str(e)}', details={'original_error': str(e)}) from e
+    async def get_rule(self, rule_id: str) -> Optional[Dict[str, Any]]:
+        if not self._validation_connection_id:
+            raise DatabaseError(message='No validation database connection configured', details={})
+        try:
+            sql = 'SELECT * FROM db_validation_rules WHERE id = :id'
+            async with self._db_manager.async_session(self._validation_connection_id) as session:
+                result = await session.execute(text(sql), {'id': rule_id})
+                row = result.fetchone()
+            if not row:
+                return None
+            rule = {'id': row[0], 'name': row[1], 'description': row[2], 'connection_id': row[3], 'table_name': row[4], 'field_name': row[5], 'rule_type': row[6], 'parameters': json.loads(row[7]), 'error_message': row[8], 'active': row[9], 'created_at': row[10], 'updated_at': row[11]}
+            return rule
+        except Exception as e:
+            self._logger.error(f'Failed to get validation rule: {str(e)}')
+            raise DatabaseError(message=f'Failed to get validation rule: {str(e)}', details={'original_error': str(e)}) from e
+    async def get_all_rules(self, connection_id: Optional[str]=None, table_name: Optional[str]=None) -> List[Dict[str, Any]]:
+        if not self._validation_connection_id:
+            raise DatabaseError(message='No validation database connection configured', details={})
+        try:
+            sql = 'SELECT * FROM db_validation_rules'
+            params = {}
+            if connection_id or table_name:
+                sql += ' WHERE'
+                if connection_id:
+                    sql += ' connection_id = :connection_id'
+                    params['connection_id'] = connection_id
+                    if table_name:
+                        sql += ' AND table_name = :table_name'
+                        params['table_name'] = table_name
+                elif table_name:
+                    sql += ' table_name = :table_name'
+                    params['table_name'] = table_name
+            sql += ' ORDER BY name'
+            async with self._db_manager.async_session(self._validation_connection_id) as session:
+                result = await session.execute(text(sql), params)
+                rows = result.fetchall()
+            rules = []
+            for row in rows:
+                rule = {'id': row[0], 'name': row[1], 'description': row[2], 'connection_id': row[3], 'table_name': row[4], 'field_name': row[5], 'rule_type': row[6], 'parameters': json.loads(row[7]), 'error_message': row[8], 'active': row[9], 'created_at': row[10], 'updated_at': row[11]}
+                rules.append(rule)
+            return rules
+        except Exception as e:
+            self._logger.error(f'Failed to get validation rules: {str(e)}')
+            raise DatabaseError(message=f'Failed to get validation rules: {str(e)}', details={'original_error': str(e)}) from e
+    async def validate_data(self, rule: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            records = data.get('records', [])
+            columns = data.get('columns', [])
+            field_exists = False
+            for col in columns:
+                if col['name'].lower() == rule['field_name'].lower():
+                    field_exists = True
+                    break
+            if not field_exists:
+                raise ValidationError(message=f"Field '{rule['field_name']}' not found in the query results", details={'available_fields': [col['name'] for col in columns]})
+            rule_type = ValidationRuleType(rule['rule_type'])
+            validator = self._validators.get(rule_type)
+            if not validator:
+                raise ValidationError(message=f'No validator available for rule type: {rule_type}', details={})
+            total_records = len(records)
+            failures = []
+            for i, record in enumerate(records):
+                field_value = None
+                for field_name, value in record.items():
+                    if field_name.lower() == rule['field_name'].lower():
+                        field_value = value
+                        break
+                try:
+                    is_valid = validator(field_value, rule['parameters'])
+                    if not is_valid:
+                        failures.append({'row': i, 'field': rule['field_name'], 'value': field_value, 'error': rule['error_message']})
+                except Exception as e:
+                    failures.append({'row': i, 'field': rule['field_name'], 'value': field_value, 'error': f'Validation error: {str(e)}'})
+            validation_result = {'id': str(uuid.uuid4()), 'rule_id': rule['id'], 'table_name': rule['table_name'], 'field_name': rule['field_name'], 'validated_at': datetime.datetime.now(), 'success': len(failures) == 0, 'failures': failures, 'total_records': total_records, 'failed_records': len(failures)}
+            if self._validation_connection_id:
+                await self._save_validation_result(validation_result)
+            return validation_result
+        except Exception as e:
+            if isinstance(e, ValidationError):
+                raise
+            self._logger.error(f'Validation error: {str(e)}')
+            raise ValidationError(message=f'Failed to validate data: {str(e)}', details={'original_error': str(e)}) from e
+    async def validate_all_rules(self, connection_id: str, table_name: str, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        try:
+            rules = await self.get_all_rules(connection_id=connection_id, table_name=table_name)
+            active_rules = [rule for rule in rules if rule['active']]
+            if not active_rules:
+                return []
+            results = []
+            for rule in active_rules:
+                try:
+                    result = await self.validate_data(rule, data)
+                    results.append(result)
+                except Exception as e:
+                    self._logger.error(f"Error validating rule {rule['id']}: {str(e)}")
+            return results
+        except Exception as e:
+            self._logger.error(f'Validation error: {str(e)}')
+            raise ValidationError(message=f'Failed to validate data: {str(e)}', details={'original_error': str(e)}) from e
+    async def get_validation_results(self, rule_id: Optional[str]=None, limit: int=100) -> List[Dict[str, Any]]:
+        if not self._validation_connection_id:
+            raise DatabaseError(message='No validation database connection configured', details={})
+        try:
+            if rule_id:
+                sql = '\n                      SELECT *\n                      FROM db_validation_results\n                      WHERE rule_id = :rule_id\n                      ORDER BY validated_at DESC LIMIT :limit                       '
+                params = {'rule_id': rule_id, 'limit': limit}
+            else:
+                sql = '\n                      SELECT *\n                      FROM db_validation_results\n                      ORDER BY validated_at DESC LIMIT :limit                       '
+                params = {'limit': limit}
+            async with self._db_manager.async_session(self._validation_connection_id) as session:
+                result = await session.execute(text(sql), params)
+                rows = result.fetchall()
+            validation_results = []
+            for row in rows:
+                result_dict = {'id': row[0], 'rule_id': row[1], 'table_name': row[2], 'field_name': row[3], 'validated_at': row[4], 'success': row[5], 'failures': json.loads(row[6]) if row[6] else [], 'total_records': row[7], 'failed_records': row[8]}
+                validation_results.append(result_dict)
+            return validation_results
+        except Exception as e:
+            self._logger.error(f'Failed to get validation results: {str(e)}')
+            raise DatabaseError(message=f'Failed to get validation results: {str(e)}', details={'original_error': str(e)}) from e
+    async def _save_validation_result(self, result: Dict[str, Any]) -> None:
+        try:
+            insert_sql = '\n                         INSERT INTO db_validation_results\n                         (id, rule_id, table_name, field_name, validated_at,\n                          success, failures, total_records, failed_records)\n                         VALUES (:id, :rule_id, :table_name, :field_name, :validated_at,                                  :success, :failures, :total_records, :failed_records)                          '
+            result_dict = dict(result)
+            result_dict['failures'] = json.dumps(result_dict['failures'])
+            async with self._db_manager.async_session(self._validation_connection_id) as session:
+                await session.execute(text(insert_sql), result_dict)
+        except Exception as e:
+            self._logger.error(f'Failed to save validation result: {str(e)}')
+    def _validate_rule_parameters(self, rule_type: ValidationRuleType, parameters: Dict[str, Any]) -> None:
+        if rule_type == ValidationRuleType.RANGE:
+            has_min = 'min' in parameters
+            has_max = 'max' in parameters
+            if not has_min and (not has_max):
+                raise ValueError('Range rule must have min or max parameter')
+        elif rule_type == ValidationRuleType.PATTERN:
+            if 'pattern' not in parameters or not parameters['pattern']:
+                raise ValueError('Pattern rule must have pattern parameter')
+            try:
+                re.compile(parameters['pattern'])
+            except re.error as e:
+                raise ValueError(f'Invalid regular expression: {str(e)}')
+        elif rule_type == ValidationRuleType.LENGTH:
+            has_min = 'min_length' in parameters
+            has_max = 'max_length' in parameters
+            if not has_min and (not has_max):
+                raise ValueError('Length rule must have min_length or max_length parameter')
+        elif rule_type == ValidationRuleType.ENUMERATION:
+            if 'allowed_values' not in parameters or not parameters['allowed_values']:
+                raise ValueError('Enumeration rule must have allowed_values parameter')
+        elif rule_type == ValidationRuleType.REFERENCE:
+            if 'reference_values' not in parameters or not parameters['reference_values']:
+                raise ValueError('Reference rule must have reference_values parameter')
+        elif rule_type == ValidationRuleType.CUSTOM:
+            if 'expression' not in parameters or not parameters['expression']:
+                raise ValueError('Custom rule must have expression parameter')
+    def _validate_range(self, value: Any, parameters: Dict[str, Any]) -> bool:
+        if value is None:
+            return False
+        try:
+            if not isinstance(value, (int, float)):
+                value = float(value)
+            min_val = parameters.get('min')
+            max_val = parameters.get('max')
+            if min_val is not None:
+                if value < min_val:
+                    return False
+            if max_val is not None:
+                if value > max_val:
+                    return False
+            return True
+        except (ValueError, TypeError):
+            return False
+    def _validate_pattern(self, value: Any, parameters: Dict[str, Any]) -> bool:
+        if value is None:
+            return False
+        pattern = parameters.get('pattern')
+        if not pattern:
+            return False
+        try:
+            str_value = str(value)
+            regex = re.compile(pattern)
+            return bool(regex.match(str_value))
+        except (TypeError, re.error):
+            return False
+    def _validate_not_null(self, value: Any, parameters: Dict[str, Any]) -> bool:
+        return value is not None
+    def _validate_unique(self, value: Any, parameters: Dict[str, Any]) -> bool:
+        if value is None:
+            return False
+        unique_values = parameters.get('unique_values', {})
+        if not unique_values:
+            return True
+        str_value = str(value)
+        return unique_values.get(str_value, 0) <= 1
+    def _validate_length(self, value: Any, parameters: Dict[str, Any]) -> bool:
+        if value is None:
+            return False
+        try:
+            str_value = str(value)
+            length = len(str_value)
+            min_length = parameters.get('min_length')
+            max_length = parameters.get('max_length')
+            if min_length is not None:
+                if length < min_length:
+                    return False
+            if max_length is not None:
+                if length > max_length:
+                    return False
+            return True
+        except TypeError:
+            return False
+    def _validate_reference(self, value: Any, parameters: Dict[str, Any]) -> bool:
+        if value is None:
+            return False
+        reference_values = parameters.get('reference_values', [])
+        if not reference_values:
+            return False
+        str_value = str(value)
+        return str_value in [str(v) for v in reference_values]
+    def _validate_enumeration(self, value: Any, parameters: Dict[str, Any]) -> bool:
+        if value is None:
+            return False
+        allowed_values = parameters.get('allowed_values', [])
+        if not allowed_values:
+            return False
+        str_value = str(value)
+        allowed_str_values = [str(v) for v in allowed_values]
+        return str_value in allowed_str_values
+    def _validate_custom(self, value: Any, parameters: Dict[str, Any]) -> bool:
+        if value is None:
+            return False
+        expression = parameters.get('expression')
+        if not expression:
+            return False
+        try:
+            local_vars = {'value': value}
+            result = eval(expression, {'__builtins__': {}}, local_vars)
+            return bool(result)
+        except Exception:
+            return False
+    async def shutdown(self) -> None:
+        self._is_initialized = False
+        self._logger.info('Validation engine shut down')
+async def create_range_rule(validation_engine: ValidationEngine, connection_id: str, table_name: str, field_name: str, min_value: Optional[Union[int, float]]=None, max_value: Optional[Union[int, float]]=None, name: Optional[str]=None, description: Optional[str]=None, error_message: Optional[str]=None) -> Dict[str, Any]:
+    if name is None:
+        if min_value is not None and max_value is not None:
+            name = f'Range check for {field_name} ({min_value} to {max_value})'
+        elif min_value is not None:
+            name = f'Minimum value check for {field_name} (>= {min_value})'
+        elif max_value is not None:
+            name = f'Maximum value check for {field_name} (<= {max_value})'
+        else:
+            name = f'Range check for {field_name}'
+    if error_message is None:
+        if min_value is not None and max_value is not None:
+            error_message = f'Value must be between {min_value} and {max_value}'
+        elif min_value is not None:
+            error_message = f'Value must be at least {min_value}'
+        elif max_value is not None:
+            error_message = f'Value must be at most {max_value}'
+        else:
+            error_message = 'Value is outside the allowed range'
+    parameters = {}
+    if min_value is not None:
+        parameters['min'] = min_value
+    if max_value is not None:
+        parameters['max'] = max_value
+    return await validation_engine.create_rule(rule_type=ValidationRuleType.RANGE, connection_id=connection_id, table_name=table_name, field_name=field_name, parameters=parameters, error_message=error_message, name=name, description=description)
+async def create_pattern_rule(validation_engine: ValidationEngine, connection_id: str, table_name: str, field_name: str, pattern: str, name: Optional[str]=None, description: Optional[str]=None, error_message: Optional[str]=None) -> Dict[str, Any]:
+    if name is None:
+        name = f'Pattern check for {field_name}'
+    if error_message is None:
+        error_message = f'Value must match pattern: {pattern}'
+    parameters = {'pattern': pattern}
+    return await validation_engine.create_rule(rule_type=ValidationRuleType.PATTERN, connection_id=connection_id, table_name=table_name, field_name=field_name, parameters=parameters, error_message=error_message, name=name, description=description)
+async def create_not_null_rule(validation_engine: ValidationEngine, connection_id: str, table_name: str, field_name: str, name: Optional[str]=None, description: Optional[str]=None, error_message: Optional[str]=None) -> Dict[str, Any]:
+    if name is None:
+        name = f'Not null check for {field_name}'
+    if error_message is None:
+        error_message = 'Value cannot be null'
+    parameters = {}
+    return await validation_engine.create_rule(rule_type=ValidationRuleType.NOT_NULL, connection_id=connection_id, table_name=table_name, field_name=field_name, parameters=parameters, error_message=error_message, name=name, description=description)
+async def create_length_rule(validation_engine: ValidationEngine, connection_id: str, table_name: str, field_name: str, min_length: Optional[int]=None, max_length: Optional[int]=None, name: Optional[str]=None, description: Optional[str]=None, error_message: Optional[str]=None) -> Dict[str, Any]:
+    if name is None:
+        if min_length is not None and max_length is not None:
+            name = f'Length check for {field_name} ({min_length} to {max_length})'
+        elif min_length is not None:
+            name = f'Minimum length check for {field_name} (>= {min_length})'
+        elif max_length is not None:
+            name = f'Maximum length check for {field_name} (<= {max_length})'
+        else:
+            name = f'Length check for {field_name}'
+    if error_message is None:
+        if min_length is not None and max_length is not None:
+            error_message = f'Length must be between {min_length} and {max_length}'
+        elif min_length is not None:
+            error_message = f'Length must be at least {min_length}'
+        elif max_length is not None:
+            error_message = f'Length must be at most {max_length}'
+        else:
+            error_message = 'Length is outside the allowed range'
+    parameters = {}
+    if min_length is not None:
+        parameters['min_length'] = min_length
+    if max_length is not None:
+        parameters['max_length'] = max_length
+    return await validation_engine.create_rule(rule_type=ValidationRuleType.LENGTH, connection_id=connection_id, table_name=table_name, field_name=field_name, parameters=parameters, error_message=error_message, name=name, description=description)
+async def create_enumeration_rule(validation_engine: ValidationEngine, connection_id: str, table_name: str, field_name: str, allowed_values: List[Any], name: Optional[str]=None, description: Optional[str]=None, error_message: Optional[str]=None) -> Dict[str, Any]:
+    if name is None:
+        name = f'Enumeration check for {field_name}'
+    if error_message is None:
+        values_str = ', '.join([str(v) for v in allowed_values])
+        error_message = f'Value must be one of: {values_str}'
+    parameters = {'allowed_values': allowed_values}
+    return await validation_engine.create_rule(rule_type=ValidationRuleType.ENUMERATION, connection_id=connection_id, table_name=table_name, field_name=field_name, parameters=parameters, error_message=error_message, name=name, description=description)
