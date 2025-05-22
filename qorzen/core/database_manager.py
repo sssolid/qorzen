@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, TypeVar, Union, cast, Callable, Awaitable, AsyncGenerator, Type, \
-    Protocol, runtime_checkable
+    Protocol, runtime_checkable, Tuple
 
 import sqlalchemy
 from sqlalchemy import URL, Connection, Engine, MetaData, create_engine, event, select, text
@@ -816,6 +816,109 @@ class DatabaseManager(QorzenManager):
         """
         async with self._connections_lock:
             return name in self._connections
+
+    async def test_connection_config(self, config: DatabaseConnectionConfig) -> Tuple[bool, Optional[str]]:
+        """
+        Test a database connection configuration without registering it.
+
+        Args:
+            config: Database connection configuration to test
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            # Create temporary connection to test
+            temp_connection = DatabaseConnection(config)
+            await self._init_connection(temp_connection)
+
+            # Test the connection
+            if temp_connection.connector:
+                result, error = await temp_connection.connector.test_connection()
+            else:
+                # For SQLAlchemy connections
+                if temp_connection.engine:
+                    with temp_connection.engine.connect() as conn:
+                        conn.execute(text("SELECT 1"))
+                    result, error = (True, None)
+                else:
+                    result, error = (False, "Failed to create connection")
+
+            # Cleanup
+            if temp_connection.connector:
+                await temp_connection.connector.disconnect()
+            if temp_connection.engine:
+                temp_connection.engine.dispose()
+            if temp_connection.async_engine:
+                await temp_connection.async_engine.dispose()
+
+            return (result, error)
+
+        except Exception as e:
+            error_msg = str(e)
+            self._logger.error(f"Connection test failed: {error_msg}")
+            return (False, error_msg)
+
+    def get_supported_connection_types(self) -> List[str]:
+        """
+        Get list of supported database connection types.
+
+        Returns:
+            List of supported connection type strings
+        """
+        # Built-in SQLAlchemy types
+        builtin_types = ["postgresql", "mysql", "sqlite", "oracle", "mssql"]
+
+        # Registered connector types
+        connector_types = list(self._connector_registry.keys())
+
+        # Combine and deduplicate
+        all_types = list(set(builtin_types + connector_types))
+        return sorted(all_types)
+
+    def validate_connection_config(self, config: DatabaseConnectionConfig) -> Tuple[bool, Optional[str]]:
+        """
+        Validate a database connection configuration.
+
+        Args:
+            config: Configuration to validate
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        try:
+            # Check required fields
+            if not config.name.strip():
+                return (False, "Connection name is required")
+
+            if not config.db_type.strip():
+                return (False, "Database type is required")
+
+            # Check if database type is supported
+            supported_types = self.get_supported_connection_types()
+            if config.db_type.lower() not in supported_types:
+                return (False, f"Unsupported database type: {config.db_type}")
+
+            # Type-specific validation
+            if config.db_type.lower() == "sqlite":
+                if not config.database:
+                    return (False, "Database path is required for SQLite")
+            else:
+                if not config.host:
+                    return (False, "Host is required for this database type")
+                if not config.database:
+                    return (False, "Database name is required")
+                if not config.user:
+                    return (False, "Username is required")
+
+            # Validate ports
+            if config.port is not None and (config.port <= 0 or config.port > 65535):
+                return (False, "Port must be between 1 and 65535")
+
+            return (True, None)
+
+        except Exception as e:
+            return (False, f"Validation error: {str(e)}")
 
     async def get_connection_names(self) -> List[str]:
         """Get a list of connection names.
@@ -2183,3 +2286,40 @@ class DatabaseManager(QorzenManager):
             })
 
         return status
+
+
+def create_connection_config(
+        self,
+        name: str,
+        db_type: str,
+        **kwargs: Any
+) -> DatabaseConnectionConfig:
+    """
+    Create a database connection configuration with validation.
+
+    Args:
+        name: Connection name
+        db_type: Database type
+        **kwargs: Additional configuration parameters
+
+    Returns:
+        Validated DatabaseConnectionConfig instance
+
+    Raises:
+        ConfigurationError: If configuration is invalid
+    """
+    try:
+        config = DatabaseConnectionConfig(
+            name=name,
+            db_type=db_type,
+            **kwargs
+        )
+
+        is_valid, error = self.validate_connection_config(config)
+        if not is_valid:
+            raise ConfigurationError(f"Invalid connection configuration: {error}")
+
+        return config
+
+    except Exception as e:
+        raise ConfigurationError(f"Failed to create connection config: {str(e)}") from e
